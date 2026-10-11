@@ -379,7 +379,6 @@ pub fn network_card(
         .fold(0.0, f32::max)
         .max(1.0);
     let mid = chart.center().y;
-    painter.hline(chart.x_range(), mid, Stroke::new(1.0, p.track));
     let upper = Rect::from_min_max(chart.left_top(), pos2(chart.right(), mid));
     let lower = Rect::from_min_max(pos2(chart.left(), mid), chart.right_bottom());
     area(&painter, upper, rx_hist, max, down, false);
@@ -387,49 +386,59 @@ pub fn network_card(
     resp
 }
 
-/// 面积曲线：实线 + 向基线渐隐的填充，最新的点贴着右边。`downward` 时从顶部基线向下画。
-/// 返回各数据点的位置（数据不足两个时为 None）。
-pub fn area(
-    painter: &Painter,
-    rect: Rect,
-    data: &[f32],
-    max: f32,
-    color: Color32,
-    downward: bool,
-) -> Option<Vec<Pos2>> {
-    const SLOTS: usize = 60;
-    if data.len() < 2 {
-        return None;
-    }
-    let base = if downward { rect.top() } else { rect.bottom() };
-    let dir = if downward { 1.0 } else { -1.0 };
-    let step = rect.width() / (SLOTS - 1) as f32;
-    let x0 = rect.right() - step * (data.len() - 1) as f32;
-    let points: Vec<Pos2> = data
-        .iter()
-        .enumerate()
-        .map(|(i, v)| {
-            pos2(
-                x0 + step * i as f32,
-                base + dir * (v / max).clamp(0.0, 1.0) * (rect.height() - 1.5),
-            )
-        })
-        .collect();
+/// 点阵柱状图：横纵等距的方点网格，最新的在最右。每列从基线点亮到数值对应的高度，越靠上越亮；
+/// 未点亮的点留很淡的底色。列数由宽度决定，与 60 秒的采样不一一对应：
+/// 一列覆盖多个采样时取最大值，覆盖不到一个采样时在相邻采样间插值。`downward` 时从顶部向下长。
+pub fn area(painter: &Painter, rect: Rect, data: &[f32], max: f32, color: Color32, downward: bool) {
+    const SLOTS: f32 = 60.0;
+    let pitch = if rect.height() < 48.0 { 3.0 } else { 7.0 };
+    let dot = if rect.height() < 48.0 { 2.0 } else { 4.5 };
+    let cols = ((rect.width() - dot) / pitch).floor().max(0.0) as usize + 1;
+    let rows = ((rect.height() - dot) / pitch).floor().max(0.0) as usize + 1;
+    // 点阵整体在 rect 里水平居中、贴着基线。
+    let x0 = rect.left() + (rect.width() - ((cols - 1) as f32 * pitch + dot)) / 2.0;
+    let dim = color.gamma_multiply(0.07);
+    let span = SLOTS / cols as f32;
+    let max = max.max(1e-6);
+    // 距今 k 秒的采样。
+    let ago = |k: usize| data.len().checked_sub(k + 1).map(|i| data[i]);
 
     let mut mesh = Mesh::default();
-    let (strong, clear) = (color.gamma_multiply(0.32), color.gamma_multiply(0.0));
-    for pt in &points {
-        mesh.colored_vertex(*pt, strong);
-        mesh.colored_vertex(pos2(pt.x, base), clear);
-    }
-    for i in 0..points.len() as u32 - 1 {
-        let (a, b, c, d) = (i * 2, i * 2 + 1, i * 2 + 2, i * 2 + 3);
-        mesh.add_triangle(a, b, c);
-        mesh.add_triangle(c, b, d);
+    for c in 0..cols {
+        let hi = (cols - c) as f32 * span;
+        let lo = hi - span;
+        let mut value = (lo.ceil() as usize..hi.ceil() as usize)
+            .filter_map(ago)
+            .fold(None, |m: Option<f32>, v| Some(m.map_or(v, |m| m.max(v))));
+        if value.is_none() {
+            let mid = (lo + hi) / 2.0;
+            let k = mid.floor() as usize;
+            value = match (ago(k), ago(k + 1)) {
+                (Some(a), Some(b)) => Some(a + (b - a) * mid.fract()),
+                (a, _) => a,
+            };
+        }
+        let lit = value.map_or(0, |v| {
+            let n = ((v / max).clamp(0.0, 1.0) * rows as f32).round() as usize;
+            // 有数据但很小时也点亮一格，和"没有数据"区分开。
+            if v > max * 0.004 { n.max(1) } else { n }
+        });
+        let x = x0 + c as f32 * pitch;
+        for r in 0..rows {
+            let y = if downward {
+                rect.top() + r as f32 * pitch
+            } else {
+                rect.bottom() - r as f32 * pitch - dot
+            };
+            let fill = if r < lit {
+                color.gamma_multiply(0.45 + 0.55 * (r + 1) as f32 / lit as f32)
+            } else {
+                dim
+            };
+            mesh.add_colored_rect(Rect::from_min_size(pos2(x, y), vec2(dot, dot)), fill);
+        }
     }
     painter.add(Shape::mesh(mesh));
-    painter.add(Shape::line(points.clone(), Stroke::new(1.5, color)));
-    Some(points)
 }
 
 /// 圆环进度：从 12 点钟方向顺时针，两端圆头。
@@ -642,14 +651,31 @@ pub fn segmented(ui: &mut Ui, value: &mut bool, items: [(Icon, &str); 2]) -> boo
 
 /// 右键菜单项：图标 + 文字，整行可点。
 pub fn menu_item(ui: &mut Ui, glyph: Icon, label: &str, danger: bool) -> Response {
+    let (resp, bg) = menu_row(ui, glyph, label, danger);
+    if resp.hovered() {
+        let p = Palette::of(ui.ctx());
+        ui.painter().set(
+            bg,
+            Shape::rect_filled(resp.rect, CornerRadius::same(6), p.hover),
+        );
+    }
+    if resp.clicked() {
+        ui.close();
+    }
+    resp
+}
+
+/// 菜单行的公共部分：图标 + 文字，背景留一个占位，由调用方按悬停 / 展开状态填充。
+fn menu_row(
+    ui: &mut Ui,
+    glyph: Icon,
+    label: &str,
+    danger: bool,
+) -> (Response, egui::layers::ShapeIdx) {
     let p = Palette::of(ui.ctx());
     let width = ui.available_width().max(200.0);
+    let bg = ui.painter().add(Shape::Noop);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
-    if resp.hovered() {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(6), p.hover);
-    }
-    let color = if danger { p.danger } else { p.text };
     icon(
         ui,
         glyph,
@@ -662,12 +688,9 @@ pub fn menu_item(ui: &mut Ui, glyph: Icon, label: &str, danger: bool) -> Respons
         Align2::LEFT_CENTER,
         label,
         FontId::proportional(13.0),
-        color,
+        if danger { p.danger } else { p.text },
     );
-    if resp.clicked() {
-        ui.close();
-    }
-    resp
+    (resp, bg)
 }
 
 /// 开关。返回的响应在切换时 `changed()`。
@@ -726,19 +749,6 @@ pub fn menu_check(ui: &mut Ui, glyph: Icon, label: &str, checked: bool) -> Respo
         );
     }
     resp
-}
-
-/// 供 egui 原生控件（如子菜单按钮）使用的图标图片。
-pub fn icon_image(ui: &Ui, glyph: Icon, size: f32, color: Color32) -> egui::Image<'static> {
-    let ppp = ui.ctx().pixels_per_point();
-    let px = ((size * ppp).round() as u32).clamp(PX_MIN, PX_MAX);
-    let side = px as f32 / ppp;
-    egui::Image::from_bytes(
-        format!("bytes://icon/{}@{px}.svg", glyph.name()),
-        glyph.svg(px).as_bytes(),
-    )
-    .tint(color)
-    .fit_to_exact_size(vec2(side, side))
 }
 
 // ---------------------------------------------------------------- 表格
@@ -900,10 +910,27 @@ pub fn submenu(
     add_contents: impl FnOnce(&mut Ui),
 ) {
     let p = Palette::of(ui.ctx());
-    ui.menu_image_text_button(icon_image(ui, glyph, 15.0, p.muted), label, |ui| {
-        ui.set_min_width(min_width);
-        add_contents(ui);
-    });
+    let (resp, bg) = menu_row(ui, glyph, label, false);
+    icon(
+        ui,
+        Icon::ChevronRight,
+        pos2(resp.rect.right() - 12.0, resp.rect.center().y),
+        14.0,
+        p.muted,
+    );
+    let open = egui::containers::menu::SubMenu::new()
+        .show(ui, &resp, |ui| {
+            ui.set_min_width(min_width);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            add_contents(ui);
+        })
+        .is_some();
+    if open || resp.hovered() {
+        ui.painter().set(
+            bg,
+            Shape::rect_filled(resp.rect, CornerRadius::same(6), p.hover),
+        );
+    }
 }
 
 #[cfg(test)]

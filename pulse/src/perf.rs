@@ -89,20 +89,9 @@ pub fn show(
                         Some(g) => {
                             let empty = GpuHistory::default();
                             page_header(ui, Icon::Gpu, metric::GPU, &format!("GPU {i}"), &g.name);
-                            let usage =
-                                series.get(&format!("gpu.{i}")).cloned().unwrap_or_default();
-                            chart(
-                                ui,
-                                "利用率（最忙引擎）",
-                                200.0,
-                                &[(&usage, metric::GPU, false)],
-                                Some(1.0),
-                                &|m| pct(m),
-                            );
-                            gpu_panel::adapter(ui, g, gpu_history.get(i).unwrap_or(&empty));
-                            ui.add_space(8.0);
+                            let h = gpu_history.get(i).unwrap_or(&empty);
                             if let Some(PanelAction::Search(name)) =
-                                gpu_panel::top_processes(ui, snap, icons)
+                                gpu_panel::page(ui, g, h, snap, icons)
                             {
                                 action = Some(PerfAction::Search(name));
                             }
@@ -301,25 +290,201 @@ fn sidebar(ui: &mut Ui, snap: &Snapshot, series: &Series, device: &mut Device) {
 
 fn page_header(ui: &mut Ui, glyph: Icon, color: Color32, title: &str, subtitle: &str) {
     let p = Palette::of(ui.ctx());
-    ui.add_space(4.0);
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
-        let (r, _) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::hover());
-        widgets::icon(ui, glyph, r.center(), 22.0, color);
-        ui.label(
-            RichText::new(title)
-                .size(20.0)
-                .family(semibold())
-                .color(p.text),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add(egui::Label::new(RichText::new(subtitle).size(13.0).color(p.muted)).truncate());
+        let (tile, _) = ui.allocate_exact_size(vec2(42.0, 42.0), Sense::hover());
+        ui.painter()
+            .rect_filled(tile, CornerRadius::same(10), color.gamma_multiply(0.16));
+        widgets::icon(ui, glyph, tile.center(), 22.0, color);
+        ui.add_space(6.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.label(
+                RichText::new(title)
+                    .size(20.0)
+                    .family(semibold())
+                    .color(p.text),
+            );
+            ui.add(egui::Label::new(RichText::new(subtitle).size(12.5).color(p.muted)).truncate());
         });
     });
-    ui.add_space(10.0);
+    ui.add_space(14.0);
+}
+
+/// 关键指标卡片：标签、大号数值（附单位）、说明，以及可选的占比条。
+pub struct Kpi {
+    label: &'static str,
+    value: String,
+    unit: String,
+    color: Color32,
+    caption: Option<String>,
+    bar: Option<f32>,
+}
+
+impl Kpi {
+    pub fn new(
+        label: &'static str,
+        value: impl Into<String>,
+        unit: impl Into<String>,
+        color: Color32,
+    ) -> Self {
+        Self {
+            label,
+            value: value.into(),
+            unit: unit.into(),
+            color,
+            caption: None,
+            bar: None,
+        }
+    }
+
+    pub fn caption(mut self, text: impl Into<String>) -> Self {
+        self.caption = Some(text.into());
+        self
+    }
+
+    pub fn bar(mut self, frac: f32) -> Self {
+        self.bar = Some(frac.clamp(0.0, 1.0));
+        self
+    }
+}
+
+/// 页面顶部的一排关键指标；窄窗口时两列换行。
+pub fn hero(ui: &mut Ui, items: &[Kpi]) {
+    let p = Palette::of(ui.ctx());
+    let gap = 10.0;
+    let w = ui.available_width();
+    let cols = if w > 640.0 { items.len() } else { 2 }.max(1);
+    let cell_w = (w - gap * (cols - 1) as f32) / cols as f32;
+    let height = if items.iter().any(|k| k.bar.is_some()) {
+        104.0
+    } else {
+        92.0
+    };
+    for chunk in items.chunks(cols) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for k in chunk {
+                let (rect, _) = ui.allocate_exact_size(vec2(cell_w, height), Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, CornerRadius::same(12), p.surface);
+                painter.circle_filled(pos2(rect.left() + 17.0, rect.top() + 19.0), 3.5, k.color);
+                painter.text(
+                    pos2(rect.left() + 27.0, rect.top() + 19.0),
+                    Align2::LEFT_CENTER,
+                    k.label,
+                    FontId::proportional(12.0),
+                    p.muted,
+                );
+                let value = painter.text(
+                    pos2(rect.left() + 14.0, rect.top() + 30.0),
+                    Align2::LEFT_TOP,
+                    &k.value,
+                    FontId::new(26.0, semibold()),
+                    p.text,
+                );
+                if !k.unit.is_empty() {
+                    painter.text(
+                        pos2(value.right() + 5.0, value.bottom() - 6.0),
+                        Align2::LEFT_BOTTOM,
+                        &k.unit,
+                        FontId::proportional(12.5),
+                        p.muted,
+                    );
+                }
+                let mut bottom = rect.bottom() - 12.0;
+                if let Some(frac) = k.bar {
+                    let bar = Rect::from_min_max(
+                        pos2(rect.left() + 14.0, rect.bottom() - 14.0),
+                        pos2(rect.right() - 14.0, rect.bottom() - 10.0),
+                    );
+                    widgets::meter(&painter, bar, frac, k.color, p.track);
+                    bottom = bar.top() - 7.0;
+                }
+                if let Some(caption) = &k.caption {
+                    painter.with_clip_rect(rect.shrink(8.0)).text(
+                        pos2(rect.left() + 14.0, bottom),
+                        Align2::LEFT_BOTTOM,
+                        caption,
+                        FontId::proportional(11.5),
+                        p.faint,
+                    );
+                }
+            }
+        });
+        ui.add_space(gap - ui.spacing().item_spacing.y);
+    }
+}
+
+/// 宽度足够时左右两栏，否则上下排列。
+pub fn two_columns(ui: &mut Ui, left: impl FnOnce(&mut Ui), right: impl FnOnce(&mut Ui)) {
+    if ui.available_width() < 720.0 {
+        left(ui);
+        ui.add_space(8.0);
+        right(ui);
+        return;
+    }
+    ui.spacing_mut().item_spacing.x = 12.0;
+    ui.columns(2, |cols| {
+        left(&mut cols[0]);
+        right(&mut cols[1]);
+    });
+}
+
+/// 属性列表：一张卡片里逐行"名称 … 值"，宽度足够时分两栏（按列从上往下排）。
+fn kv_list(ui: &mut Ui, items: &[(&str, String)]) {
+    const ROW: f32 = 34.0;
+    if items.is_empty() {
+        return;
+    }
+    let p = Palette::of(ui.ctx());
+    let w = ui.available_width();
+    let cols = if w > 640.0 && items.len() > 3 { 2 } else { 1 };
+    let rows = items.len().div_ceil(cols);
+    let (card, _) = ui.allocate_exact_size(vec2(w, rows as f32 * ROW), Sense::hover());
+    let painter = ui.painter_at(card);
+    painter.rect_filled(card, CornerRadius::same(12), p.surface);
+    let col_w = w / cols as f32;
+    for (i, (label, value)) in items.iter().enumerate() {
+        let (c, r) = (i / rows, i % rows);
+        let cell = Rect::from_min_size(
+            pos2(card.left() + c as f32 * col_w, card.top() + r as f32 * ROW),
+            vec2(col_w, ROW),
+        );
+        if r > 0 {
+            painter.hline(
+                (cell.left() + 14.0)..=(cell.right() - 14.0),
+                cell.top(),
+                Stroke::new(1.0, p.track),
+            );
+        }
+        let label = painter.text(
+            pos2(cell.left() + 14.0, cell.center().y),
+            Align2::LEFT_CENTER,
+            *label,
+            FontId::proportional(12.5),
+            p.muted,
+        );
+        let clip = Rect::from_min_max(pos2(label.right() + 12.0, cell.top()), cell.max);
+        painter.with_clip_rect(clip).text(
+            pos2(cell.right() - 14.0, cell.center().y),
+            Align2::RIGHT_CENTER,
+            value,
+            FontId::proportional(13.0),
+            p.text,
+        );
+    }
+    if cols == 2 {
+        painter.vline(
+            card.left() + col_w,
+            (card.top() + 8.0)..=(card.bottom() - 8.0),
+            Stroke::new(1.0, p.track),
+        );
+    }
 }
 
 /// 大图表：卡片底板 + 网格线 + 面积曲线。`max` 为 None 时按数据自动缩放并在右上角标出刻度。
-fn chart(
+pub fn chart(
     ui: &mut Ui,
     title: &str,
     height: f32,
@@ -366,22 +531,12 @@ fn chart(
         FontId::proportional(11.0),
         p.faint,
     );
-    for k in 1..4 {
-        let y = inner.top() + inner.height() * k as f32 / 4.0;
-        painter.hline(
-            inner.x_range(),
-            y,
-            Stroke::new(1.0, p.track.gamma_multiply(0.6)),
-        );
-    }
-    painter.hline(inner.x_range(), inner.bottom(), Stroke::new(1.0, p.track));
     let mirrored = lines.iter().any(|l| l.2);
     if mirrored {
         // 上下镜像：上半区正向，下半区反向，共用刻度。
         let mid = inner.center().y;
         let upper = Rect::from_min_max(inner.min, pos2(inner.right(), mid));
         let lower = Rect::from_min_max(pos2(inner.left(), mid), inner.max);
-        painter.hline(inner.x_range(), mid, Stroke::new(1.0, p.track));
         for (d, c, down) in lines {
             widgets::area(
                 &painter,
@@ -412,49 +567,9 @@ fn nice_ceiling(v: f32) -> f32 {
         .unwrap_or(10.0 * mag)
 }
 
-/// 两列（宽度允许时三列）的指标网格。
-fn stats(ui: &mut Ui, items: &[(&str, String)]) {
+pub fn section(ui: &mut Ui, title: &str) {
     let p = Palette::of(ui.ctx());
-    let w = ui.available_width();
-    let cols = if w > 760.0 {
-        4
-    } else if w > 520.0 {
-        3
-    } else {
-        2
-    };
-    let cell_w = (w - (cols - 1) as f32 * 10.0) / cols as f32;
-    for row in items.chunks(cols) {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            for (label, value) in row {
-                let (rect, _) = ui.allocate_exact_size(vec2(cell_w, 58.0), Sense::hover());
-                let painter = ui.painter_at(rect);
-                painter.rect_filled(rect, CornerRadius::same(10), p.surface);
-                painter.text(
-                    rect.left_top() + vec2(12.0, 10.0),
-                    Align2::LEFT_TOP,
-                    *label,
-                    FontId::proportional(11.5),
-                    p.muted,
-                );
-                let clip = painter.with_clip_rect(rect.shrink(4.0));
-                clip.text(
-                    rect.left_bottom() + vec2(12.0, -10.0),
-                    Align2::LEFT_BOTTOM,
-                    value,
-                    FontId::new(15.0, semibold()),
-                    p.text,
-                );
-            }
-        });
-        ui.add_space(4.0);
-    }
-}
-
-fn section(ui: &mut Ui, title: &str) {
-    let p = Palette::of(ui.ctx());
-    ui.add_space(12.0);
+    ui.add_space(16.0);
     ui.label(
         RichText::new(title)
             .size(13.0)
@@ -464,7 +579,7 @@ fn section(ui: &mut Ui, title: &str) {
     ui.add_space(6.0);
 }
 
-fn pct(v: f32) -> String {
+pub fn pct(v: f32) -> String {
     format!("{:.0}%", v * 100.0)
 }
 
@@ -519,15 +634,49 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
     let p = Palette::of(ui.ctx());
     let info = &snap.cpu_info;
     page_header(ui, Icon::Cpu, metric::CPU, "CPU", &info.name);
+    let threads: u32 = snap.processes.iter().map(|p| p.threads).sum();
+    let handles: u32 = snap.processes.iter().map(|p| p.handles).sum();
+    let busiest = snap.cpu_cores.iter().copied().fold(0.0, f32::max);
+    let up = snap.uptime.as_secs();
+    hero(
+        ui,
+        &[
+            Kpi::new("利用率", format!("{:.0}", snap.cpu_total), "%", metric::CPU)
+                .caption(format!("最忙的逻辑处理器 {busiest:.0}%"))
+                .bar(snap.cpu_total / 100.0),
+            Kpi::new(
+                "速度",
+                snap.cpu_mhz
+                    .map_or("—".into(), |m| format!("{:.2}", m as f64 / 1000.0)),
+                "GHz",
+                metric::CPU,
+            )
+            .caption(if info.base_mhz > 0 {
+                format!("基准 {:.2} GHz", info.base_mhz as f64 / 1000.0)
+            } else {
+                "驱动报告的当前频率".into()
+            }),
+            Kpi::new("进程", snap.processes.len().to_string(), "个", metric::CPU)
+                .caption(format!("{threads} 线程 · {handles} 句柄")),
+            Kpi::new(
+                "正常运行时间",
+                format!("{}:{:02}", up / 3600, up / 60 % 60),
+                "小时",
+                metric::CPU,
+            )
+            .caption(fmt_duration(snap.uptime)),
+        ],
+    );
+    ui.add_space(10.0);
     let empty = Vec::new();
     let total = series.get("cpu").unwrap_or(&empty);
     chart(
         ui,
         "总利用率",
-        200.0,
+        170.0,
         &[(total, metric::CPU, false)],
         Some(1.0),
-        &|m| pct(m),
+        &pct,
     );
 
     section(ui, "逻辑处理器");
@@ -566,32 +715,26 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         ui.add_space(2.0);
     }
 
-    section(ui, "规格与状态");
-    let threads: u32 = snap.processes.iter().map(|p| p.threads).sum();
-    let handles: u32 = snap.processes.iter().map(|p| p.handles).sum();
+    section(ui, "规格");
     let ghz = |mhz: u32| format!("{:.2} GHz", mhz as f64 / 1000.0);
-    stats(
+    kv_list(
         ui,
         &[
-            ("利用率", format!("{:.0}%", snap.cpu_total)),
-            ("当前频率（驱动报告）", snap.cpu_mhz.map_or("—".into(), ghz)),
             (
-                "基准频率",
+                "基准速度",
                 if info.base_mhz > 0 {
                     ghz(info.base_mhz)
                 } else {
                     "—".into()
                 },
             ),
-            ("正常运行时间", fmt_duration(snap.uptime)),
             ("插槽", info.sockets.to_string()),
             ("内核", info.cores.to_string()),
             ("逻辑处理器", info.logical.to_string()),
-            ("进程", snap.processes.len().to_string()),
             ("L1 缓存", fmt_bytes(info.l1)),
             ("L2 缓存", fmt_bytes(info.l2)),
             ("L3 缓存", fmt_bytes(info.l3)),
-            ("线程 / 句柄", format!("{threads} / {handles}")),
+            ("当前频率（驱动报告）", snap.cpu_mhz.map_or("—".into(), ghz)),
         ],
     );
 }
@@ -612,14 +755,40 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         _ => format!("{:.0} GB", m.total as f64 / (1u64 << 30) as f64),
     };
     page_header(ui, Icon::Memory, metric::MEMORY, "内存", &subtitle);
+    let gb = |b: u64| format!("{:.1}", b as f64 / (1u64 << 30) as f64);
+    let frac = |a: u64, b: u64| a as f32 / b.max(1) as f32;
+    hero(
+        ui,
+        &[
+            Kpi::new(
+                "使用中",
+                gb(m.in_use()),
+                format!("/ {} GB", gb(m.total)),
+                metric::MEMORY,
+            )
+            .caption(format!("{:.0}%", frac(m.in_use(), m.total) * 100.0))
+            .bar(frac(m.in_use(), m.total)),
+            Kpi::new("可用", gb(m.available), "GB", metric::MEMORY).caption("可立即分配给程序"),
+            Kpi::new(
+                "已提交",
+                gb(m.commit_used),
+                format!("/ {} GB", gb(m.commit_limit)),
+                metric::MEMORY,
+            )
+            .caption("物理内存 + 页面文件")
+            .bar(frac(m.commit_used, m.commit_limit)),
+            Kpi::new("已缓存", gb(m.cache), "GB", metric::MEMORY).caption("备用与已修改的页面"),
+        ],
+    );
+    ui.add_space(10.0);
     let empty = Vec::new();
     chart(
         ui,
         "内存使用量",
-        200.0,
+        170.0,
         &[(series.get("mem").unwrap_or(&empty), metric::MEMORY, false)],
         Some(1.0),
-        &|m| pct(m),
+        &pct,
     );
 
     section(ui, "内存组合");
@@ -634,39 +803,60 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         ("备用", standby, metric::MEMORY.gamma_multiply(0.45)),
         ("空闲", free, p.track),
     ];
+    // 点阵：4 行，每个点代表相同份额的内存，按类别依次（逐列从上到下）上色。
+    const ROWS: usize = 4;
+    const PITCH: f32 = 10.0;
+    const DOT: f32 = 7.0;
     let w = ui.available_width();
-    let (bar, _) = ui.allocate_exact_size(vec2(w, 30.0), Sense::hover());
-    let painter = ui.painter_at(bar);
-    painter.rect_filled(bar, CornerRadius::same(8), p.track);
-    let mut x = bar.left();
+    let cols = ((w + PITCH - DOT) / PITCH).floor().max(1.0) as usize;
+    let total_dots = cols * ROWS;
+    let (grid, _) =
+        ui.allocate_exact_size(vec2(w, ROWS as f32 * PITCH - (PITCH - DOT)), Sense::hover());
+    let painter = ui.painter_at(grid);
+    let mut colors = Vec::with_capacity(total_dots);
+    let mut acc = 0u64;
     for (_, bytes, color) in &parts {
-        let seg = bar.width() * *bytes as f32 / m.total.max(1) as f32;
-        if seg > 0.5 {
-            let r = Rect::from_min_max(
-                pos2(x, bar.top()),
-                pos2((x + seg).min(bar.right()), bar.bottom()),
-            );
-            painter.rect_filled(r, CornerRadius::ZERO, *color);
+        acc += *bytes;
+        let until = ((acc as f64 / m.total.max(1) as f64) * total_dots as f64).round() as usize;
+        while colors.len() < until.min(total_dots) {
+            colors.push(*color);
         }
-        x += seg;
     }
-    painter.rect_stroke(
-        bar,
-        CornerRadius::same(8),
-        Stroke::new(2.0, p.bg),
-        egui::StrokeKind::Outside,
-    );
-    ui.add_space(6.0);
+    colors.resize(total_dots, p.track);
+    for (k, color) in colors.into_iter().enumerate() {
+        let (c, r) = (k / ROWS, k % ROWS);
+        let dot = Rect::from_min_size(
+            pos2(
+                grid.left() + c as f32 * PITCH,
+                grid.top() + r as f32 * PITCH,
+            ),
+            vec2(DOT, DOT),
+        );
+        painter.rect_filled(dot, CornerRadius::same(2), color);
+    }
+    ui.add_space(10.0);
+    // 图例：色块、名称、数值与占比。
     ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
         for (label, bytes, color) in &parts {
-            let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-            ui.painter().rect_filled(r, CornerRadius::same(3), *color);
+            let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+            ui.painter().rect_filled(r, CornerRadius::same(2), *color);
+            ui.label(RichText::new(*label).size(12.0).color(p.muted));
             ui.label(
-                RichText::new(format!("{label} {}", fmt_bytes(*bytes)))
-                    .size(12.0)
-                    .color(p.muted),
+                RichText::new(fmt_bytes(*bytes))
+                    .size(12.5)
+                    .family(semibold())
+                    .color(p.text),
             );
-            ui.add_space(10.0);
+            ui.label(
+                RichText::new(format!(
+                    "{:.0}%",
+                    *bytes as f64 / m.total.max(1) as f64 * 100.0
+                ))
+                .size(12.0)
+                .color(p.faint),
+            );
+            ui.add_space(14.0);
         }
     });
     if m.lists.is_none() {
@@ -678,21 +868,10 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
     }
 
     section(ui, "详细信息");
-    stats(
+    kv_list(
         ui,
         &[
-            ("使用中", fmt_bytes(m.in_use())),
-            ("可用", fmt_bytes(m.available)),
-            (
-                "已提交",
-                format!(
-                    "{} / {}",
-                    fmt_bytes(m.commit_used),
-                    fmt_bytes(m.commit_limit)
-                ),
-            ),
             ("提交峰值", fmt_bytes(m.commit_peak)),
-            ("已缓存", fmt_bytes(m.cache)),
             ("分页缓冲池", fmt_bytes(m.paged_pool)),
             ("非分页缓冲池", fmt_bytes(m.nonpaged_pool)),
             (
@@ -707,6 +886,13 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
                 "为硬件保留",
                 snap.memory_installed
                     .map_or("—".into(), |i| fmt_bytes(i.saturating_sub(m.total))),
+            ),
+            (
+                "速度",
+                modules
+                    .first()
+                    .filter(|f| f.speed > 0)
+                    .map_or("—".into(), |f| format!("{} MT/s", f.speed)),
             ),
         ],
     );
@@ -776,72 +962,77 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
         &format!("磁盘 {} ({})", d.index, letters(d)),
         &d.model,
     );
+    hero(
+        ui,
+        &[
+            Kpi::new("活动时间", format!("{:.0}", d.active), "%", metric::DISK)
+                .bar(d.active / 100.0),
+            Kpi::new("读取", fmt_bytes(d.read_rate), "/s", metric::DISK),
+            Kpi::new("写入", fmt_bytes(d.write_rate), "/s", metric::NETWORK_UP),
+            Kpi::new(
+                "平均响应时间",
+                format!("{:.2}", d.response_ms),
+                "ms",
+                metric::DISK,
+            ),
+        ],
+    );
+    ui.add_space(10.0);
     let empty = Vec::new();
     let get = |k: &str| {
         series
             .get(&format!("disk.{}.{k}", d.index))
             .unwrap_or(&empty)
     };
-    chart(
+    two_columns(
         ui,
-        "活动时间",
-        150.0,
-        &[(get("active"), metric::DISK, false)],
-        Some(1.0),
-        &|m| pct(m),
-    );
-    ui.add_space(8.0);
-    chart(
-        ui,
-        "传输速率（上：读取 · 下：写入）",
-        150.0,
-        &[
-            (get("read"), metric::DISK, false),
-            (get("write"), metric::NETWORK_UP, true),
-        ],
-        None,
-        &|m| format!("{}/s", fmt_bytes(m as u64)),
-    );
-
-    section(ui, "性能");
-    stats(
-        ui,
-        &[
-            ("活动时间", format!("{:.0}%", d.active)),
-            ("平均响应时间", format!("{:.2} ms", d.response_ms)),
-            ("读取速度", format!("{}/s", fmt_bytes(d.read_rate))),
-            ("写入速度", format!("{}/s", fmt_bytes(d.write_rate))),
-            ("容量", fmt_bytes(d.size)),
-            ("类型", disk_kind(d)),
-            (
-                "可移动",
-                if d.removable {
-                    "是".into()
-                } else {
-                    "否".into()
-                },
-            ),
-            ("分区", d.volumes.len().to_string()),
-            (
-                "系统盘",
-                if d.volumes.iter().any(|v| v.system) {
-                    "是".into()
-                } else {
-                    "否".into()
-                },
-            ),
-            (
-                "页面文件",
-                if d.volumes.iter().any(|v| v.pagefile) {
-                    "是".into()
-                } else {
-                    "否".into()
-                },
-            ),
-        ],
+        |ui| {
+            chart(
+                ui,
+                "活动时间",
+                150.0,
+                &[(get("active"), metric::DISK, false)],
+                Some(1.0),
+                &pct,
+            )
+        },
+        |ui| {
+            chart(
+                ui,
+                "传输速率（上：读取 · 下：写入）",
+                150.0,
+                &[
+                    (get("read"), metric::DISK, false),
+                    (get("write"), metric::NETWORK_UP, true),
+                ],
+                None,
+                &|m| format!("{}/s", fmt_bytes(m as u64)),
+            )
+        },
     );
 
     health_section(ui, d);
+
+    section(ui, "属性");
+    let yes_no = |b: bool| {
+        if b {
+            "是".to_string()
+        } else {
+            "否".to_string()
+        }
+    };
+    kv_list(
+        ui,
+        &[
+            ("型号", d.model.clone()),
+            ("容量", fmt_bytes(d.size)),
+            ("类型", disk_kind(d)),
+            ("分区", d.volumes.len().to_string()),
+            ("可移动", yes_no(d.removable)),
+            ("系统盘", yes_no(d.volumes.iter().any(|v| v.system))),
+            ("页面文件", yes_no(d.volumes.iter().any(|v| v.pagefile))),
+        ],
+    );
 
     if !d.volumes.is_empty() {
         section(ui, "分区");
@@ -985,7 +1176,7 @@ fn health_section(ui: &mut Ui, d: &DiskStat) {
                 .color(p.faint),
         );
     } else {
-        stats(ui, &items);
+        kv_list(ui, &items);
     }
 }
 
@@ -1012,6 +1203,45 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
         &n.name,
         &n.description,
     );
+    let status = match (&n.ssid, n.signal) {
+        (Some(ssid), Some(signal)) => {
+            Kpi::new("信号强度", signal.to_string(), "%", metric::NETWORK)
+                .caption(ssid.clone())
+                .bar(signal as f32 / 100.0)
+        }
+        _ => Kpi::new(
+            "状态",
+            if n.connected {
+                "已连接"
+            } else {
+                "未连接"
+            },
+            "",
+            metric::NETWORK,
+        )
+        .caption(n.kind.to_string()),
+    };
+    hero(
+        ui,
+        &[
+            Kpi::new("接收", fmt_bits(n.rx_rate), "", metric::NETWORK)
+                .caption(format!("开机以来 {}", fmt_bytes(n.rx_total))),
+            Kpi::new("发送", fmt_bits(n.tx_rate), "", metric::NETWORK_UP)
+                .caption(format!("开机以来 {}", fmt_bytes(n.tx_total))),
+            Kpi::new(
+                "链路速度",
+                if n.link_speed > 0 {
+                    fmt_bits(n.link_speed / 8)
+                } else {
+                    "—".into()
+                },
+                "",
+                metric::NETWORK,
+            ),
+            status,
+        ],
+    );
+    ui.add_space(10.0);
     let empty = Vec::new();
     let get = |k: &str| {
         series
@@ -1021,7 +1251,7 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
     chart(
         ui,
         "吞吐量（上：接收 · 下：发送）",
-        220.0,
+        190.0,
         &[
             (get("rx"), metric::NETWORK, false),
             (get("tx"), metric::NETWORK_UP, true),
@@ -1030,26 +1260,10 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
         &|m| fmt_bits(m as u64),
     );
 
-    section(ui, "连接");
+    section(ui, "适配器");
     let mut items = vec![
-        ("接收", fmt_bits(n.rx_rate)),
-        ("发送", fmt_bits(n.tx_rate)),
-        (
-            "状态",
-            if n.connected {
-                "已连接".into()
-            } else {
-                "未连接".into()
-            },
-        ),
-        (
-            "链路速度",
-            if n.link_speed > 0 {
-                fmt_bits(n.link_speed / 8)
-            } else {
-                "—".into()
-            },
-        ),
+        ("名称", n.name.clone()),
+        ("描述", n.description.clone()),
         ("类型", n.kind.to_string()),
         (
             "MAC 地址",
@@ -1059,24 +1273,17 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
                 n.mac.clone()
             },
         ),
-        ("开机以来接收", fmt_bytes(n.rx_total)),
-        ("开机以来发送", fmt_bytes(n.tx_total)),
     ];
-    if let (Some(ssid), Some(signal)) = (&n.ssid, n.signal) {
-        items.insert(0, ("Wi-Fi 网络", ssid.clone()));
-        items.insert(1, ("信号强度", format!("{signal}%")));
+    if let Some(ssid) = &n.ssid {
+        items.push(("Wi-Fi 网络", ssid.clone()));
     }
-    if let Some(v4) = n.ipv4.first() {
-        items.insert(4, ("IPv4", v4.clone()));
+    for a in &n.ipv4 {
+        items.push(("IPv4", a.clone()));
     }
-    stats(ui, &items);
-    if !n.ipv6.is_empty() {
-        section(ui, "IPv6 地址");
-        let p = Palette::of(ui.ctx());
-        for a in &n.ipv6 {
-            ui.label(RichText::new(a).monospace().size(12.0).color(p.muted));
-        }
+    for a in &n.ipv6 {
+        items.push(("IPv6", a.clone()));
     }
+    kv_list(ui, &items);
 }
 
 /// 当前设备的纯文本摘要（"复制摘要"）。

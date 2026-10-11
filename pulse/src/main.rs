@@ -8,9 +8,11 @@ mod model;
 mod perf;
 mod services_view;
 mod settings;
+mod settings_view;
 mod startup_view;
 mod table;
 mod theme;
+mod titlebar;
 mod users_view;
 mod widgets;
 
@@ -32,7 +34,7 @@ use perf::{Device, Series};
 use pulse_probe::services::{Service, ServiceMonitor};
 use pulse_probe::startup::StartupItem;
 use services_view::{ServiceAction, ServicesState};
-use settings::{Settings, Speed, ThemeChoice};
+use settings::{Settings, Speed};
 use startup_view::{StartupAction, StartupState};
 use std::sync::atomic::{AtomicU64, Ordering};
 use theme::{Palette, metric};
@@ -58,7 +60,10 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Pulse",
         options,
-        Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
+        Box::new(|cc| {
+            titlebar::install(cc);
+            Ok(Box::new(App::new(&cc.egui_ctx)))
+        }),
     )
 }
 
@@ -232,6 +237,7 @@ enum View {
     Services,
     Startup,
     Users,
+    Settings,
 }
 
 #[derive(Clone, PartialEq)]
@@ -849,54 +855,64 @@ impl App {
         }
     }
 
-    /// 顶部标签：进程 / 性能。
-    fn tabs(&mut self, ui: &mut Ui) {
+    /// 标题行：品牌、页签、设置，接管标题栏时还有最小化 / 最大化 / 关闭。
+    /// 空白处可拖动窗口（见 `titlebar`）。
+    fn title_bar(&mut self, ui: &mut Ui) {
         let p = Palette::of(ui.ctx());
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for (view, glyph, label) in [
-                (View::Processes, Icon::List, "进程"),
-                (View::Performance, Icon::Activity, "性能"),
-                (View::Services, Icon::Settings, "服务"),
-                (View::Startup, Icon::Rocket, "启动应用"),
-                (View::Users, Icon::Users, "用户"),
-            ] {
-                let on = self.view == view;
-                let galley = ui.painter().layout_no_wrap(
-                    label.into(),
-                    egui::FontId::new(14.0, theme::semibold()),
-                    p.text,
-                );
-                let (rect, resp) =
-                    ui.allocate_exact_size(vec2(galley.size().x + 46.0, 34.0), Sense::click());
-                if on || resp.hovered() {
-                    ui.painter().rect_filled(
-                        rect,
-                        egui::CornerRadius::same(8),
-                        if on { p.surface } else { p.hover },
-                    );
-                }
-                let fg = if on { p.text } else { p.muted };
-                widgets::icon(
-                    ui,
-                    glyph,
-                    pos2(rect.left() + 19.0, rect.center().y),
-                    16.0,
-                    if on { p.accent } else { fg },
-                );
-                ui.painter().galley(
-                    pos2(rect.left() + 32.0, rect.center().y - galley.size().y / 2.0),
-                    galley,
-                    fg,
-                );
-                if resp.clicked() {
-                    self.view = view;
-                }
+        let custom = titlebar::installed();
+        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), TITLE_H), Sense::hover());
+        let mut holes = Vec::new();
+        let mut max_button = egui::Rect::NOTHING;
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(row)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        let ui = &mut child;
+        ui.spacing_mut().item_spacing.x = 4.0;
+
+        let (mark, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+        widgets::icon(ui, Icon::Activity, mark.center(), 18.0, p.accent);
+        ui.label(
+            RichText::new("Pulse")
+                .size(13.5)
+                .family(theme::semibold())
+                .color(p.text),
+        );
+        ui.add_space(14.0);
+
+        for (view, glyph, label) in [
+            (View::Processes, Icon::List, "进程"),
+            (View::Performance, Icon::Activity, "性能"),
+            (View::Services, Icon::Settings, "服务"),
+            (View::Startup, Icon::Rocket, "启动应用"),
+            (View::Users, Icon::Users, "用户"),
+        ] {
+            let resp = tab(ui, self.view == view, glyph, label);
+            holes.push(resp.rect);
+            if resp.clicked() {
+                self.view = view;
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                self.settings_menu(ui)
-            });
+        }
+
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if custom {
+                max_button = caption_buttons(ui, &mut holes);
+                ui.add_space(8.0);
+            } else {
+                ui.add_space(20.0);
+            }
+            let resp = tab(ui, self.view == View::Settings, Icon::Settings, "设置");
+            holes.push(resp.rect);
+            if resp.clicked() {
+                self.view = View::Settings;
+            }
         });
+        if custom {
+            let caption =
+                egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(f32::INFINITY, row.bottom()));
+            titlebar::set_layout(ui.ctx(), caption, holes, max_button);
+        }
     }
 
     fn toolbar(&mut self, ui: &mut Ui) {
@@ -963,82 +979,11 @@ impl App {
         });
     }
 
-    fn settings_menu(&mut self, ui: &mut Ui) {
-        let p = Palette::of(ui.ctx());
-        let before = self.settings.clone();
-        let icon = widgets::icon_image(ui, Icon::Settings, 16.0, p.muted);
-        ui.menu_image_text_button(icon, "设置", |ui| {
-            ui.set_min_width(240.0);
-            ui.spacing_mut().item_spacing.y = 2.0;
-            widgets::submenu(ui, Icon::Timer, "更新速度", 170.0, |ui| {
-                for sp in Speed::ALL {
-                    if widgets::menu_check(ui, Icon::Check, sp.label(), self.settings.speed == sp)
-                        .clicked()
-                    {
-                        self.settings.speed = sp;
-                    }
-                }
-            });
-            widgets::submenu(ui, Icon::Monitor, "主题", 150.0, |ui| {
-                for t in ThemeChoice::ALL {
-                    if widgets::menu_check(ui, Icon::Check, t.label(), self.settings.theme == t)
-                        .clicked()
-                    {
-                        self.settings.theme = t;
-                    }
-                }
-            });
-            widgets::submenu(ui, Icon::Layers, "显示的列", 150.0, |ui| {
-                for c in table::Col::ALL {
-                    let shown = !self.settings.hidden_columns.contains(&c);
-                    if widgets::menu_check(ui, Icon::Check, c.label(), shown).clicked() {
-                        if shown {
-                            self.settings.hidden_columns.push(c);
-                        } else {
-                            self.settings.hidden_columns.retain(|&x| x != c);
-                        }
-                    }
-                }
-            });
-            if widgets::menu_check(ui, Icon::Pin, "窗口置顶", self.settings.always_on_top).clicked()
-            {
-                self.settings.always_on_top = !self.settings.always_on_top;
-            }
-            ui.separator();
-            let elevated = self.snapshot.elevated;
-            let resp = ui
-                .add_enabled_ui(elevated, |ui| {
-                    widgets::menu_check(ui, Icon::Keyboard, "替换任务管理器", self.taskmgr_replaced)
-                })
-                .inner;
-            let resp = if elevated {
-                resp.on_hover_text("Ctrl+Shift+Esc、任务栏右键的\"任务管理器\"都会打开 Pulse")
-            } else {
-                resp.on_disabled_hover_text("需要以管理员身份运行 Pulse")
-            };
-            if resp.clicked() {
-                let want = !self.taskmgr_replaced;
-                match pulse_probe::os::set_taskmgr_replaced(want) {
-                    Ok(()) => {
-                        self.taskmgr_replaced = want;
-                        let msg = if want {
-                            "已替换任务管理器：Ctrl+Shift+Esc 将打开 Pulse"
-                        } else {
-                            "已恢复系统任务管理器"
-                        };
-                        self.notify_ok(msg.into(), None);
-                    }
-                    Err(e) => self.notify_err("无法修改任务管理器设置".into(), Some(e)),
-                }
-            }
-        });
-        if self.settings != before {
-            self.apply_settings(ui.ctx(), &before);
-        }
-    }
-
     fn apply_settings(&mut self, ctx: &egui::Context, before: &Settings) {
         let s = &self.settings;
+        if s.grouped != before.grouped {
+            self.dirty = true;
+        }
         if s.speed != before.speed {
             self.interval.store(s.speed.millis(), Ordering::Relaxed);
         }
@@ -1191,21 +1136,29 @@ impl eframe::App for App {
         }
 
         let p = Palette::of(ui.ctx());
+        let custom = titlebar::installed();
         egui::Panel::top("top")
             .show_separator_line(false)
             .frame(Frame::NONE.fill(p.bg).inner_margin(Margin {
                 left: 20,
-                right: 20,
-                top: 18,
+                right: if custom { 0 } else { 20 },
+                top: if custom { 0 } else { 8 },
                 bottom: 12,
             }))
             .show(ui, |ui| {
-                self.tabs(ui);
+                self.title_bar(ui);
                 if self.view == View::Processes {
-                    ui.add_space(12.0);
-                    self.cards(ui);
-                    ui.add_space(16.0);
-                    self.toolbar(ui);
+                    Frame::NONE
+                        .inner_margin(Margin {
+                            right: if custom { 20 } else { 0 },
+                            ..Default::default()
+                        })
+                        .show(ui, |ui| {
+                            ui.add_space(4.0);
+                            self.cards(ui);
+                            ui.add_space(16.0);
+                            self.toolbar(ui);
+                        });
                 }
             });
         egui::Panel::bottom("footer")
@@ -1224,6 +1177,33 @@ impl eframe::App for App {
         match self.view {
             View::Processes => {
                 central.show(ui, |ui| self.table(ui));
+            }
+            View::Settings => {
+                let before = self.settings.clone();
+                let elevated = self.snapshot.elevated;
+                let replaced = self.taskmgr_replaced;
+                let action = central
+                    .show(ui, |ui| {
+                        settings_view::show(ui, &mut self.settings, replaced, elevated)
+                    })
+                    .inner;
+                if self.settings != before {
+                    self.apply_settings(ui.ctx(), &before);
+                }
+                if let Some(settings_view::SettingsAction::SetTaskmgrReplaced(want)) = action {
+                    match pulse_probe::os::set_taskmgr_replaced(want) {
+                        Ok(()) => {
+                            self.taskmgr_replaced = want;
+                            let msg = if want {
+                                "已替换任务管理器：Ctrl+Shift+Esc 将打开 Pulse"
+                            } else {
+                                "已恢复系统任务管理器"
+                            };
+                            self.notify_ok(msg.into(), None);
+                        }
+                        Err(e) => self.notify_err("无法修改任务管理器设置".into(), Some(e)),
+                    }
+                }
             }
             View::Users => {
                 if self
@@ -1349,6 +1329,148 @@ impl eframe::App for App {
             self.apply(&ctx, action);
         }
     }
+}
+
+/// 标题行里的页签：图标 + 文字，选中时有底色。
+fn tab(ui: &mut Ui, on: bool, glyph: Icon, label: &str) -> egui::Response {
+    let p = Palette::of(ui.ctx());
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label.into(), egui::FontId::proportional(14.0), p.text);
+    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 44.0, 32.0), Sense::click());
+    if on || resp.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(8),
+            if on { p.surface } else { p.hover },
+        );
+    }
+    let fg = if on { p.text } else { p.muted };
+    widgets::icon(
+        ui,
+        glyph,
+        pos2(rect.left() + 18.0, rect.center().y),
+        16.0,
+        if on { p.accent } else { fg },
+    );
+    ui.painter().galley(
+        pos2(rect.left() + 31.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        fg,
+    );
+    resp
+}
+
+/// 标题行高度。
+const TITLE_H: f32 = 44.0;
+
+/// 对齐到物理像素中心，让 1px 线条清晰。
+fn pixel_center(ui: &Ui, p: egui::Pos2) -> egui::Pos2 {
+    let painter = ui.painter();
+    pos2(
+        painter.round_to_pixel_center(p.x),
+        painter.round_to_pixel_center(p.y),
+    )
+}
+
+/// 自绘的最小化 / 最大化 / 关闭按钮（从右往左放），返回最大化按钮的区域。
+/// 最大化按钮的鼠标事件由系统送到非客户区，状态从 `titlebar` 读取。
+fn caption_buttons(ui: &mut Ui, holes: &mut Vec<egui::Rect>) -> egui::Rect {
+    let p = Palette::of(ui.ctx());
+    let (focused, maximized) = ui.input(|i| {
+        let v = i.viewport();
+        (v.focused.unwrap_or(true), v.maximized.unwrap_or(false))
+    });
+    let fg = if focused { p.text } else { p.faint };
+    let size = vec2(46.0, TITLE_H);
+    ui.spacing_mut().item_spacing.x = 0.0;
+    let stroke = |c| egui::Stroke::new(1.0, c);
+
+    // 关闭
+    let (close, resp) = ui.allocate_exact_size(size, Sense::click());
+    holes.push(close);
+    let hot = resp.hovered() || resp.is_pointer_button_down_on();
+    if hot {
+        let red = egui::Color32::from_rgb(0xc4, 0x2b, 0x1c);
+        let fill = if resp.is_pointer_button_down_on() {
+            red.gamma_multiply(0.85)
+        } else {
+            red
+        };
+        ui.painter()
+            .rect_filled(close, egui::CornerRadius::ZERO, fill);
+    }
+    let c = pixel_center(ui, close.center());
+    let color = if hot { egui::Color32::WHITE } else { fg };
+    for (a, b) in [
+        (vec2(-5.0, -5.0), vec2(5.0, 5.0)),
+        (vec2(-5.0, 5.0), vec2(5.0, -5.0)),
+    ] {
+        ui.painter().line_segment([c + a, c + b], stroke(color));
+    }
+    if resp.clicked() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    // 最大化 / 还原
+    let (max, _) = ui.allocate_exact_size(size, Sense::hover());
+    let (hover, pressed) = titlebar::max_button_state();
+    if hover || pressed {
+        ui.painter().rect_filled(
+            max,
+            egui::CornerRadius::ZERO,
+            if pressed { p.track } else { p.hover },
+        );
+    }
+    let c = pixel_center(ui, max.center());
+    if maximized {
+        let front = egui::Rect::from_min_size(c + vec2(-5.0, -3.0), vec2(8.0, 8.0));
+        ui.painter().rect_stroke(
+            front,
+            egui::CornerRadius::same(1),
+            stroke(fg),
+            egui::StrokeKind::Middle,
+        );
+        ui.painter().add(egui::Shape::line(
+            vec![
+                c + vec2(-3.0, -3.0),
+                c + vec2(-3.0, -5.0),
+                c + vec2(5.0, -5.0),
+                c + vec2(5.0, 3.0),
+                c + vec2(3.0, 3.0),
+            ],
+            stroke(fg),
+        ));
+    } else {
+        let r = egui::Rect::from_center_size(c, vec2(10.0, 10.0));
+        ui.painter().rect_stroke(
+            r,
+            egui::CornerRadius::same(1),
+            stroke(fg),
+            egui::StrokeKind::Middle,
+        );
+    }
+
+    // 最小化
+    let (min, resp) = ui.allocate_exact_size(size, Sense::click());
+    holes.push(min);
+    if resp.hovered() || resp.is_pointer_button_down_on() {
+        let fill = if resp.is_pointer_button_down_on() {
+            p.track
+        } else {
+            p.hover
+        };
+        ui.painter()
+            .rect_filled(min, egui::CornerRadius::ZERO, fill);
+    }
+    let c = pixel_center(ui, min.center());
+    ui.painter()
+        .line_segment([c + vec2(-5.0, 0.0), c + vec2(5.0, 0.0)], stroke(fg));
+    if resp.clicked() {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+    }
+    max
 }
 
 /// 注销 / 断开连接确认框的 (标题, 说明, 按钮)。

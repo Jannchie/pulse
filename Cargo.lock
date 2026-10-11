@@ -1898,6 +1898,8 @@ dependencies = [
  "memmap2",
  "nucleo-matcher",
  "pulse-probe",
+ "raw-window-handle",
+ "windows",
 ]
 
 [[package]]
