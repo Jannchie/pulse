@@ -87,8 +87,12 @@ pub fn semibold() -> FontFamily {
     FontFamily::Name("semibold".into())
 }
 
+/// 表格行高。滚轮一格滚 3 行，与 Windows 默认一致。
+const ROW_HEIGHT: f32 = 30.0;
+
 pub fn install(ctx: &egui::Context) {
     install_fonts(ctx);
+    ctx.options_mut(|o| o.input_options.line_scroll_speed = ROW_HEIGHT * 3.0);
     ctx.set_visuals_of(Theme::Dark, visuals(&DARK, true));
     ctx.set_visuals_of(Theme::Light, visuals(&LIGHT, false));
     ctx.all_styles_mut(|s| {
@@ -121,8 +125,26 @@ pub fn install(ctx: &egui::Context) {
         // 没有动画就保证了重绘只由真实输入触发。
         s.animation_time = 0.0;
         s.scroll_animation = egui::style::ScrollAnimation::none();
-        // 常驻滚动条：浮动滚动条悬停时有淡入动画，鼠标一动就连续重绘；而且会盖住最右一列。
-        s.spacing.scroll = egui::style::ScrollStyle::solid();
+        // 滚动条：平时 4px 细条，悬停变 8px。滑块用正文色按透明度绘制（深浅主题下与背景都 ≥ 3:1），
+        // 默认的滑块取控件底色，和窗口底色几乎一样，看不见。
+        // 预留 floating_allocated_width，滚动条不压住最右一列；animation_time 为 0，悬停变宽不会连续重绘。
+        s.spacing.scroll = egui::style::ScrollStyle {
+            floating: true,
+            bar_width: 8.0,
+            floating_width: 4.0,
+            floating_allocated_width: 10.0,
+            handle_min_length: 28.0,
+            bar_inner_margin: 2.0,
+            bar_outer_margin: 2.0,
+            foreground_color: true,
+            dormant_background_opacity: 0.0,
+            active_background_opacity: 0.0,
+            interact_background_opacity: 0.6,
+            dormant_handle_opacity: 0.5,
+            active_handle_opacity: 0.65,
+            interact_handle_opacity: 0.8,
+            ..egui::style::ScrollStyle::floating()
+        };
     });
 }
 
