@@ -149,11 +149,12 @@ pub fn confirm_kill(ctx: &egui::Context, req: &KillRequest, snap: &Snapshot) -> 
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                if button(ui, "结束进程", true).clicked() || ui.input(|i| i.key_pressed(Key::Enter))
+                if button(ui, "结束进程", Kind::Danger, true).clicked()
+                    || ui.input(|i| i.key_pressed(Key::Enter))
                 {
                     decision = Some(Decision::Confirm);
                 }
-                if button(ui, "取消", false).clicked() {
+                if button(ui, "取消", Kind::Secondary, true).clicked() {
                     decision = Some(Decision::Cancel);
                 }
                 ui.label(
@@ -179,24 +180,56 @@ fn warning(ui: &mut Ui, text: &str) {
     });
 }
 
-fn button(ui: &mut Ui, label: &str, danger: bool) -> egui::Response {
+#[derive(Clone, Copy, PartialEq)]
+pub enum Kind {
+    Primary,
+    Danger,
+    Secondary,
+}
+
+/// 白字在其上 ≥ 7:1（AAA）。
+const PRIMARY_FILL: Color32 = Color32::from_rgb(0x1e, 0x40, 0xaf);
+const PRIMARY_FILL_HOVER: Color32 = Color32::from_rgb(0x1e, 0x3a, 0x8a);
+
+pub fn button(ui: &mut Ui, label: &str, kind: Kind, enabled: bool) -> egui::Response {
     let p = Palette::of(ui.ctx());
     let galley = ui.painter().layout_no_wrap(
         label.to_string(),
         egui::FontId::new(13.0, semibold()),
         Color32::WHITE,
     );
-    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 32.0, 34.0), Sense::click());
-    let (fill, fg) = match (danger, resp.hovered()) {
-        (true, false) => (DANGER_FILL, Color32::WHITE),
-        (true, true) => (DANGER_FILL_HOVER, Color32::WHITE),
-        (false, false) => (p.track, p.text),
-        (false, true) => (p.hover, p.text),
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) =
+        ui.allocate_exact_size(vec2((galley.size().x + 32.0).max(72.0), 34.0), sense);
+    let hovered = enabled && resp.hovered();
+    let (fill, fg) = match (kind, enabled, hovered) {
+        (_, false, _) => (p.track, p.faint),
+        (Kind::Primary, _, false) => (PRIMARY_FILL, Color32::WHITE),
+        (Kind::Primary, _, true) => (PRIMARY_FILL_HOVER, Color32::WHITE),
+        (Kind::Danger, _, false) => (DANGER_FILL, Color32::WHITE),
+        (Kind::Danger, _, true) => (DANGER_FILL_HOVER, Color32::WHITE),
+        (Kind::Secondary, _, false) => (p.track, p.text),
+        (Kind::Secondary, _, true) => (p.hover, p.text),
     };
     ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
     ui.painter()
         .galley(rect.center() - galley.size() / 2.0, galley, fg);
     resp
+}
+
+/// 对话框里 egui 自带的复选框等控件：底色换成轨道色，否则和对话框底色融为一体看不见方框。
+fn dialog_widgets(ui: &mut Ui) {
+    let p = Palette::of(ui.ctx());
+    let w = &mut ui.visuals_mut().widgets;
+    w.inactive.bg_fill = p.track;
+    w.inactive.weak_bg_fill = p.track;
+    w.inactive.bg_stroke = Stroke::new(1.0, p.border);
+    w.hovered.bg_fill = p.hover;
+    w.hovered.bg_stroke = Stroke::new(1.0, p.faint);
 }
 
 // ---------------------------------------------------------------- 通知
@@ -218,6 +251,24 @@ const TOAST_TTL: Duration = Duration::from_secs(4);
 const TOAST_ERROR_TTL: Duration = Duration::from_secs(7);
 
 impl Toast {
+    pub fn ok(title: String, detail: Option<String>) -> Self {
+        Self {
+            kind: ToastKind::Success,
+            title,
+            detail,
+            at: Instant::now(),
+        }
+    }
+
+    pub fn err(title: String, detail: Option<String>) -> Self {
+        Self {
+            kind: ToastKind::Error,
+            title,
+            detail,
+            at: Instant::now(),
+        }
+    }
+
     fn ttl(&self) -> Duration {
         if self.kind == ToastKind::Error {
             TOAST_ERROR_TTL
@@ -293,4 +344,177 @@ pub fn toasts(ctx: &egui::Context, toasts: &mut Vec<Toast>) {
     {
         ctx.request_repaint_after(next);
     }
+}
+
+// ---------------------------------------------------------------- 相关性
+
+pub struct AffinityDialog {
+    pub pid: u32,
+    pub label: String,
+    pub mask: u64,
+    /// 系统允许的处理器掩码。
+    pub system: u64,
+}
+
+fn dialog_frame(p: &Palette) -> Frame {
+    Frame::NONE
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(14))
+        .inner_margin(Margin::same(20))
+        .shadow(Shadow {
+            offset: [0, 12],
+            blur: 32,
+            spread: 0,
+            color: Color32::from_black_alpha(90),
+        })
+}
+
+pub fn affinity(ctx: &egui::Context, d: &mut AffinityDialog) -> Option<Decision> {
+    let p = Palette::of(ctx);
+    let mut decision = None;
+    let modal = egui::Modal::new(Id::new("affinity"))
+        .frame(dialog_frame(&p))
+        .backdrop_color(Color32::from_black_alpha(110))
+        .show(ctx, |ui| {
+            ui.set_width(440.0);
+            dialog_widgets(ui);
+            ui.label(
+                RichText::new("处理器相关性")
+                    .size(16.0)
+                    .family(semibold())
+                    .color(p.text),
+            );
+            ui.label(
+                RichText::new(format!("允许 {} 在哪些处理器上运行", d.label))
+                    .size(12.5)
+                    .color(p.muted),
+            );
+            ui.add_space(10.0);
+            let cpus: Vec<u32> = (0..64).filter(|i| d.system & (1u64 << i) != 0).collect();
+            let cols = 6;
+            egui::Grid::new("affinity-grid")
+                .spacing(vec2(8.0, 6.0))
+                .show(ui, |ui| {
+                    for (n, i) in cpus.iter().enumerate() {
+                        let mut on = d.mask & (1u64 << i) != 0;
+                        if ui.checkbox(&mut on, format!("CPU {i}")).changed() {
+                            d.mask ^= 1u64 << i;
+                        }
+                        if (n + 1) % cols == 0 {
+                            ui.end_row();
+                        }
+                    }
+                });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.link("全选").clicked() {
+                    d.mask = d.system;
+                }
+                ui.label(
+                    RichText::new(format!(
+                        "已选 {} / {}",
+                        (d.mask & d.system).count_ones(),
+                        cpus.len()
+                    ))
+                    .size(12.0)
+                    .color(p.faint),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let valid = d.mask & d.system != 0;
+                    if button(ui, "确定", Kind::Primary, valid).clicked()
+                        || (valid && ui.input(|i| i.key_pressed(Key::Enter)))
+                    {
+                        decision = Some(Decision::Confirm);
+                    }
+                    if button(ui, "取消", Kind::Secondary, true).clicked() {
+                        decision = Some(Decision::Cancel);
+                    }
+                });
+            });
+        });
+    if decision.is_none() && modal.should_close() {
+        decision = Some(Decision::Cancel);
+    }
+    decision
+}
+
+// ---------------------------------------------------------------- 运行新任务
+
+#[derive(Default)]
+pub struct RunDialog {
+    pub command: String,
+    pub admin: bool,
+    pub error: Option<String>,
+    /// 打开后第一帧把焦点给输入框。
+    pub focused: bool,
+}
+
+pub fn run_task(ctx: &egui::Context, d: &mut RunDialog, elevated: bool) -> Option<Decision> {
+    let p = Palette::of(ctx);
+    let mut decision = None;
+    let modal = egui::Modal::new(Id::new("run-task"))
+        .frame(dialog_frame(&p))
+        .backdrop_color(Color32::from_black_alpha(110))
+        .show(ctx, |ui| {
+            ui.set_width(440.0);
+            dialog_widgets(ui);
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+                widgets::icon(ui, Icon::Plus, r.center(), 20.0, p.accent);
+                ui.label(
+                    RichText::new("运行新任务")
+                        .size(16.0)
+                        .family(semibold())
+                        .color(p.text),
+                );
+            });
+            ui.label(
+                RichText::new("输入程序、文件夹、文档或网址，Windows 会用对应的程序打开。")
+                    .size(12.5)
+                    .color(p.muted),
+            );
+            ui.add_space(8.0);
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut d.command)
+                    .hint_text(r"例如 notepad、cmd、C:\Windows、https://…")
+                    .desired_width(f32::INFINITY)
+                    .margin(Margin::symmetric(10, 8)),
+            );
+            if !d.focused {
+                edit.request_focus();
+                d.focused = true;
+            }
+            ui.add_space(6.0);
+            if elevated {
+                ui.label(
+                    RichText::new("Pulse 正以管理员身份运行，新任务也会继承管理员权限。")
+                        .size(12.0)
+                        .color(p.faint),
+                );
+            } else {
+                ui.checkbox(&mut d.admin, "以管理员身份运行");
+            }
+            if let Some(e) = &d.error {
+                ui.label(RichText::new(e).size(12.5).color(p.danger));
+            }
+            ui.add_space(10.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let ready = !d.command.trim().is_empty();
+                if button(ui, "运行", Kind::Primary, ready).clicked()
+                    || (ready && ui.input(|i| i.key_pressed(Key::Enter)))
+                {
+                    decision = Some(Decision::Confirm);
+                }
+                if button(ui, "取消", Kind::Secondary, true).clicked() {
+                    decision = Some(Decision::Cancel);
+                }
+            });
+        });
+    if decision.is_none() && modal.should_close() {
+        decision = Some(Decision::Cancel);
+    }
+    decision
 }

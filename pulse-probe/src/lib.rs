@@ -1,6 +1,7 @@
 //! 采集层：一次 `NtQuerySystemInformation(SystemProcessInformation)` 拿到全部进程，
 //! 与上一次快照做差得到 CPU / I/O / GPU / 网络速率。不依赖任何 UI。
 
+pub mod control;
 pub mod disk;
 pub mod gpu;
 pub mod icon;
@@ -23,6 +24,8 @@ use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTAT
 use windows::Win32::System::Threading::{
     ALL_PROCESSOR_GROUPS, GetActiveProcessorCount, GetSystemTimes,
 };
+
+pub use windows::core::Error as WinError;
 
 pub use os::{is_elevated, kill, relaunch_elevated, reveal_in_explorer};
 
@@ -67,6 +70,27 @@ struct RawProcessInfo {
     other_transfer_count: i64,
 }
 
+/// SYSTEM_THREAD_INFORMATION，紧跟在每个 SYSTEM_PROCESS_INFORMATION 之后，共 NumberOfThreads 个。
+#[repr(C)]
+struct RawThreadInfo {
+    kernel_time: i64,
+    user_time: i64,
+    create_time: i64,
+    wait_time: u32,
+    start_address: usize,
+    client_process: usize,
+    client_thread: usize,
+    priority: i32,
+    base_priority: i32,
+    context_switches: u32,
+    state: u32,
+    wait_reason: u32,
+}
+
+/// KTHREAD_STATE::Waiting 与 KWAIT_REASON::Suspended
+const THREAD_WAITING: u32 = 5;
+const WAIT_SUSPENDED: u32 = 5;
+
 #[derive(Clone, Debug)]
 pub struct Process {
     pub pid: u32,
@@ -100,6 +124,13 @@ pub struct Process {
     pub handles: u32,
     pub session_id: u32,
     pub create_time: i64,
+    pub priority: control::Priority,
+    /// 所有线程都被挂起（与任务管理器"已挂起"状态一致）。
+    pub suspended: bool,
+    /// 效率模式（EcoQoS）。
+    pub efficiency: bool,
+    /// 有可见主窗口的进程即"应用"。
+    pub window: Option<control::AppWindow>,
 }
 
 #[derive(Clone, Debug)]
@@ -270,6 +301,7 @@ impl Collector {
         };
 
         let mut ports = ports::listening();
+        let windows = control::app_windows();
         let mut processes = Vec::with_capacity(self.entries.len().max(256));
         let mut next = HashMap::with_capacity(self.entries.len());
         let base = self.buf.as_ptr() as *const u8;
@@ -341,6 +373,22 @@ impl Collector {
                 }
             }
 
+            let threads = unsafe {
+                std::slice::from_raw_parts(
+                    base.add(offset + size_of::<RawProcessInfo>()) as *const RawThreadInfo,
+                    raw.number_of_threads as usize,
+                )
+            };
+            let suspended = pid > 4
+                && !threads.is_empty()
+                && threads
+                    .iter()
+                    .all(|t| t.state == THREAD_WAITING && t.wait_reason == WAIT_SUSPENDED);
+            let efficiency = entry
+                .handle
+                .as_ref()
+                .is_some_and(|h| control::efficiency_mode(HANDLE(h.as_raw_handle())));
+
             if pid != 0 {
                 // pid 0 是 Idle，不展示（它的 CPU 就是空闲率）。
                 processes.push(Process {
@@ -366,6 +414,10 @@ impl Collector {
                     handles: raw.handle_count,
                     session_id: raw.session_id,
                     create_time: raw.create_time,
+                    priority: control::Priority::from_base(raw.base_priority),
+                    suspended,
+                    efficiency,
+                    window: windows.get(&pid).cloned(),
                 });
             }
             next.insert(key, entry);
@@ -578,6 +630,8 @@ mod tests {
             248
         );
         assert_eq!(size_of::<RawProcessInfo>(), 256);
+        assert_eq!(std::mem::offset_of!(RawThreadInfo, state), 68);
+        assert_eq!(size_of::<RawThreadInfo>(), 80);
     }
 
     #[test]

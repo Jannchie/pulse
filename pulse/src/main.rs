@@ -6,35 +6,29 @@ mod icons;
 mod icons_gen;
 mod model;
 mod perf;
+mod table;
 mod theme;
 mod widgets;
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{
-    self, Align, Color32, Frame, Key, Layout, Margin, Rect, RichText, Sense, Stroke, Ui, UiBuilder,
-    pos2, vec2,
-};
-use egui_extras::{Column, TableBuilder};
-use pulse_probe::ports::Proto;
+use eframe::egui::{self, Align, Frame, Key, Layout, Margin, RichText, Sense, Ui, pos2, vec2};
+use pulse_probe::control::Priority;
 use pulse_probe::{Collector, NetStatus, Snapshot};
 
-use dialogs::{Decision, KillRequest, Toast, ToastKind};
+use dialogs::{AffinityDialog, Decision, KillRequest, RunDialog, Toast};
 use gpu_panel::GpuHistory;
 use icons::Icons;
 use icons_gen::Icon;
-use model::{Metrics, Query, Row, SortKey, Table};
+use model::{Query, Row, SortKey, Table};
 use perf::{Device, Series};
 use theme::{Palette, metric};
 
 const INTERVAL: Duration = Duration::from_secs(1);
 const HISTORY: usize = 60;
-const ROW_HEIGHT: f32 = 30.0;
-const ICON: f32 = 16.0;
-/// 分组模式下为展开箭头预留的宽度，也是成员行的缩进。
-const INDENT: f32 = 16.0;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -181,7 +175,43 @@ enum Selection {
 enum Action {
     Select(Selection),
     Toggle(String),
-    Kill { pids: Vec<u32>, label: String },
+    /// 强制结束（先确认）。
+    Kill {
+        pids: Vec<u32>,
+        label: String,
+    },
+    /// 给窗口发 WM_CLOSE，让程序自己退出。
+    Close {
+        pids: Vec<u32>,
+        label: String,
+    },
+    SwitchTo(isize),
+    Suspend {
+        pids: Vec<u32>,
+        label: String,
+        resume: bool,
+    },
+    Efficiency {
+        pids: Vec<u32>,
+        label: String,
+        on: bool,
+    },
+    Priority {
+        pid: u32,
+        label: String,
+        priority: Priority,
+    },
+    Affinity {
+        pid: u32,
+        label: String,
+    },
+    Dump {
+        pid: u32,
+        name: String,
+    },
+    Properties(Arc<str>),
+    SearchOnline(String),
+    GotoServices(u32),
     Reveal(Arc<str>),
     Copy(String),
     Sort(SortKey),
@@ -208,7 +238,15 @@ struct App {
     icons: Icons,
     /// 等待用户确认的结束请求。
     pending_kill: Option<KillRequest>,
+    affinity: Option<AffinityDialog>,
+    run_task: Option<RunDialog>,
     toasts: Vec<Toast>,
+    /// 后台任务（转储等）完成后发回的通知。
+    jobs: (Sender<Toast>, Receiver<Toast>),
+    /// pid → 该进程托管的服务名。
+    services_by_pid: HashMap<u32, Vec<String>>,
+    /// 键盘导航后让表格滚动到这一行。
+    scroll_to: Option<usize>,
     /// 最近一秒内的重绘时刻，用来确认空闲时没有空转。
     passes: VecDeque<Instant>,
 }
@@ -238,7 +276,12 @@ impl App {
             selected: None,
             icons: Icons::new(ctx),
             pending_kill: None,
+            affinity: None,
+            run_task: None,
             toasts: Vec::new(),
+            jobs: channel(),
+            services_by_pid: HashMap::new(),
+            scroll_to: None,
             passes: VecDeque::new(),
         }
     }
@@ -298,6 +341,7 @@ impl App {
     }
 
     fn apply(&mut self, ctx: &egui::Context, action: Action) {
+        use pulse_probe::control;
         match action {
             Action::Select(s) => self.selected = Some(s),
             Action::Toggle(key) => {
@@ -306,11 +350,142 @@ impl App {
                 }
                 self.dirty = true;
             }
-            // 结束进程一律先弹确认框，真正执行在 `kill_confirmed`。
+            // 强制结束一律先弹确认框，真正执行在 `kill_confirmed`。
             Action::Kill { pids, label } => self.pending_kill = Some(KillRequest { pids, label }),
+            Action::Close { pids, label } => {
+                let sent: usize = pids.iter().map(|&pid| control::close_windows(pid)).sum();
+                if sent == 0 {
+                    self.notify_err(
+                        format!("无法关闭 {label}"),
+                        Some("它没有可以关闭的窗口，可以改用结束进程".into()),
+                    );
+                } else {
+                    self.notify_ok(
+                        format!("已请求 {label} 关闭"),
+                        Some("程序可能会先询问是否保存".into()),
+                    );
+                }
+            }
+            Action::SwitchTo(hwnd) => control::switch_to(hwnd),
+            Action::Suspend {
+                pids,
+                label,
+                resume,
+            } => {
+                let op = if resume {
+                    control::resume
+                } else {
+                    control::suspend
+                };
+                let verb = if resume { "恢复" } else { "挂起" };
+                self.report(
+                    pids.iter().map(|&pid| op(pid)).collect(),
+                    &format!("{verb} {label}"),
+                );
+            }
+            Action::Efficiency { pids, label, on } => {
+                let verb = if on {
+                    "为 {} 开启效率模式"
+                } else {
+                    "为 {} 关闭效率模式"
+                };
+                let results = pids
+                    .iter()
+                    .map(|&pid| control::set_efficiency_mode(pid, on))
+                    .collect();
+                self.report(results, &verb.replace("{}", &label));
+            }
+            Action::Priority {
+                pid,
+                label,
+                priority,
+            } => {
+                let r = control::set_priority(pid, priority);
+                self.report(
+                    vec![r],
+                    &format!("将 {label} 的优先级设为{}", priority.label()),
+                );
+            }
+            Action::Affinity { pid, label } => match control::affinity(pid) {
+                Ok((mask, system)) => {
+                    self.affinity = Some(AffinityDialog {
+                        pid,
+                        label,
+                        mask,
+                        system,
+                    })
+                }
+                Err(e) => {
+                    self.notify_err(format!("无法读取 {label} 的相关性"), Some(error_text(&e)))
+                }
+            },
+            Action::Dump { pid, name } => {
+                self.notify_ok(
+                    format!("正在为 {name} 创建转储文件…"),
+                    Some("完整内存转储可能需要几秒到几十秒".into()),
+                );
+                let tx = self.jobs.0.clone();
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let toast = match control::create_dump(pid, &name) {
+                        Ok(path) => {
+                            let path = path.to_string_lossy().to_string();
+                            pulse_probe::reveal_in_explorer(&path);
+                            Toast::ok(format!("已为 {name} 创建转储文件"), Some(path))
+                        }
+                        Err(e) => {
+                            Toast::err(format!("无法为 {name} 创建转储文件"), Some(error_text(&e)))
+                        }
+                    };
+                    let _ = tx.send(toast);
+                    ctx.request_repaint();
+                });
+            }
+            Action::Properties(path) => control::show_properties(&path),
+            Action::SearchOnline(name) => control::search_online(&name),
+            Action::GotoServices(pid) => self.goto_services(pid),
             Action::Reveal(path) => pulse_probe::reveal_in_explorer(&path),
             Action::Copy(text) => ctx.copy_text(text),
             Action::Sort(key) => self.set_sort(key),
+        }
+    }
+
+    /// 服务页尚未接入前，先用搜索定位到托管这些服务的进程。
+    fn goto_services(&mut self, pid: u32) {
+        self.filter = pid.to_string();
+        self.dirty = true;
+    }
+
+    fn notify_ok(&mut self, title: String, detail: Option<String>) {
+        self.toasts.push(Toast::ok(title, detail));
+    }
+
+    fn notify_err(&mut self, title: String, detail: Option<String>) {
+        self.toasts.push(Toast::err(title, detail));
+    }
+
+    /// 把一批操作结果汇总成一条通知。
+    fn report(&mut self, results: Vec<pulse_probe::control::Result<()>>, what: &str) {
+        let failures: Vec<_> = results.iter().filter_map(|r| r.as_ref().err()).collect();
+        match failures.first() {
+            None => self.notify_ok(format!("已{what}"), None),
+            Some(e) if failures.len() == results.len() => {
+                let detail = self.denied_hint(error_text(e), e);
+                self.notify_err(format!("无法{what}"), Some(detail));
+            }
+            Some(e) => {
+                let detail = self.denied_hint(error_text(e), e);
+                self.notify_err(format!("{what}：{} 个失败", failures.len()), Some(detail));
+            }
+        }
+    }
+
+    fn denied_hint(&self, msg: String, e: &pulse_probe::WinError) -> String {
+        // E_ACCESSDENIED
+        if e.code().0 == 0x8007_0005_u32 as i32 && !self.snapshot.elevated {
+            format!("{msg}。以管理员身份重启 Pulse 后再试。")
+        } else {
+            msg
         }
     }
 
@@ -338,26 +513,80 @@ impl App {
             }
         });
         let toast = match failures.len() {
-            0 => Toast {
-                kind: ToastKind::Success,
-                title: format!("已结束 {}", req.label),
-                detail: None,
-                at: Instant::now(),
-            },
-            n if n == req.pids.len() => Toast {
-                kind: ToastKind::Error,
-                title: format!("无法结束 {}", req.label),
-                detail: reason,
-                at: Instant::now(),
-            },
-            n => Toast {
-                kind: ToastKind::Error,
-                title: format!("{} 中有 {n} 个未能结束", req.label),
-                detail: reason,
-                at: Instant::now(),
-            },
+            0 => Toast::ok(format!("已结束 {}", req.label), None),
+            n if n == req.pids.len() => Toast::err(format!("无法结束 {}", req.label), reason),
+            n => Toast::err(format!("{} 中有 {n} 个未能结束", req.label), reason),
         };
         self.toasts.push(toast);
+    }
+
+    /// ↑/↓ 移动选中行，Home/End 跳到首尾，Enter 展开分组或切换到应用窗口。
+    fn keyboard(&mut self, ui: &Ui) {
+        let (up, down, home, end, enter) = ui.input(|i| {
+            (
+                i.key_pressed(Key::ArrowUp),
+                i.key_pressed(Key::ArrowDown),
+                i.key_pressed(Key::Home),
+                i.key_pressed(Key::End),
+                i.key_pressed(Key::Enter),
+            )
+        });
+        if !(up || down || home || end || enter) {
+            return;
+        }
+        let selectable: Vec<(usize, Selection)> = self
+            .table
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| match *r {
+                Row::Group(gi) => Some((i, Selection::Group(self.table.groups[gi].key.clone()))),
+                Row::Member(pi) | Row::Single(pi) => {
+                    Some((i, Selection::Process(self.snapshot.processes[pi].pid)))
+                }
+                Row::Section(..) => None,
+            })
+            .collect();
+        if selectable.is_empty() {
+            return;
+        }
+        let current = self
+            .selected
+            .as_ref()
+            .and_then(|s| selectable.iter().position(|(_, x)| x == s));
+        if enter {
+            match &self.selected {
+                Some(Selection::Group(key)) => {
+                    let ctx = ui.ctx().clone();
+                    self.apply(&ctx, Action::Toggle(key.clone()));
+                }
+                Some(Selection::Process(pid)) => {
+                    if let Some(w) = self
+                        .snapshot
+                        .processes
+                        .iter()
+                        .find(|p| p.pid == *pid)
+                        .and_then(|p| p.window.as_ref())
+                    {
+                        pulse_probe::control::switch_to(w.hwnd);
+                    }
+                }
+                None => {}
+            }
+            return;
+        }
+        let last = selectable.len() - 1;
+        let next = match (current, up, down, home, end) {
+            (_, _, _, true, _) => 0,
+            (_, _, _, _, true) => last,
+            (None, ..) => 0,
+            (Some(c), true, ..) => c.saturating_sub(1),
+            (Some(c), _, true, ..) => (c + 1).min(last),
+            (Some(c), ..) => c,
+        };
+        let (row, sel) = selectable[next].clone();
+        self.selected = Some(sel);
+        self.scroll_to = Some(row);
     }
 
     fn cards(&mut self, ui: &mut Ui) {
@@ -505,6 +734,9 @@ impl App {
                     let ctx = ui.ctx().clone();
                     self.apply(&ctx, Action::Kill { pids, label });
                 }
+                if widgets::tool_button(ui, Icon::Plus, "运行新任务", true, false).clicked() {
+                    self.run_task = Some(RunDialog::default());
+                }
                 if !elevated
                     && widgets::tool_button(ui, Icon::Shield, "以管理员身份重启", true, false)
                         .on_hover_text("启用逐进程网络统计，并允许结束更多系统进程")
@@ -541,557 +773,25 @@ impl App {
     }
 
     fn table(&mut self, ui: &mut Ui) {
-        let p = Palette::of(ui.ctx());
-        let mut actions = Vec::new();
-        let Self {
-            icons,
-            table,
-            snapshot,
-            selected,
-            sort,
-            descending,
-            grouped,
-            ..
-        } = self;
-        let procs = &snapshot.processes;
-        let cores = snapshot.cpu_count.max(1) as f32;
-        let net_ok = snapshot.net_status == NetStatus::Running;
-        let grouped = *grouped;
-        // Row 里存的是下标，这里给"单个进程"借出一个可切片的下标数组。
-        let procs_index: Vec<usize> = (0..procs.len()).collect();
-
-        ui.spacing_mut().item_spacing = vec2(12.0, 0.0);
-        let cols = Col::visible(ui.available_width(), ui.spacing().item_spacing.x);
-        let mut builder = TableBuilder::new(ui)
-            .striped(false)
-            .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::remainder().at_least(Col::MIN_NAME).clip(true));
-        for c in &cols {
-            builder = builder.column(Column::exact(c.width()));
-        }
-        builder
-            .header(34.0, |mut h| {
-                let header = std::iter::once(("名称", SortKey::Name, false))
-                    .chain(cols.iter().map(|c| (c.label(), c.key(), true)));
-                for (label, key, right) in header {
-                    h.col(|ui| {
-                        let r = ui.max_rect();
-                        ui.painter().hline(
-                            r.x_range().expand(6.0),
-                            r.bottom() - 0.5,
-                            Stroke::new(1.0, p.border),
-                        );
-                        let active = *sort == key;
-                        let text = RichText::new(label).size(12.0).color(if active {
-                            p.text
-                        } else {
-                            p.muted
-                        });
-                        let layout = if right {
-                            Layout::right_to_left(Align::Center)
-                        } else {
-                            Layout::left_to_right(Align::Center)
-                        };
-                        ui.with_layout(layout, |ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            if !right {
-                                ui.add_space(4.0);
-                            }
-                            let arrow = |ui: &mut Ui| {
-                                if active {
-                                    let (r, _) =
-                                        ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                                    let glyph = if *descending {
-                                        Icon::ArrowDown
-                                    } else {
-                                        Icon::ArrowUp
-                                    };
-                                    widgets::icon(ui, glyph, r.center(), 13.0, p.text);
-                                }
-                            };
-                            // 右对齐列里箭头在最右侧，先放。
-                            if right {
-                                arrow(ui);
-                            }
-                            let mut resp = ui.add(egui::Label::new(text).sense(Sense::click()));
-                            if !right {
-                                arrow(ui);
-                            }
-                            if key == SortKey::Network && !net_ok {
-                                resp = resp.on_hover_text("逐进程网络统计需要管理员权限");
-                            }
-                            if resp
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
-                                actions.push(Action::Sort(key));
-                            }
-                        });
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(ROW_HEIGHT, table.rows.len(), |mut row| {
-                    let index = row.index();
-                    let r = table.rows[index];
-                    let (name, metrics, path, indent, sel, count) = match r {
-                        Row::Group(gi) => {
-                            let g = &table.groups[gi];
-                            let path = g.members.iter().find_map(|&i| procs[i].path.clone());
-                            (
-                                g.name.as_str(),
-                                g.metrics,
-                                path,
-                                0.0,
-                                Selection::Group(g.key.clone()),
-                                Some(g.members.len()),
-                            )
-                        }
-                        Row::Member(i) | Row::Single(i) => {
-                            let pr = &procs[i];
-                            let indent = match (r, grouped) {
-                                (Row::Member(_), _) => INDENT * 2.0,
-                                (_, true) => INDENT,
-                                _ => 0.0,
-                            };
-                            (
-                                pr.name.as_str(),
-                                Metrics::of(pr),
-                                pr.path.clone(),
-                                indent,
-                                Selection::Process(pr.pid),
-                                None,
-                            )
-                        }
-                    };
-                    row.set_selected(selected.as_ref() == Some(&sel));
-                    let members: &[usize] = match r {
-                        Row::Group(gi) => &table.groups[gi].members,
-                        Row::Member(i) | Row::Single(i) => std::slice::from_ref(&procs_index[i]),
-                    };
-                    // 分组里的成员共用同一个描述，改为显示命令行摘要，才看得出各自在跑什么（vite.js、main.js…）。
-                    let secondary: Option<String> = match r {
-                        Row::Member(i) => procs[i].command_line.as_deref().and_then(cmd_summary),
-                        _ => None,
-                    }
-                    .or_else(|| {
-                        members
-                            .iter()
-                            .find_map(|&i| procs[i].description.clone())
-                            .filter(|d| !same_name(d, name))
-                            .map(|d| d.to_string())
-                    });
-                    let mut tcp: Vec<u16> = members
-                        .iter()
-                        .flat_map(|&i| {
-                            procs[i]
-                                .ports
-                                .iter()
-                                .filter(|x| x.proto == Proto::Tcp)
-                                .map(|x| x.port)
-                        })
-                        .collect();
-                    tcp.sort_unstable();
-                    tcp.dedup();
-
-                    row.col(|ui| {
-                        let rect = ui.max_rect();
-                        let cy = rect.center().y;
-                        let mut x = rect.left() + 4.0 + indent;
-                        if count.is_some() {
-                            widgets::chevron(
-                                ui,
-                                pos2(x + 6.0, cy),
-                                is_expanded(table, index),
-                                p.muted,
-                            );
-                            x += INDENT;
-                        }
-                        let icon_rect =
-                            Rect::from_min_size(pos2(x, cy - ICON / 2.0), vec2(ICON, ICON));
-                        match path.as_ref().and_then(|path| icons.get(path)) {
-                            Some(tex) => {
-                                ui.painter().image(
-                                    tex.id(),
-                                    icon_rect,
-                                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                                    Color32::WHITE,
-                                );
-                            }
-                            None => widgets::avatar(ui.painter(), icon_rect, name),
-                        }
-                        x += ICON + 10.0;
-                        let text_rect =
-                            Rect::from_min_max(pos2(x, rect.top()), rect.right_bottom());
-                        // 右侧先放端口标签，剩下的空间给名称和描述，描述过长时截断。
-                        ui.scope_builder(
-                            UiBuilder::new()
-                                .max_rect(text_rect)
-                                .layout(Layout::right_to_left(Align::Center)),
-                            |ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                // 至少给名称留 140px，剩下的空间每 ~54px 放一个端口标签，最多 3 个。
-                                let max_chips =
-                                    ((text_rect.width() - 140.0) / 54.0).floor().clamp(0.0, 3.0)
-                                        as usize;
-                                if tcp.len() > max_chips {
-                                    ui.label(
-                                        RichText::new(format!("+{}", tcp.len() - max_chips))
-                                            .size(11.0)
-                                            .color(p.faint),
-                                    );
-                                }
-                                for port in tcp.iter().take(max_chips).rev() {
-                                    widgets::port_chip(ui, *port);
-                                }
-                                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                    ui.spacing_mut().item_spacing.x = 6.0;
-                                    ui.add(
-                                        egui::Label::new(RichText::new(name).color(p.text))
-                                            .truncate(),
-                                    );
-                                    if let Some(n) = count {
-                                        ui.label(
-                                            RichText::new(format!("{n}")).size(11.5).color(p.faint),
-                                        );
-                                    }
-                                    if let Some(d) = &secondary {
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(d).size(12.0).color(p.faint),
-                                            )
-                                            .truncate(),
-                                        );
-                                    }
-                                });
-                            },
-                        );
-                    });
-                    for c in &cols {
-                        row.col(|ui| match c {
-                            Col::Pid => {
-                                let text = match &sel {
-                                    Selection::Process(pid) => pid.to_string(),
-                                    Selection::Group(_) => String::new(),
-                                };
-                                right(ui, RichText::new(text).color(p.faint));
-                            }
-                            Col::Cpu => {
-                                // 两个核心满载即视为最热，否则多核机器上永远看不出颜色。
-                                widgets::heat(ui, metrics.cpu * cores / 200.0, metric::CPU);
-                                right(
-                                    ui,
-                                    value(&p, format!("{:.1}%", metrics.cpu), metrics.cpu < 0.05),
-                                );
-                            }
-                            Col::CpuTime => {
-                                // 不足 1 秒的视为几乎没用过 CPU，淡显。
-                                let t = metrics.cpu_time;
-                                right(ui, value(&p, fmt_cpu_time(t), t < 10_000_000));
-                            }
-                            Col::Memory => {
-                                widgets::heat(
-                                    ui,
-                                    metrics.memory as f32 / (4u64 << 30) as f32,
-                                    metric::MEMORY,
-                                );
-                                right(ui, value(&p, fmt_bytes(metrics.memory), false));
-                            }
-                            Col::Gpu => {
-                                widgets::heat(ui, metrics.gpu / 60.0, metric::GPU);
-                                right(
-                                    ui,
-                                    value(&p, format!("{:.1}%", metrics.gpu), metrics.gpu < 0.05),
-                                );
-                            }
-                            Col::Vram => {
-                                widgets::heat(
-                                    ui,
-                                    metrics.vram as f32 / (4u64 << 30) as f32,
-                                    metric::GPU,
-                                );
-                                let text = if metrics.vram == 0 {
-                                    "—".to_string()
-                                } else {
-                                    fmt_bytes(metrics.vram)
-                                };
-                                right(ui, value(&p, text, metrics.vram == 0));
-                            }
-                            Col::Disk => {
-                                widgets::heat(ui, metrics.disk as f32 / 50e6, metric::DISK);
-                                right(ui, value(&p, fmt_rate(metrics.disk), metrics.disk == 0));
-                            }
-                            Col::Network if net_ok => {
-                                widgets::heat(ui, metrics.net() as f32 / 10e6, metric::NETWORK);
-                                right(ui, value(&p, fmt_rate(metrics.net()), metrics.net() == 0));
-                            }
-                            Col::Network => right(ui, RichText::new("—").color(p.faint)),
-                        });
-                    }
-
-                    let resp = row.response();
-                    if resp.clicked() || resp.secondary_clicked() {
-                        actions.push(Action::Select(sel.clone()));
-                        if let (true, Selection::Group(key)) = (resp.clicked(), &sel) {
-                            actions.push(Action::Toggle(key.clone()));
-                        }
-                    }
-                    resp.context_menu(|ui| {
-                        ui.set_min_width(220.0);
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        let heading = |ui: &mut Ui, t: String| {
-                            ui.add_space(2.0);
-                            ui.label(RichText::new(t).size(12.0).color(p.muted));
-                            ui.add_space(2.0);
-                        };
-                        match (&sel, count) {
-                            (Selection::Group(key), Some(n)) => {
-                                heading(ui, format!("{name} · {n} 个进程"));
-                                if widgets::menu_item(
-                                    ui,
-                                    Icon::OctagonX,
-                                    &format!("结束全部 {n} 个进程"),
-                                    true,
-                                )
-                                .clicked()
-                                {
-                                    let pids = procs
-                                        .iter()
-                                        .filter(|p| p.name.to_lowercase() == *key)
-                                        .map(|p| p.pid)
-                                        .collect();
-                                    actions.push(Action::Kill {
-                                        pids,
-                                        label: format!("{name} 的 {n} 个进程"),
-                                    });
-                                }
-                            }
-                            (Selection::Process(pid), _) => {
-                                heading(ui, format!("{name} · {pid}"));
-                                if widgets::menu_item(ui, Icon::OctagonX, "结束进程", true)
-                                    .clicked()
-                                {
-                                    actions.push(Action::Kill {
-                                        pids: vec![*pid],
-                                        label: format!("{name} ({pid})"),
-                                    });
-                                }
-                                let tree = model::descendants(snapshot, *pid);
-                                if tree.len() > 1
-                                    && widgets::menu_item(
-                                        ui,
-                                        Icon::GitBranch,
-                                        &format!("结束进程树（{} 个）", tree.len()),
-                                        true,
-                                    )
-                                    .clicked()
-                                {
-                                    // 先结束子进程，避免父进程退出后孩子被重新托管。
-                                    let pids = tree.into_iter().rev().collect();
-                                    actions.push(Action::Kill {
-                                        pids,
-                                        label: format!("{name} 及其子进程"),
-                                    });
-                                }
-                                ui.separator();
-                                if widgets::menu_item(ui, Icon::Hash, "复制 PID", false).clicked()
-                                {
-                                    actions.push(Action::Copy(pid.to_string()));
-                                }
-                            }
-                            _ => {}
-                        }
-                        let cmd = members.first().and_then(|&i| procs[i].command_line.clone());
-                        if let (Selection::Process(_), Some(cmd)) = (&sel, cmd)
-                            && widgets::menu_item(ui, Icon::Terminal, "复制命令行", false).clicked()
-                        {
-                            actions.push(Action::Copy(cmd.to_string()));
-                        }
-                        if !tcp.is_empty()
-                            && widgets::menu_item(ui, Icon::Plug, "复制监听端口", false).clicked()
-                        {
-                            actions.push(Action::Copy(
-                                tcp.iter()
-                                    .map(u16::to_string)
-                                    .collect::<Vec<_>>()
-                                    .join(", "),
-                            ));
-                        }
-                        if let Some(path) = &path {
-                            if matches!(sel, Selection::Group(_)) {
-                                ui.separator();
-                            }
-                            if widgets::menu_item(ui, Icon::Copy, "复制路径", false).clicked() {
-                                actions.push(Action::Copy(path.to_string()));
-                            }
-                            if widgets::menu_item(ui, Icon::FolderOpen, "打开文件位置", false)
-                                .clicked()
-                            {
-                                actions.push(Action::Reveal(path.clone()));
-                            }
-                        }
-                    });
-                    if let Selection::Process(pid) = sel
-                        && let Some(pr) = procs.iter().find(|p| p.pid == pid)
-                    {
-                        resp.on_hover_ui(|ui| {
-                            ui.set_max_width(520.0);
-                            let small = |t: String| RichText::new(t).size(11.5).color(p.muted);
-                            ui.label(RichText::new(&pr.name).strong());
-                            if let Some(d) = &pr.description {
-                                ui.label(small(d.to_string()));
-                            }
-                            ui.label(small(format!(
-                                "PID {} · 线程 {} · 句柄 {}",
-                                pr.pid, pr.threads, pr.handles
-                            )));
-                            ui.label(small(format!(
-                                "已运行 {} · CPU 时间 {}（用户 {} · 内核 {}）",
-                                fmt_uptime(pr.create_time),
-                                fmt_cpu_time(pr.user_time + pr.kernel_time),
-                                fmt_cpu_time(pr.user_time),
-                                fmt_cpu_time(pr.kernel_time),
-                            )));
-                            if pr.gpu_dedicated + pr.gpu_shared > 0 {
-                                ui.label(small(format!(
-                                    "显存 {} · 共享 GPU 内存 {}",
-                                    fmt_bytes(pr.gpu_dedicated),
-                                    fmt_bytes(pr.gpu_shared)
-                                )));
-                            }
-                            let fmt_ports = |proto: Proto| {
-                                pr.ports
-                                    .iter()
-                                    .filter(|x| x.proto == proto)
-                                    .map(|x| x.port.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            };
-                            let (t, u) = (fmt_ports(Proto::Tcp), fmt_ports(Proto::Udp));
-                            if !t.is_empty() {
-                                ui.label(small(format!("监听 TCP {t}")));
-                            }
-                            if !u.is_empty() {
-                                ui.label(small(format!("UDP {u}")));
-                            }
-                            if net_ok && pr.net_rx + pr.net_tx > 0 {
-                                ui.label(small(format!(
-                                    "↓ {}/s  ↑ {}/s",
-                                    fmt_bytes(pr.net_rx),
-                                    fmt_bytes(pr.net_tx)
-                                )));
-                            }
-                            if let Some(cmd) = &pr.command_line {
-                                ui.add_space(4.0);
-                                let cmd: String = cmd.chars().take(600).collect();
-                                ui.label(RichText::new(cmd).monospace().size(11.0).color(p.text));
-                            } else if let Some(path) = &pr.path {
-                                ui.label(small(path.to_string()));
-                            }
-                        });
-                    }
-                });
-            });
-
+        let actions = table::show(
+            ui,
+            table::View {
+                snapshot: &self.snapshot,
+                table: &self.table,
+                selected: self.selected.as_ref(),
+                sort: self.sort,
+                descending: self.descending,
+                grouped: self.grouped,
+                icons: &mut self.icons,
+                scroll_to: self.scroll_to.take(),
+                services: &self.services_by_pid,
+            },
+        );
         let ctx = ui.ctx().clone();
         for a in actions {
             self.apply(&ctx, a);
         }
     }
-}
-
-/// 表格里的数值列。宽度不够时按优先级从低到高依次隐藏，保证名称列至少 `MIN_NAME` 宽。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Col {
-    Pid,
-    Cpu,
-    CpuTime,
-    Memory,
-    Gpu,
-    Vram,
-    Disk,
-    Network,
-}
-
-impl Col {
-    const ALL: [Col; 8] = [
-        Col::Pid,
-        Col::Cpu,
-        Col::CpuTime,
-        Col::Memory,
-        Col::Gpu,
-        Col::Vram,
-        Col::Disk,
-        Col::Network,
-    ];
-    const MIN_NAME: f32 = 260.0;
-
-    fn width(self) -> f32 {
-        match self {
-            Col::Pid | Col::Gpu => 52.0,
-            Col::Cpu => 56.0,
-            Col::CpuTime | Col::Vram => 72.0,
-            Col::Memory => 76.0,
-            Col::Disk | Col::Network => 80.0,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Col::Pid => "PID",
-            Col::Cpu => "CPU",
-            Col::CpuTime => "CPU 时间",
-            Col::Memory => "内存",
-            Col::Gpu => "GPU",
-            Col::Vram => "显存",
-            Col::Disk => "磁盘",
-            Col::Network => "网络",
-        }
-    }
-
-    fn key(self) -> SortKey {
-        match self {
-            Col::Pid => SortKey::Pid,
-            Col::Cpu => SortKey::Cpu,
-            Col::CpuTime => SortKey::CpuTime,
-            Col::Memory => SortKey::Memory,
-            Col::Gpu => SortKey::Gpu,
-            Col::Vram => SortKey::GpuMemory,
-            Col::Disk => SortKey::Disk,
-            Col::Network => SortKey::Network,
-        }
-    }
-
-    /// 越小越先被隐藏。
-    fn priority(self) -> u8 {
-        match self {
-            Col::CpuTime => 0,
-            Col::Pid => 1,
-            Col::Disk => 2,
-            Col::Vram => 3,
-            Col::Gpu => 4,
-            Col::Network => 5,
-            Col::Memory => 6,
-            Col::Cpu => 7,
-        }
-    }
-
-    fn visible(available: f32, spacing: f32) -> Vec<Col> {
-        let mut cols = Col::ALL.to_vec();
-        let name_width =
-            |cols: &[Col]| available - cols.iter().map(|c| c.width() + spacing).sum::<f32>();
-        while name_width(&cols) < Col::MIN_NAME && cols.len() > 2 {
-            let drop = *cols.iter().min_by_key(|c| c.priority()).unwrap();
-            cols.retain(|&c| c != drop);
-        }
-        cols
-    }
-}
-
-/// 分组行之后紧跟成员行即视为已展开（搜索时会自动展开）。
-fn is_expanded(table: &Table, index: usize) -> bool {
-    matches!(table.rows.get(index + 1), Some(Row::Member(_)))
 }
 
 impl eframe::App for App {
@@ -1247,13 +947,47 @@ impl eframe::App for App {
                 None => {}
             }
         }
+        if let Some(d) = &mut self.affinity {
+            match dialogs::affinity(&ctx, d) {
+                Some(Decision::Confirm) => {
+                    let d = self.affinity.take().unwrap();
+                    let r = pulse_probe::control::set_affinity(d.pid, d.mask);
+                    self.report(vec![r], &format!("设置 {} 的相关性", d.label));
+                }
+                Some(Decision::Cancel) => self.affinity = None,
+                None => {}
+            }
+        }
+        if let Some(d) = &mut self.run_task {
+            match dialogs::run_task(&ctx, d, self.snapshot.elevated) {
+                Some(Decision::Confirm) => match pulse_probe::control::run(&d.command, d.admin) {
+                    Ok(()) => {
+                        let cmd = d.command.trim().to_string();
+                        self.run_task = None;
+                        self.notify_ok(format!("已运行 {cmd}"), None);
+                    }
+                    Err(e) => d.error = Some(e),
+                },
+                Some(Decision::Cancel) => self.run_task = None,
+                None => {}
+            }
+        }
+        while let Ok(t) = self.jobs.1.try_recv() {
+            self.toasts.push(t);
+        }
         dialogs::toasts(&ctx, &mut self.toasts);
+        let modal_open =
+            self.pending_kill.is_some() || self.affinity.is_some() || self.run_task.is_some();
+        if self.view == View::Processes && !modal_open && ui.ctx().memory(|m| m.focused().is_none())
+        {
+            self.keyboard(ui);
+        }
 
         // Delete 结束选中项；输入框有焦点或确认框打开时不响应，免得删字时误杀进程。
         let nothing_focused = ui.ctx().memory(|m| m.focused().is_none());
         if nothing_focused
             && self.view == View::Processes
-            && self.pending_kill.is_none()
+            && !modal_open
             && ui.input(|i| i.key_pressed(Key::Delete))
             && let Some((pids, label)) = self.selected_pids()
         {
@@ -1261,14 +995,6 @@ impl eframe::App for App {
             self.apply(&ctx, Action::Kill { pids, label });
         }
     }
-}
-
-fn right(ui: &mut Ui, text: RichText) {
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(text));
-}
-
-fn value(p: &Palette, text: String, zero: bool) -> RichText {
-    RichText::new(text).color(if zero { p.faint } else { p.text })
 }
 
 /// 描述与 exe 名只差扩展名或大小写时不重复显示（如 "Notepad" 与 notepad.exe）。
@@ -1310,6 +1036,16 @@ fn cmd_summary(cmd: &str) -> Option<String> {
         })
         .collect();
     (!summary.is_empty()).then(|| summary.join(" "))
+}
+
+/// 系统错误的可读描述（为空时退回错误码）。
+fn error_text(e: &pulse_probe::WinError) -> String {
+    let msg = e.message().trim().trim_end_matches('。').to_string();
+    if msg.is_empty() {
+        format!("错误 0x{:08X}", e.code().0)
+    } else {
+        msg
+    }
 }
 
 fn fmt_bytes(b: u64) -> String {
@@ -1366,7 +1102,7 @@ fn fmt_rate(b: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Col, cmd_summary};
+    use super::cmd_summary;
 
     #[test]
     fn summarizes_command_lines() {
@@ -1384,17 +1120,5 @@ mod tests {
             Some(r"-m http.server --dir=C:\www")
         );
         assert_eq!(cmd_summary(r"C:\Windows\explorer.exe"), None);
-    }
-
-    #[test]
-    fn columns_hide_by_priority() {
-        let all = Col::visible(2000.0, 12.0);
-        assert_eq!(all.len(), Col::ALL.len());
-        // 变窄时先藏 CPU 时间，再藏 PID、磁盘；CPU 与内存始终保留。
-        let narrow = Col::visible(800.0, 12.0);
-        assert!(!narrow.contains(&Col::CpuTime));
-        assert!(narrow.contains(&Col::Cpu) && narrow.contains(&Col::Memory));
-        let tiny = Col::visible(300.0, 12.0);
-        assert_eq!(tiny, vec![Col::Cpu, Col::Memory]);
     }
 }

@@ -669,7 +669,49 @@ pub fn menu_item(ui: &mut Ui, glyph: Icon, label: &str, danger: bool) -> Respons
     resp
 }
 
+/// 带勾选标记的菜单项（勾在右侧）。
+pub fn menu_check(ui: &mut Ui, glyph: Icon, label: &str, checked: bool) -> Response {
+    let p = Palette::of(ui.ctx());
+    let resp = menu_item(ui, glyph, label, false);
+    if checked {
+        icon(
+            ui,
+            Icon::Check,
+            pos2(resp.rect.right() - 14.0, resp.rect.center().y),
+            14.0,
+            p.accent,
+        );
+    }
+    resp
+}
+
+/// 供 egui 原生控件（如子菜单按钮）使用的图标图片。
+pub fn icon_image(ui: &Ui, glyph: Icon, size: f32, color: Color32) -> egui::Image<'static> {
+    let ppp = ui.ctx().pixels_per_point();
+    let px = ((size * ppp).round() as u32).clamp(PX_MIN, PX_MAX);
+    let side = px as f32 / ppp;
+    egui::Image::from_bytes(
+        format!("bytes://icon/{}@{px}.svg", glyph.name()),
+        glyph.svg(px).as_bytes(),
+    )
+    .tint(color)
+    .fit_to_exact_size(vec2(side, side))
+}
+
 // ---------------------------------------------------------------- 表格
+
+/// 进程名旁的状态标签（"已挂起"、"无响应"）。
+pub fn status_chip(ui: &mut Ui, text: &str, color: Color32) {
+    let p = Palette::of(ui.ctx());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), FontId::proportional(11.0), color);
+    let (rect, _) = ui.allocate_exact_size(vec2(galley.size().x + 12.0, 18.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(5), p.track);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, color);
+}
 
 /// 进程名旁的端口小标签。
 pub fn port_chip(ui: &mut Ui, port: u16) {

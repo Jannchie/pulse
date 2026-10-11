@@ -86,6 +86,23 @@ pub enum Row {
     Member(usize),
     /// 独立进程（未分组模式，或分组只有一个成员）。
     Single(usize),
+    /// 分段标题："应用"或"后台进程"，附带条目数。
+    Section(Section, usize),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Section {
+    Apps,
+    Background,
+}
+
+impl Section {
+    pub fn label(self) -> &'static str {
+        match self {
+            Section::Apps => "应用",
+            Section::Background => "后台进程",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -371,17 +388,31 @@ pub fn build(snap: &Snapshot, q: &Query) -> Table {
             .then_with(|| cmp((ka.0, ka.1, &ka.2), (kb.0, kb.1, &kb.2)))
     });
 
-    let mut rows = Vec::with_capacity(procs.len());
-    for gi in order {
-        let g = &groups[gi];
-        if g.members.len() == 1 {
-            rows.push(Row::Single(g.members[0]));
+    // 与任务管理器一样分成"应用"（有可见主窗口）与"后台进程"两段，段内保持排序。
+    let is_app = |gi: &usize| {
+        groups[*gi]
+            .members
+            .iter()
+            .any(|&i| procs[i].window.is_some())
+    };
+    let (apps, background): (Vec<usize>, Vec<usize>) = order.into_iter().partition(is_app);
+    let mut rows = Vec::with_capacity(procs.len() + 2);
+    for (section, list) in [(Section::Apps, apps), (Section::Background, background)] {
+        if list.is_empty() {
             continue;
         }
-        rows.push(Row::Group(gi));
-        // 搜索时自动展开，方便直接看到匹配的进程。
-        if searching || q.expanded.contains(&g.key) {
-            rows.extend(g.members.iter().map(|&i| Row::Member(i)));
+        rows.push(Row::Section(section, list.len()));
+        for gi in list {
+            let g = &groups[gi];
+            if g.members.len() == 1 {
+                rows.push(Row::Single(g.members[0]));
+                continue;
+            }
+            rows.push(Row::Group(gi));
+            // 搜索时自动展开，方便直接看到匹配的进程。
+            if searching || q.expanded.contains(&g.key) {
+                rows.extend(g.members.iter().map(|&i| Row::Member(i)));
+            }
         }
     }
     Table { groups, rows }
@@ -448,6 +479,10 @@ mod tests {
             handles: 1,
             session_id: 1,
             create_time: 0,
+            priority: pulse_probe::control::Priority::Normal,
+            suspended: false,
+            efficiency: false,
+            window: None,
         }
     }
 
@@ -470,7 +505,7 @@ mod tests {
             .iter()
             .map(|r| match r {
                 Row::Single(i) | Row::Member(i) => snap.processes[*i].pid,
-                Row::Group(_) => 0,
+                Row::Group(_) | Row::Section(..) => 0,
             })
             .collect()
     }
@@ -522,6 +557,33 @@ mod tests {
     fn fzf_syntax() {
         assert!(!search(sample(), "!svchost").contains(&5173));
         assert_eq!(search(sample(), "^code"), vec![100]);
+    }
+
+    #[test]
+    fn apps_section_comes_first() {
+        let mut procs = sample();
+        procs[2].window = Some(pulse_probe::control::AppWindow {
+            hwnd: 1,
+            title: "微信".into(),
+            hung: false,
+        });
+        let snap = Snapshot {
+            processes: procs,
+            ..Default::default()
+        };
+        let expanded = HashSet::new();
+        let q = Query {
+            filter: "",
+            grouped: true,
+            sort: SortKey::Pid,
+            descending: false,
+            expanded: &expanded,
+            listening_only: false,
+        };
+        let rows = build(&snap, &q).rows;
+        assert!(matches!(rows[0], Row::Section(Section::Apps, 1)));
+        assert!(matches!(rows[1], Row::Single(2)));
+        assert!(matches!(rows[2], Row::Section(Section::Background, 4)));
     }
 
     #[test]
