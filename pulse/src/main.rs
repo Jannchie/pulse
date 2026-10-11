@@ -289,6 +289,8 @@ enum Action {
     Reveal(Arc<str>),
     Copy(String),
     Sort(SortKey),
+    /// 在指定位置打开进程右键菜单。
+    OpenMenu(Selection, egui::Pos2),
 }
 
 struct App {
@@ -309,6 +311,8 @@ struct App {
     expanded: HashSet<String>,
     selected: Option<Selection>,
     icons: Icons,
+    /// 打开着的进程右键菜单：针对的选中项与位置。
+    menu: Option<(Selection, egui::Pos2)>,
     /// 当前打开的对话框，同一时间最多一个。
     modal: Option<Modal>,
     toasts: Vec<Toast>,
@@ -366,6 +370,7 @@ impl App {
             expanded: HashSet::new(),
             selected: None,
             icons: Icons::new(ctx),
+            menu: None,
             modal: None,
             toasts: Vec::new(),
             jobs: channel(),
@@ -407,6 +412,7 @@ impl App {
             return;
         }
         self.seen_seq = s.seq;
+        widgets::set_sample_seq(s.seq);
         self.snapshot = s.snapshot.clone();
         let h = &s.history;
         for (dst, src) in self
@@ -550,6 +556,7 @@ impl App {
             Action::Reveal(path) => pulse_probe::reveal_in_explorer(&path),
             Action::Copy(text) => ctx.copy_text(text),
             Action::Sort(key) => self.set_sort(key),
+            Action::OpenMenu(sel, pos) => self.menu = Some((sel, pos)),
         }
     }
 
@@ -1046,6 +1053,16 @@ impl App {
         let ctx = ui.ctx().clone();
         for a in actions {
             self.apply(&ctx, a);
+        }
+        if let Some((sel, pos)) = self.menu.clone() {
+            let (actions, open) =
+                table::menu(&ctx, &sel, pos, &self.snapshot, &self.services_by_pid);
+            if !open {
+                self.menu = None;
+            }
+            for a in actions {
+                self.apply(&ctx, a);
+            }
         }
     }
 }

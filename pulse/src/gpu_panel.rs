@@ -84,6 +84,7 @@ pub fn page(
                 &[(&h.usage, metric::GPU, false)],
                 Some(1.0),
                 &pct,
+                &[],
             )
         },
         |ui| {
@@ -94,6 +95,7 @@ pub fn page(
                 &[(&h.dedicated, metric::GPU, false)],
                 Some(1.0),
                 &pct,
+                &[],
             )
         },
     );

@@ -162,17 +162,7 @@ pub fn show(ui: &mut Ui, v: View) -> Vec<Action> {
                         .filter(|d| !same_name(d, name))
                         .map(|d| d.to_string())
                 });
-                let mut tcp: Vec<u16> = member_procs
-                    .iter()
-                    .flat_map(|pr| {
-                        pr.ports
-                            .iter()
-                            .filter(|x| x.proto == Proto::Tcp)
-                            .map(|x| x.port)
-                    })
-                    .collect();
-                tcp.sort_unstable();
-                tcp.dedup();
+                let tcp = tcp_ports(&member_procs);
                 let status = Status::of(&member_procs);
 
                 row.col(|ui| {
@@ -208,21 +198,12 @@ pub fn show(ui: &mut Ui, v: View) -> Vec<Action> {
                 {
                     actions.push(Action::SwitchTo(w.hwnd));
                 }
-                resp.context_menu(|ui| {
-                    context_menu(
-                        ui,
-                        MenuCtx {
-                            name,
-                            sel: &sel,
-                            members: &member_procs,
-                            path: path.as_ref(),
-                            tcp: &tcp,
-                            snapshot,
-                            services,
-                            actions: &mut actions,
-                        },
-                    )
-                });
+                // 右键菜单由 App 按选中项单独绘制，固定在点击位置，不跟着行移动。
+                if resp.secondary_clicked()
+                    && let Some(pos) = resp.interact_pointer_pos()
+                {
+                    actions.push(Action::OpenMenu(sel.clone(), pos));
+                }
                 if let Row::Member(i) | Row::Single(i) = r {
                     let pr = &procs[i];
                     resp.on_hover_ui(|ui| tooltip(ui, pr, net_ok, services.get(&pr.pid)));
@@ -421,6 +402,67 @@ fn value_cell(ui: &mut Ui, c: Col, sel: &Selection, m: &Metrics, cores: f32, net
     }
 }
 
+/// 一组进程监听的 TCP 端口（去重、升序）。
+fn tcp_ports(members: &[&Process]) -> Vec<u16> {
+    let mut tcp: Vec<u16> = members
+        .iter()
+        .flat_map(|pr| {
+            pr.ports
+                .iter()
+                .filter(|x| x.proto == Proto::Tcp)
+                .map(|x| x.port)
+        })
+        .collect();
+    tcp.sort_unstable();
+    tcp.dedup();
+    tcp
+}
+
+/// 进程右键菜单：固定在 `pos`，内容只由 `sel` 决定，与表格当前的行顺序无关。
+/// 返回 (选中的操作, 菜单是否继续显示)。进程已退出、按 Esc 或点击菜单外时关闭。
+pub fn menu(
+    ctx: &egui::Context,
+    sel: &Selection,
+    pos: egui::Pos2,
+    snapshot: &Snapshot,
+    services: &std::collections::HashMap<u32, Vec<String>>,
+) -> (Vec<Action>, bool) {
+    let members: Vec<&Process> = match sel {
+        Selection::Process(pid) => snapshot
+            .processes
+            .iter()
+            .filter(|p| p.pid == *pid)
+            .collect(),
+        Selection::Group(key) => snapshot
+            .processes
+            .iter()
+            .filter(|p| p.name.to_lowercase() == *key)
+            .collect(),
+    };
+    let Some(first) = members.first() else {
+        return (Vec::new(), false);
+    };
+    let tcp = tcp_ports(&members);
+    let mut actions = Vec::new();
+    let open = widgets::floating_menu(ctx, "process-menu", pos, 250.0, |ui| {
+        context_menu(
+            ui,
+            MenuCtx {
+                name: &first.name,
+                sel,
+                members: &members,
+                path: first.path.as_ref(),
+                tcp: &tcp,
+                snapshot,
+                services,
+                actions: &mut actions,
+            },
+        );
+        !actions.is_empty()
+    });
+    (actions, open)
+}
+
 struct MenuCtx<'a> {
     name: &'a str,
     sel: &'a Selection,
@@ -542,19 +584,16 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
     }
     if let Selection::Process(pid) = sel {
         let current = members.first().map(|pr| pr.priority);
-        widgets::submenu(ui, Icon::Gauge, "设置优先级", 150.0, |ui| {
-            for prio in Priority::ALL {
-                if widgets::menu_check(ui, Icon::Check, prio.label(), current == Some(prio))
-                    .clicked()
-                {
-                    actions.push(Action::Priority {
-                        pid: *pid,
-                        label: label.clone(),
-                        priority: prio,
-                    });
-                }
-            }
-        });
+        widgets::menu_section(ui, "优先级");
+        let items = Priority::ALL.map(|prio| (prio.label(), current == Some(prio)));
+        if let Some(i) = widgets::menu_chips(ui, &items) {
+            actions.push(Action::Priority {
+                pid: *pid,
+                label: label.clone(),
+                priority: Priority::ALL[i],
+            });
+        }
+        ui.add_space(4.0);
         if widgets::menu_item(ui, Icon::Cpu, "设置相关性…", false).clicked() {
             actions.push(Action::Affinity {
                 pid: *pid,
@@ -593,34 +632,30 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         actions.push(Action::SearchOnline(name.to_string()));
     }
 
-    widgets::submenu(ui, Icon::Copy, "复制", 170.0, |ui| {
-        if widgets::menu_item(ui, Icon::Copy, "名称", false).clicked() {
-            actions.push(Action::Copy(name.to_string()));
+    widgets::menu_section(ui, "复制");
+    let mut copies: Vec<(&str, String)> = vec![("名称", name.to_string())];
+    if let Selection::Process(pid) = sel {
+        copies.push(("PID", pid.to_string()));
+        if let Some(cmd) = members.first().and_then(|pr| pr.command_line.clone()) {
+            copies.push(("命令行", cmd.to_string()));
         }
-        if let Selection::Process(pid) = sel {
-            if widgets::menu_item(ui, Icon::Hash, "PID", false).clicked() {
-                actions.push(Action::Copy(pid.to_string()));
-            }
-            if let Some(cmd) = members.first().and_then(|pr| pr.command_line.clone())
-                && widgets::menu_item(ui, Icon::Terminal, "命令行", false).clicked()
-            {
-                actions.push(Action::Copy(cmd.to_string()));
-            }
-        }
-        if let Some(path) = path
-            && widgets::menu_item(ui, Icon::FolderOpen, "路径", false).clicked()
-        {
-            actions.push(Action::Copy(path.to_string()));
-        }
-        if !tcp.is_empty() && widgets::menu_item(ui, Icon::Plug, "监听端口", false).clicked() {
-            actions.push(Action::Copy(
-                tcp.iter()
-                    .map(u16::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ));
-        }
-    });
+    }
+    if let Some(path) = path {
+        copies.push(("路径", path.to_string()));
+    }
+    if !tcp.is_empty() {
+        let ports = tcp
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        copies.push(("端口", ports));
+    }
+    let items: Vec<(&str, bool)> = copies.iter().map(|(l, _)| (*l, false)).collect();
+    if let Some(i) = widgets::menu_chips(ui, &items) {
+        actions.push(Action::Copy(copies.swap_remove(i).1));
+    }
+    ui.add_space(2.0);
 }
 
 fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String>>) {

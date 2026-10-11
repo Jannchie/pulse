@@ -21,6 +21,8 @@ pub struct ServicesState {
     pub filter: String,
     pub state: Filter,
     pub selected: Option<String>,
+    /// 打开着的右键菜单：服务名与位置。
+    menu: Option<(String, egui::Pos2)>,
     /// 过滤结果缓存：(列表指针, 搜索词, 状态筛选) → 行下标。鼠标移动时每秒上百帧，不必每帧重算。
     rows: Option<(usize, String, Filter, Vec<usize>)>,
 }
@@ -59,6 +61,7 @@ fn matches(s: &Service, needle: &str) -> bool {
 pub fn show(ui: &mut Ui, services: &[Service], st: &mut ServicesState) -> Vec<ServiceAction> {
     let p = Palette::of(ui.ctx());
     let mut actions = Vec::new();
+    let mut menu_request = None;
     let needle = st.filter.trim().to_lowercase();
     let key = (services.as_ptr() as usize, needle.clone(), st.state);
     if st
@@ -223,10 +226,31 @@ pub fn show(ui: &mut Ui, services: &[Service], st: &mut ServicesState) -> Vec<Se
                 if resp.clicked() || resp.secondary_clicked() {
                     st.selected = Some(s.name.to_string());
                 }
-                resp.context_menu(|ui| menu(ui, s, &mut actions));
+                if resp.secondary_clicked()
+                    && let Some(pos) = resp.interact_pointer_pos()
+                {
+                    menu_request = Some((s.name.to_string(), pos));
+                }
                 resp.on_hover_ui(|ui| tooltip(ui, s));
             });
         });
+    if let Some(m) = menu_request {
+        st.menu = Some(m);
+    }
+    // 右键菜单固定在点击位置，按服务名取内容，列表刷新、重新排序都不影响。
+    if let Some((name, pos)) = st.menu.clone() {
+        let open = match services.iter().find(|s| *s.name == *name) {
+            Some(s) => widgets::floating_menu(ui.ctx(), "service-menu", pos, 230.0, |ui| {
+                let before = actions.len();
+                menu(ui, s, &mut actions);
+                actions.len() > before
+            }),
+            None => false,
+        };
+        if !open {
+            st.menu = None;
+        }
+    }
     actions
 }
 
@@ -245,7 +269,7 @@ fn state_cell(ui: &mut Ui, state: State) {
 
 fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
     let _p = Palette::of(ui.ctx());
-    widgets::menu_heading(ui, &s.display_name, 220.0);
+    widgets::menu_heading(ui, &s.display_name, 0.0);
     let name = s.name.to_string();
     let running = s.state == State::Running;
     if s.state == State::Stopped
@@ -263,15 +287,17 @@ fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
         }
     }
     if s.start_type != StartType::Boot {
-        widgets::submenu(ui, Icon::Settings, "启动类型", 170.0, |ui| {
-            for t in StartType::EDITABLE {
-                if widgets::menu_check(ui, Icon::Check, t.label(), s.start_type == t).clicked()
-                    && s.start_type != t
-                {
-                    actions.push(ServiceAction::SetStartType(name.clone(), t));
-                }
-            }
-        });
+        widgets::menu_section(ui, "启动类型");
+        let items = StartType::EDITABLE.map(|t| (t.label(), s.start_type == t));
+        if let Some(i) = widgets::menu_chips(ui, &items)
+            && s.start_type != StartType::EDITABLE[i]
+        {
+            actions.push(ServiceAction::SetStartType(
+                name.clone(),
+                StartType::EDITABLE[i],
+            ));
+        }
+        ui.add_space(4.0);
     }
     ui.separator();
     if s.pid > 0 && widgets::menu_item(ui, Icon::Window, "转到进程", false).clicked() {
@@ -283,20 +309,23 @@ fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
             s.name, s.display_name
         )));
     }
-    widgets::submenu(ui, Icon::Copy, "复制", 150.0, |ui| {
-        for (label, value) in [
-            ("服务名", s.name.to_string()),
-            ("显示名称", s.display_name.to_string()),
-            ("可执行路径", s.binary.to_string()),
-        ] {
-            if !value.is_empty() && widgets::menu_item(ui, Icon::Copy, label, false).clicked() {
-                actions.push(ServiceAction::Copy(value));
-            }
-        }
-    });
     if widgets::menu_item(ui, Icon::ExternalLink, "打开服务管理器", false).clicked() {
         actions.push(ServiceAction::OpenManager);
     }
+    widgets::menu_section(ui, "复制");
+    let copies: Vec<(&str, String)> = [
+        ("服务名", s.name.to_string()),
+        ("显示名称", s.display_name.to_string()),
+        ("可执行路径", s.binary.to_string()),
+    ]
+    .into_iter()
+    .filter(|(_, v)| !v.is_empty())
+    .collect();
+    let items: Vec<(&str, bool)> = copies.iter().map(|(l, _)| (*l, false)).collect();
+    if let Some(i) = widgets::menu_chips(ui, &items) {
+        actions.push(ServiceAction::Copy(copies[i].1.clone()));
+    }
+    ui.add_space(2.0);
 }
 
 fn tooltip(ui: &mut Ui, s: &Service) {

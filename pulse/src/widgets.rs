@@ -109,26 +109,31 @@ pub fn cpu_card(
     if cores.is_empty() {
         return resp;
     }
-    let gap = if cores.len() > 32 { 1.0 } else { 2.0 };
-    let w = ((bars.width() - gap * (cores.len() - 1) as f32) / cores.len() as f32).max(1.0);
+    // 点阵：每个核心两列小点、核心之间空一列，按占用率从下往上点亮，越靠上越亮。
+    const PER_CORE: usize = 2;
+    let dot_cols = cores.len() * (PER_CORE + 1) - 1;
+    let pitch = bars.width() / (dot_cols as f32 - 1.0 + 0.67);
+    let dot = pitch * 0.67;
+    let rows = ((bars.height() - dot) / pitch).floor().max(0.0) as usize + 1;
+    let dim = color.gamma_multiply(0.07);
+    let mut mesh = Mesh::default();
     for (i, &u) in cores.iter().enumerate() {
-        let x = bars.left() + i as f32 * (w + gap);
-        let track = Rect::from_min_size(pos2(x, bars.top()), vec2(w, bars.height()));
-        painter.rect_filled(track, CornerRadius::same(2), p.track);
-        let h = (u / 100.0).clamp(0.0, 1.0) * bars.height();
-        if h > 0.5 {
-            let fill = Rect::from_min_max(
-                pos2(x, bars.bottom() - h.max(2.0)),
-                pos2(x + w, bars.bottom()),
-            );
-            // 越忙越实，空闲的核只留一点淡色。
-            painter.rect_filled(
-                fill,
-                CornerRadius::same(2),
-                color.gamma_multiply(0.45 + 0.55 * u / 100.0),
-            );
+        let n = ((u / 100.0).clamp(0.0, 1.0) * rows as f32).round() as usize;
+        let lit = if u > 0.5 { n.max(1) } else { n };
+        for k in 0..PER_CORE {
+            let x = bars.left() + (i * (PER_CORE + 1) + k) as f32 * pitch;
+            for r in 0..rows {
+                let y = bars.bottom() - r as f32 * pitch - dot;
+                let fill = if r < lit {
+                    color.gamma_multiply(0.45 + 0.55 * (r + 1) as f32 / lit as f32)
+                } else {
+                    dim
+                };
+                mesh.add_colored_rect(Rect::from_min_size(pos2(x, y), vec2(dot, dot)), fill);
+            }
         }
     }
+    painter.add(Shape::mesh(mesh));
     resp
 }
 
@@ -378,46 +383,108 @@ pub fn network_card(
         .copied()
         .fold(0.0, f32::max)
         .max(1.0);
+    // 上下两半之间的间隔与点距一致。
+    let gap = dot_gap(chart.width(), chart.height() / 2.0);
     let mid = chart.center().y;
-    let upper = Rect::from_min_max(chart.left_top(), pos2(chart.right(), mid));
-    let lower = Rect::from_min_max(pos2(chart.left(), mid), chart.right_bottom());
+    let upper = Rect::from_min_max(chart.left_top(), pos2(chart.right(), mid - gap / 2.0));
+    let lower = Rect::from_min_max(pos2(chart.left(), mid + gap / 2.0), chart.right_bottom());
     area(&painter, upper, rx_hist, max, down, false);
     area(&painter, lower, tx_hist, max, up, true);
     resp
 }
 
+/// 已采集的样本总数（所有曲线每次采集都推入一个样本）。点阵按这个绝对序号分列，
+/// 新样本到来时历史列保持不变、只整体左移，不会因为分组边界移动而闪烁。
+static SAMPLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn set_sample_seq(seq: u64) {
+    SAMPLE_SEQ.store(seq, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 点阵布局：列数取 60 的约数或倍数（每列合并整数个样本，或每个样本占整数列），
+/// 挑点距最接近目标（小图 3pt、大图 7pt）的那个，再按实际宽度微调点距，点阵正好铺满。
+struct Grid {
+    /// 每个样本占几列。
+    per_sample: u64,
+    /// 每列合并几个样本。
+    per_col: u64,
+    cols: usize,
+    pitch: f32,
+    dot: f32,
+}
+
+fn grid(width: f32, height: f32) -> Grid {
+    const SLOTS: u64 = 60;
+    let (target, ratio) = if height < 40.0 {
+        (3.0, 0.67)
+    } else {
+        (7.0, 0.64)
+    };
+    let (per_sample, per_col, cols) = [1u64, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60]
+        .into_iter()
+        .map(|d| (1, d, SLOTS / d))
+        .chain((2..=8).map(|k| (k, 1, SLOTS * k)))
+        .min_by(|a, b| {
+            let err = |c: u64| (width / c as f32 - target).abs();
+            err(a.2).total_cmp(&err(b.2))
+        })
+        .unwrap_or((1, 1, SLOTS));
+    // 最后一列只有点、没有点后的空隙，所以宽度 = (cols - 1) 个点距 + 一个点。
+    let pitch = width / (cols as f32 - 1.0 + ratio);
+    Grid {
+        per_sample,
+        per_col,
+        cols: cols as usize,
+        pitch,
+        dot: pitch * ratio,
+    }
+}
+
+/// 点阵里相邻两点之间的空隙，镜像图上下两半之间也留这么宽。
+pub fn dot_gap(width: f32, height: f32) -> f32 {
+    let g = grid(width, height);
+    g.pitch - g.dot
+}
+
 /// 点阵柱状图：横纵等距的方点网格，最新的在最右。每列从基线点亮到数值对应的高度，越靠上越亮；
-/// 未点亮的点留很淡的底色。列数由宽度决定，与 60 秒的采样不一一对应：
-/// 一列覆盖多个采样时取最大值，覆盖不到一个采样时在相邻采样间插值。`downward` 时从顶部向下长。
+/// 未点亮的点留很淡的底色。列与样本的对应见 [`grid`]，合并多个样本的列按绝对序号对齐、取最大值。`downward` 时从顶部向下长。
 pub fn area(painter: &Painter, rect: Rect, data: &[f32], max: f32, color: Color32, downward: bool) {
-    const SLOTS: f32 = 60.0;
-    let pitch = if rect.height() < 48.0 { 3.0 } else { 7.0 };
-    let dot = if rect.height() < 48.0 { 2.0 } else { 4.5 };
-    let cols = ((rect.width() - dot) / pitch).floor().max(0.0) as usize + 1;
+    let Grid {
+        per_sample,
+        per_col,
+        cols,
+        pitch,
+        dot,
+    } = grid(rect.width(), rect.height());
     let rows = ((rect.height() - dot) / pitch).floor().max(0.0) as usize + 1;
-    // 点阵整体在 rect 里水平居中、贴着基线。
-    let x0 = rect.left() + (rect.width() - ((cols - 1) as f32 * pitch + dot)) / 2.0;
+    let x0 = rect.left();
     let dim = color.gamma_multiply(0.07);
-    let span = SLOTS / cols as f32;
     let max = max.max(1e-6);
-    // 距今 k 秒的采样。
-    let ago = |k: usize| data.len().checked_sub(k + 1).map(|i| data[i]);
+
+    // 绝对序号 → 数值。data 的最后一个是序号 seq-1 的样本。
+    let seq = SAMPLE_SEQ
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .max(data.len() as u64);
+    let first = seq - data.len() as u64;
+    let sample = |abs: u64| (abs >= first && abs < seq).then(|| data[(abs - first) as usize]);
+    // 最右一列对应的样本组：按 per_col 对齐到绝对序号。
+    let last_group = seq.saturating_sub(1) / per_col;
 
     let mut mesh = Mesh::default();
     for c in 0..cols {
-        let hi = (cols - c) as f32 * span;
-        let lo = hi - span;
-        let mut value = (lo.ceil() as usize..hi.ceil() as usize)
-            .filter_map(ago)
-            .fold(None, |m: Option<f32>, v| Some(m.map_or(v, |m| m.max(v))));
-        if value.is_none() {
-            let mid = (lo + hi) / 2.0;
-            let k = mid.floor() as usize;
-            value = match (ago(k), ago(k + 1)) {
-                (Some(a), Some(b)) => Some(a + (b - a) * mid.fract()),
-                (a, _) => a,
-            };
-        }
+        let from_right = (cols - 1 - c) as u64;
+        let value = if per_col == 1 {
+            // 每个样本占 per_sample 列。
+            seq.checked_sub(1 + from_right / per_sample)
+                .and_then(sample)
+        } else {
+            let g = last_group.checked_sub(from_right);
+            g.and_then(|g| {
+                (g * per_col..(g + 1) * per_col)
+                    .filter_map(sample)
+                    .fold(None, |m: Option<f32>, v| Some(m.map_or(v, |m| m.max(v))))
+            })
+        };
         let lit = value.map_or(0, |v| {
             let n = ((v / max).clamp(0.0, 1.0) * rows as f32).round() as usize;
             // 有数据但很小时也点亮一格，和"没有数据"区分开。
@@ -901,36 +968,87 @@ pub fn menu_heading(ui: &mut Ui, text: &str, min_width: f32) {
     ui.add_space(2.0);
 }
 
-/// 带图标的子菜单入口。
-pub fn submenu(
-    ui: &mut Ui,
-    glyph: Icon,
-    label: &str,
-    min_width: f32,
-    add_contents: impl FnOnce(&mut Ui),
-) {
+/// 固定在 `pos` 的右键菜单。与 egui 自带的 context_menu 不同，它不挂在某一行上，
+/// 列表重排时不会跟着跳，内容也由调用方按记下的对象生成。
+/// `add` 返回是否执行了某个操作（执行后关闭）；按 Esc 或点击菜单外也关闭。返回菜单是否继续显示。
+pub fn floating_menu(
+    ctx: &egui::Context,
+    id: &str,
+    pos: Pos2,
+    width: f32,
+    add: impl FnOnce(&mut Ui) -> bool,
+) -> bool {
+    let mut acted = false;
+    let area = egui::Area::new(egui::Id::new(id))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .constrain(true)
+        .show(ctx, |ui| {
+            egui::Frame::menu(ui.style()).show(ui, |ui| {
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing.y = 2.0;
+                acted = add(ui);
+            });
+        });
+    let rect = area.response.rect;
+    let dismissed = ctx.input(|i| {
+        i.key_pressed(egui::Key::Escape)
+            || (i.pointer.any_pressed()
+                && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p)))
+    });
+    !acted && !dismissed
+}
+
+/// 菜单内的小节标题。
+pub fn menu_section(ui: &mut Ui, title: &str) {
     let p = Palette::of(ui.ctx());
-    let (resp, bg) = menu_row(ui, glyph, label, false);
-    icon(
-        ui,
-        Icon::ChevronRight,
-        pos2(resp.rect.right() - 12.0, resp.rect.center().y),
-        14.0,
-        p.muted,
-    );
-    let open = egui::containers::menu::SubMenu::new()
-        .show(ui, &resp, |ui| {
-            ui.set_min_width(min_width);
-            ui.spacing_mut().item_spacing.y = 2.0;
-            add_contents(ui);
-        })
-        .is_some();
-    if open || resp.hovered() {
-        ui.painter().set(
-            bg,
-            Shape::rect_filled(resp.rect, CornerRadius::same(6), p.hover),
-        );
-    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        ui.label(RichText::new(title).size(11.5).color(p.faint));
+    });
+    ui.add_space(2.0);
+}
+
+/// 菜单内的一组小标签按钮（代替子菜单），`items` 为 (文字, 是否为当前值)。返回点击的下标。
+pub fn menu_chips(ui: &mut Ui, items: &[(&str, bool)]) -> Option<usize> {
+    let p = Palette::of(ui.ctx());
+    let mut picked = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(6.0);
+        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+        for (i, (label, on)) in items.iter().enumerate() {
+            let galley =
+                ui.painter()
+                    .layout_no_wrap(label.to_string(), FontId::proportional(12.5), p.text);
+            let (rect, resp) =
+                ui.allocate_exact_size(vec2(galley.size().x + 20.0, 26.0), Sense::click());
+            let fill = if *on {
+                p.accent.gamma_multiply(0.2)
+            } else if resp.hovered() {
+                p.hover
+            } else {
+                p.track
+            };
+            ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+            ui.painter().galley(
+                pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0),
+                galley,
+                if *on || resp.hovered() {
+                    p.text
+                } else {
+                    p.muted
+                },
+            );
+            if resp
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                picked = Some(i);
+            }
+        }
+    });
+    picked
 }
 
 #[cfg(test)]

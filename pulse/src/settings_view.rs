@@ -219,7 +219,8 @@ fn choice(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
     for (i, (label, w)) in labels.iter().zip(&widths).enumerate() {
         let r = Rect::from_min_size(pos2(x, rect.top() + 3.0), vec2(*w, height - 6.0));
         x += w;
-        let resp = ui.interact(r, ui.id().with(("choice", i)), Sense::click());
+        // 按选项文字区分 id：同一页上有多个选择器，父 UI 的 id 可能相同。
+        let resp = ui.interact(r, egui::Id::new(("choice", labels, i)), Sense::click());
         let on = i == selected;
         if on {
             ui.painter().rect_filled(r, CornerRadius::same(6), p.bg);

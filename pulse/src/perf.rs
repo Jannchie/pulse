@@ -491,6 +491,7 @@ pub fn chart(
     lines: &[(&[f32], Color32, bool)],
     max: Option<f32>,
     unit: &dyn Fn(f32) -> String,
+    legend: &[(&str, Color32)],
 ) {
     let p = Palette::of(ui.ctx());
     let w = ui.available_width();
@@ -498,13 +499,26 @@ pub fn chart(
     let painter = ui.painter_at(rect.expand(1.0));
     painter.rect_filled(rect, CornerRadius::same(12), p.surface);
     let inner = Rect::from_min_max(rect.min + vec2(14.0, 30.0), rect.max - vec2(14.0, 22.0));
-    painter.text(
+    let title = painter.text(
         rect.left_top() + vec2(14.0, 10.0),
         Align2::LEFT_TOP,
         title,
         FontId::proportional(12.5),
         p.muted,
     );
+    // 图例：标题右侧的色点 + 名称（上下镜像图靠它说明哪一半是什么）。
+    let mut x = title.right() + 14.0;
+    for (name, color) in legend {
+        painter.circle_filled(pos2(x + 3.5, title.center().y), 3.5, *color);
+        let r = painter.text(
+            pos2(x + 11.0, title.center().y),
+            Align2::LEFT_CENTER,
+            *name,
+            FontId::proportional(12.0),
+            p.muted,
+        );
+        x = r.right() + 12.0;
+    }
     let peak = lines
         .iter()
         .flat_map(|(d, _, _)| d.iter().copied())
@@ -524,19 +538,22 @@ pub fn chart(
         FontId::proportional(11.0),
         p.faint,
     );
+    // 上下镜像时下半区的底边同样是上限，两端刻度一起变化。
+    let mirrored = lines.iter().any(|l| l.2);
     painter.text(
         pos2(inner.right(), rect.bottom() - 8.0),
         Align2::RIGHT_BOTTOM,
-        "0",
+        if mirrored { unit(max) } else { "0".into() },
         FontId::proportional(11.0),
         p.faint,
     );
-    let mirrored = lines.iter().any(|l| l.2);
     if mirrored {
-        // 上下镜像：上半区正向，下半区反向，共用刻度。
+        // 上下镜像：上半区正向，下半区反向，共用刻度；中间留出间隔，两组数据不粘在一起。
+        // 两半之间的间隔与点阵内部的点距一致，看起来仍是一张网格。
+        let gap = widgets::dot_gap(inner.width(), (inner.height() - 3.0) / 2.0);
         let mid = inner.center().y;
-        let upper = Rect::from_min_max(inner.min, pos2(inner.right(), mid));
-        let lower = Rect::from_min_max(pos2(inner.left(), mid), inner.max);
+        let upper = Rect::from_min_max(inner.min, pos2(inner.right(), mid - gap / 2.0));
+        let lower = Rect::from_min_max(pos2(inner.left(), mid + gap / 2.0), inner.max);
         for (d, c, down) in lines {
             widgets::area(
                 &painter,
@@ -677,6 +694,7 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         &[(total, metric::CPU, false)],
         Some(1.0),
         &pct,
+        &[],
     );
 
     section(ui, "逻辑处理器");
@@ -789,6 +807,7 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         &[(series.get("mem").unwrap_or(&empty), metric::MEMORY, false)],
         Some(1.0),
         &pct,
+        &[],
     );
 
     section(ui, "内存组合");
@@ -994,12 +1013,13 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
                 &[(get("active"), metric::DISK, false)],
                 Some(1.0),
                 &pct,
+                &[],
             )
         },
         |ui| {
             chart(
                 ui,
-                "传输速率（上：读取 · 下：写入）",
+                "传输速率",
                 150.0,
                 &[
                     (get("read"), metric::DISK, false),
@@ -1007,6 +1027,7 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
                 ],
                 None,
                 &|m| format!("{}/s", fmt_bytes(m as u64)),
+                &[("读取", metric::DISK), ("写入", metric::NETWORK_UP)],
             )
         },
     );
@@ -1250,7 +1271,7 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
     };
     chart(
         ui,
-        "吞吐量（上：接收 · 下：发送）",
+        "吞吐量",
         190.0,
         &[
             (get("rx"), metric::NETWORK, false),
@@ -1258,6 +1279,7 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
         ],
         None,
         &|m| fmt_bits(m as u64),
+        &[("接收", metric::NETWORK), ("发送", metric::NETWORK_UP)],
     );
 
     section(ui, "适配器");
