@@ -6,6 +6,7 @@ mod icons;
 mod icons_gen;
 mod model;
 mod perf;
+mod services_view;
 mod table;
 mod theme;
 mod widgets;
@@ -25,6 +26,8 @@ use icons::Icons;
 use icons_gen::Icon;
 use model::{Query, Row, SortKey, Table};
 use perf::{Device, Series};
+use pulse_probe::services::{Service, ServiceMonitor};
+use services_view::{ServiceAction, ServicesState};
 use theme::{Palette, metric};
 
 const INTERVAL: Duration = Duration::from_secs(1);
@@ -146,6 +149,42 @@ fn spawn_collector(ctx: egui::Context) -> Arc<Mutex<Shared>> {
     shared
 }
 
+/// 服务列表由单独的线程采集：首次读取几百个服务的配置要半秒多，放进进程采集线程会拖慢启动。
+#[derive(Default)]
+struct ServicesShared {
+    list: Arc<Vec<Service>>,
+    /// 操作完成后请求立即刷新；内层是需要重新读取配置的服务名。
+    refresh: Option<Option<String>>,
+}
+
+fn spawn_services(ctx: egui::Context) -> Arc<Mutex<ServicesShared>> {
+    let shared = Arc::new(Mutex::new(ServicesShared::default()));
+    let out = shared.clone();
+    std::thread::Builder::new()
+        .name("services".into())
+        .spawn(move || {
+            let mut monitor = ServiceMonitor::new();
+            loop {
+                if let Some(name) = out.lock().unwrap().refresh.take() {
+                    monitor.invalidate(name.as_deref());
+                }
+                let list = monitor.sample();
+                let changed = {
+                    let mut s = out.lock().unwrap();
+                    let changed = !Arc::ptr_eq(&s.list, &list);
+                    s.list = list;
+                    changed
+                };
+                if changed {
+                    ctx.request_repaint();
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        })
+        .expect("spawn services");
+    shared
+}
+
 fn push_vec(v: &mut Vec<f32>, x: f32) {
     if v.len() == HISTORY {
         v.remove(0);
@@ -164,6 +203,7 @@ fn push_capped(q: &mut VecDeque<f32>, v: f32) {
 enum View {
     Processes,
     Performance,
+    Services,
 }
 
 #[derive(Clone, PartialEq)]
@@ -245,6 +285,9 @@ struct App {
     jobs: (Sender<Toast>, Receiver<Toast>),
     /// pid → 该进程托管的服务名。
     services_by_pid: HashMap<u32, Vec<String>>,
+    services_shared: Arc<Mutex<ServicesShared>>,
+    services: Arc<Vec<Service>>,
+    services_view: ServicesState,
     /// 键盘导航后让表格滚动到这一行。
     scroll_to: Option<usize>,
     /// 最近一秒内的重绘时刻，用来确认空闲时没有空转。
@@ -281,12 +324,26 @@ impl App {
             toasts: Vec::new(),
             jobs: channel(),
             services_by_pid: HashMap::new(),
+            services_shared: spawn_services(ctx.clone()),
+            services: Arc::default(),
+            services_view: ServicesState::default(),
             scroll_to: None,
             passes: VecDeque::new(),
         }
     }
 
     fn pull(&mut self) {
+        let list = self.services_shared.lock().unwrap().list.clone();
+        if !Arc::ptr_eq(&list, &self.services) {
+            self.services_by_pid.clear();
+            for svc in list.iter().filter(|s| s.pid > 0) {
+                self.services_by_pid
+                    .entry(svc.pid)
+                    .or_default()
+                    .push(svc.name.to_string());
+            }
+            self.services = list;
+        }
         let s = self.shared.lock().unwrap();
         if s.seq == self.seen_seq {
             return;
@@ -450,10 +507,78 @@ impl App {
         }
     }
 
-    /// 服务页尚未接入前，先用搜索定位到托管这些服务的进程。
     fn goto_services(&mut self, pid: u32) {
-        self.filter = pid.to_string();
-        self.dirty = true;
+        self.view = View::Services;
+        self.services_view.filter = pid.to_string();
+        self.services_view.state = services_view::Filter::All;
+    }
+
+    fn apply_service(&mut self, ctx: &egui::Context, action: ServiceAction) {
+        use pulse_probe::services;
+        let (jobs, shared) = (self.jobs.0.clone(), self.services_shared.clone());
+        let job =
+            |label: String, run: Box<dyn FnOnce() -> Result<(), String> + Send>, name: String| {
+                let (tx, shared, ctx) = (jobs.clone(), shared.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    let toast = match run() {
+                        Ok(()) => Toast::ok(format!("已{label}"), None),
+                        Err(e) => Toast::err(format!("无法{label}"), Some(e)),
+                    };
+                    shared.lock().unwrap().refresh = Some(Some(name));
+                    let _ = tx.send(toast);
+                    ctx.request_repaint();
+                });
+            };
+        match action {
+            ServiceAction::Start(n) => {
+                self.notify_ok(format!("正在启动服务 {n}…"), None);
+                let m = n.clone();
+                job(
+                    format!("启动服务 {n}"),
+                    Box::new(move || services::start(&m)),
+                    n,
+                );
+            }
+            ServiceAction::Stop(n) => {
+                self.notify_ok(format!("正在停止服务 {n}…"), None);
+                let m = n.clone();
+                job(
+                    format!("停止服务 {n}"),
+                    Box::new(move || services::stop(&m)),
+                    n,
+                );
+            }
+            ServiceAction::Restart(n) => {
+                self.notify_ok(format!("正在重新启动服务 {n}…"), None);
+                let m = n.clone();
+                job(
+                    format!("重新启动服务 {n}"),
+                    Box::new(move || services::restart(&m)),
+                    n,
+                );
+            }
+            ServiceAction::SetStartType(n, t) => {
+                let m = n.clone();
+                job(
+                    format!("将 {n} 的启动类型改为{}", t.label()),
+                    Box::new(move || services::set_start_type(&m, t)),
+                    n,
+                );
+            }
+            ServiceAction::GotoProcess(pid) => {
+                self.view = View::Processes;
+                self.filter = pid.to_string();
+                self.selected = Some(Selection::Process(pid));
+                self.dirty = true;
+            }
+            ServiceAction::Copy(text) => ctx.copy_text(text),
+            ServiceAction::Search(q) => pulse_probe::control::search_online(&q),
+            ServiceAction::OpenManager => {
+                if let Err(e) = pulse_probe::control::run("services.msc", false) {
+                    self.notify_err("无法打开服务管理器".into(), Some(e));
+                }
+            }
+        }
     }
 
     fn notify_ok(&mut self, title: String, detail: Option<String>) {
@@ -655,6 +780,7 @@ impl App {
             for (view, glyph, label) in [
                 (View::Processes, Icon::List, "进程"),
                 (View::Performance, Icon::Activity, "性能"),
+                (View::Services, Icon::Settings, "服务"),
             ] {
                 let on = self.view == view;
                 let galley = ui.painter().layout_no_wrap(
@@ -695,7 +821,12 @@ impl App {
         let elevated = self.snapshot.elevated;
         let target = self.selected_pids();
         ui.horizontal(|ui| {
-            let resp = widgets::search_box(ui, &mut self.filter, 320.0);
+            let resp = widgets::search_box(
+                ui,
+                &mut self.filter,
+                320.0,
+                "模糊搜索名称、描述、命令行，或 :端口",
+            );
             if resp.changed() {
                 self.dirty = true;
             }
@@ -913,6 +1044,23 @@ impl eframe::App for App {
         match self.view {
             View::Processes => {
                 central.show(ui, |ui| self.table(ui));
+            }
+            View::Services => {
+                let actions = central
+                    .show(ui, |ui| {
+                        ui.add_space(4.0);
+                        if self.services.is_empty() {
+                            services_view::loading(ui);
+                            Vec::new()
+                        } else {
+                            services_view::show(ui, &self.services, &mut self.services_view)
+                        }
+                    })
+                    .inner;
+                let ctx = ui.ctx().clone();
+                for a in actions {
+                    self.apply_service(&ctx, a);
+                }
             }
             View::Performance => {
                 let action = central

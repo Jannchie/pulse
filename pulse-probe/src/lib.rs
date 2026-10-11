@@ -9,6 +9,7 @@ pub mod net;
 pub mod nic;
 pub mod os;
 pub mod ports;
+pub mod services;
 pub mod system;
 
 use std::collections::HashMap;

@@ -459,7 +459,7 @@ fn ring(
 
 // ---------------------------------------------------------------- 工具栏控件
 
-pub fn search_box(ui: &mut Ui, text: &mut String, width: f32) -> Response {
+pub fn search_box(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> Response {
     let p = Palette::of(ui.ctx());
     let height = 32.0;
     // 整个框都可点击聚焦，不只是中间的输入区。
@@ -483,7 +483,7 @@ pub fn search_box(ui: &mut Ui, text: &mut String, width: f32) -> Response {
     let mut resp = ui.place(
         edit_rect,
         egui::TextEdit::singleline(text)
-            .hint_text(RichText::new("模糊搜索名称、描述、命令行，或 :端口").color(p.faint))
+            .hint_text(RichText::new(hint).color(p.faint))
             .frame(egui::Frame::NONE)
             .vertical_align(egui::Align::Center)
             .desired_width(edit_rect.width()),
