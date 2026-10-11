@@ -39,6 +39,10 @@ pub struct Volume {
     pub file_system: String,
     pub total: u64,
     pub free: u64,
+    /// Windows 所在分区。
+    pub system: bool,
+    /// 分区根目录有 pagefile.sys。
+    pub pagefile: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -496,12 +500,16 @@ fn volumes() -> Vec<(u32, Volume)> {
         let text = |w: &[u16]| {
             String::from_utf16_lossy(&w[..w.iter().position(|&c| c == 0).unwrap_or(w.len())])
         };
+        let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
         let volume = Volume {
             letter,
             label: text(&label),
             file_system: text(&fs),
             total,
             free,
+            system: system_drive.to_uppercase().starts_with(letter),
+            // 页面文件被系统独占打开，exists() 走 GetFileAttributes 仍然可用。
+            pagefile: std::path::Path::new(&format!("{letter}:\\pagefile.sys")).exists(),
         };
         let mut seen = Vec::new();
         for disk in disks {

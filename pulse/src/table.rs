@@ -36,6 +36,8 @@ pub struct View<'a> {
     pub scroll_to: Option<usize>,
     /// pid → 该进程托管的服务名（svchost 等）。
     pub services: &'a std::collections::HashMap<u32, Vec<String>>,
+    /// 用户在设置里隐藏的列（列标签）。
+    pub hidden: &'a [String],
 }
 
 pub fn show(ui: &mut Ui, v: View) -> Vec<Action> {
@@ -50,6 +52,7 @@ pub fn show(ui: &mut Ui, v: View) -> Vec<Action> {
         icons,
         scroll_to,
         services,
+        hidden,
     } = v;
     let mut actions = Vec::new();
     let procs = &snapshot.processes;
@@ -59,7 +62,7 @@ pub fn show(ui: &mut Ui, v: View) -> Vec<Action> {
     let procs_index: Vec<usize> = (0..procs.len()).collect();
 
     ui.spacing_mut().item_spacing = vec2(12.0, 0.0);
-    let cols = Col::visible(ui.available_width(), ui.spacing().item_spacing.x);
+    let cols = Col::visible(ui.available_width(), ui.spacing().item_spacing.x, hidden);
     let mut builder = TableBuilder::new(ui)
         .striped(false)
         .sense(Sense::click())
@@ -828,8 +831,11 @@ impl Col {
         }
     }
 
-    pub fn visible(available: f32, spacing: f32) -> Vec<Col> {
-        let mut cols = Col::ALL.to_vec();
+    pub fn visible(available: f32, spacing: f32, hidden: &[String]) -> Vec<Col> {
+        let mut cols: Vec<Col> = Col::ALL
+            .into_iter()
+            .filter(|c| !hidden.iter().any(|h| h == c.label()))
+            .collect();
         let name_width =
             |cols: &[Col]| available - cols.iter().map(|c| c.width() + spacing).sum::<f32>();
         while name_width(&cols) < Col::MIN_NAME && cols.len() > 2 {
@@ -846,13 +852,15 @@ mod tests {
 
     #[test]
     fn columns_hide_by_priority() {
-        let all = Col::visible(2000.0, 12.0);
+        let all = Col::visible(2000.0, 12.0, &[]);
         assert_eq!(all.len(), Col::ALL.len());
         // 变窄时先藏 CPU 时间，再藏 PID、磁盘；CPU 与内存始终保留。
-        let narrow = Col::visible(800.0, 12.0);
+        let narrow = Col::visible(800.0, 12.0, &[]);
         assert!(!narrow.contains(&Col::CpuTime));
         assert!(narrow.contains(&Col::Cpu) && narrow.contains(&Col::Memory));
-        let tiny = Col::visible(300.0, 12.0);
+        let tiny = Col::visible(300.0, 12.0, &[]);
         assert_eq!(tiny, vec![Col::Cpu, Col::Memory]);
+        let hidden = Col::visible(2000.0, 12.0, &["PID".to_string()]);
+        assert!(!hidden.contains(&Col::Pid));
     }
 }

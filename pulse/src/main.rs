@@ -7,9 +7,11 @@ mod icons_gen;
 mod model;
 mod perf;
 mod services_view;
+mod settings;
 mod startup_view;
 mod table;
 mod theme;
+mod users_view;
 mod widgets;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -30,10 +32,12 @@ use perf::{Device, Series};
 use pulse_probe::services::{Service, ServiceMonitor};
 use pulse_probe::startup::StartupItem;
 use services_view::{ServiceAction, ServicesState};
+use settings::{Settings, Speed, ThemeChoice};
 use startup_view::{StartupAction, StartupState};
+use std::sync::atomic::{AtomicU64, Ordering};
 use theme::{Palette, metric};
+use users_view::UserAction;
 
-const INTERVAL: Duration = Duration::from_secs(1);
 const HISTORY: usize = 60;
 
 fn main() -> eframe::Result {
@@ -80,7 +84,8 @@ struct Shared {
     history: History,
 }
 
-fn spawn_collector(ctx: egui::Context) -> Arc<Mutex<Shared>> {
+/// `interval` 为采集间隔（毫秒），0 表示暂停。
+fn spawn_collector(ctx: egui::Context, interval: Arc<AtomicU64>) -> Arc<Mutex<Shared>> {
     let shared = Arc::new(Mutex::new(Shared::default()));
     let out = shared.clone();
     std::thread::Builder::new()
@@ -91,6 +96,11 @@ fn spawn_collector(ctx: egui::Context) -> Arc<Mutex<Shared>> {
             collector.sample();
             std::thread::sleep(Duration::from_millis(250));
             loop {
+                let ms = interval.load(Ordering::Relaxed);
+                if ms == 0 {
+                    std::thread::sleep(Duration::from_millis(200));
+                    continue;
+                }
                 let started = Instant::now();
                 let snap = collector.sample();
                 {
@@ -145,7 +155,7 @@ fn spawn_collector(ctx: egui::Context) -> Arc<Mutex<Shared>> {
                     s.seq += 1;
                 }
                 ctx.request_repaint();
-                std::thread::sleep(INTERVAL.saturating_sub(started.elapsed()));
+                std::thread::sleep(Duration::from_millis(ms).saturating_sub(started.elapsed()));
             }
         })
         .expect("spawn collector");
@@ -208,6 +218,7 @@ enum View {
     Performance,
     Services,
     Startup,
+    Users,
 }
 
 #[derive(Clone, PartialEq)]
@@ -296,6 +307,13 @@ struct App {
     startup_view: StartupState,
     /// 正在后台读取启动项。
     startup_rx: Option<Receiver<Vec<StartupItem>>>,
+    sessions: Vec<pulse_probe::sessions::Session>,
+    sessions_at: Option<Instant>,
+    /// 待确认的注销 / 断开连接。
+    pending_user: Option<UserAction>,
+    settings: Settings,
+    interval: Arc<AtomicU64>,
+    taskmgr_replaced: bool,
     /// 键盘导航后让表格滚动到这一行。
     scroll_to: Option<usize>,
     /// 最近一秒内的重绘时刻，用来确认空闲时没有空转。
@@ -306,8 +324,16 @@ impl App {
     fn new(ctx: &egui::Context) -> Self {
         theme::install(ctx);
         egui_extras::install_image_loaders(ctx);
+        let settings = Settings::load();
+        ctx.set_theme(settings.theme.preference());
+        if settings.always_on_top {
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                egui::WindowLevel::AlwaysOnTop,
+            ));
+        }
+        let interval = Arc::new(AtomicU64::new(settings.speed.millis()));
         Self {
-            shared: spawn_collector(ctx.clone()),
+            shared: spawn_collector(ctx.clone(), interval.clone()),
             snapshot: Arc::default(),
             history: Default::default(),
             gpu_history: Vec::new(),
@@ -320,8 +346,8 @@ impl App {
             sort: SortKey::Cpu,
             descending: true,
             // 命令行参数作为初始搜索词，例如 `pulse :5173` 直接定位占用端口的进程。
-            filter: std::env::args().skip(1).collect::<Vec<_>>().join(" "),
-            grouped: true,
+            filter: initial_filter(),
+            grouped: settings.grouped,
             listening_only: false,
             expanded: HashSet::new(),
             selected: None,
@@ -338,6 +364,12 @@ impl App {
             startup: Vec::new(),
             startup_view: StartupState::default(),
             startup_rx: None,
+            sessions: Vec::new(),
+            sessions_at: None,
+            pending_user: None,
+            interval,
+            taskmgr_replaced: pulse_probe::os::taskmgr_replaced(),
+            settings,
             scroll_to: None,
             passes: VecDeque::new(),
         }
@@ -835,6 +867,7 @@ impl App {
                 (View::Performance, Icon::Activity, "性能"),
                 (View::Services, Icon::Settings, "服务"),
                 (View::Startup, Icon::Rocket, "启动应用"),
+                (View::Users, Icon::Users, "用户"),
             ] {
                 let on = self.view == view;
                 let galley = ui.painter().layout_no_wrap(
@@ -868,6 +901,9 @@ impl App {
                     self.view = view;
                 }
             }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                self.settings_menu(ui)
+            });
         });
     }
 
@@ -904,6 +940,8 @@ impl App {
                     [(Icon::Layers, "分组"), (Icon::List, "列表")],
                 ) {
                     self.dirty = true;
+                    self.settings.grouped = self.grouped;
+                    self.settings.save();
                 }
                 ui.add_space(4.0);
                 let enabled = target.is_some();
@@ -934,6 +972,106 @@ impl App {
         });
     }
 
+    fn settings_menu(&mut self, ui: &mut Ui) {
+        let p = Palette::of(ui.ctx());
+        let before = self.settings.clone();
+        let icon = widgets::icon_image(ui, Icon::Settings, 16.0, p.muted);
+        ui.menu_image_text_button(icon, "设置", |ui| {
+            ui.set_min_width(240.0);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            let speed_icon = widgets::icon_image(ui, Icon::Timer, 15.0, p.muted);
+            ui.menu_image_text_button(speed_icon, "更新速度", |ui| {
+                ui.set_min_width(170.0);
+                for sp in Speed::ALL {
+                    if widgets::menu_check(ui, Icon::Check, sp.label(), self.settings.speed == sp)
+                        .clicked()
+                    {
+                        self.settings.speed = sp;
+                    }
+                }
+            });
+            let theme_icon = widgets::icon_image(ui, Icon::Monitor, 15.0, p.muted);
+            ui.menu_image_text_button(theme_icon, "主题", |ui| {
+                ui.set_min_width(150.0);
+                for t in ThemeChoice::ALL {
+                    if widgets::menu_check(ui, Icon::Check, t.label(), self.settings.theme == t)
+                        .clicked()
+                    {
+                        self.settings.theme = t;
+                    }
+                }
+            });
+            let cols_icon = widgets::icon_image(ui, Icon::Layers, 15.0, p.muted);
+            ui.menu_image_text_button(cols_icon, "显示的列", |ui| {
+                ui.set_min_width(150.0);
+                for c in table::Col::ALL {
+                    let label = c.label().to_string();
+                    let shown = !self.settings.hidden_columns.contains(&label);
+                    if widgets::menu_check(ui, Icon::Check, &label, shown).clicked() {
+                        if shown {
+                            self.settings.hidden_columns.push(label);
+                        } else {
+                            self.settings.hidden_columns.retain(|x| *x != label);
+                        }
+                    }
+                }
+            });
+            if widgets::menu_check(ui, Icon::Pin, "窗口置顶", self.settings.always_on_top).clicked()
+            {
+                self.settings.always_on_top = !self.settings.always_on_top;
+            }
+            ui.separator();
+            let elevated = self.snapshot.elevated;
+            let resp = ui
+                .add_enabled_ui(elevated, |ui| {
+                    widgets::menu_check(ui, Icon::Keyboard, "替换任务管理器", self.taskmgr_replaced)
+                })
+                .inner;
+            let resp = if elevated {
+                resp.on_hover_text("Ctrl+Shift+Esc、任务栏右键的\"任务管理器\"都会打开 Pulse")
+            } else {
+                resp.on_disabled_hover_text("需要以管理员身份运行 Pulse")
+            };
+            if resp.clicked() {
+                let want = !self.taskmgr_replaced;
+                match pulse_probe::os::set_taskmgr_replaced(want) {
+                    Ok(()) => {
+                        self.taskmgr_replaced = want;
+                        let msg = if want {
+                            "已替换任务管理器：Ctrl+Shift+Esc 将打开 Pulse"
+                        } else {
+                            "已恢复系统任务管理器"
+                        };
+                        self.notify_ok(msg.into(), None);
+                    }
+                    Err(e) => self.notify_err("无法修改任务管理器设置".into(), Some(e)),
+                }
+            }
+        });
+        if self.settings != before {
+            self.apply_settings(ui.ctx(), &before);
+        }
+    }
+
+    fn apply_settings(&mut self, ctx: &egui::Context, before: &Settings) {
+        let s = &self.settings;
+        if s.speed != before.speed {
+            self.interval.store(s.speed.millis(), Ordering::Relaxed);
+        }
+        if s.theme != before.theme {
+            ctx.set_theme(s.theme.preference());
+        }
+        if s.always_on_top != before.always_on_top {
+            let level = if s.always_on_top {
+                egui::WindowLevel::AlwaysOnTop
+            } else {
+                egui::WindowLevel::Normal
+            };
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+        }
+        self.settings.save();
+    }
+
     fn footer(&mut self, ui: &mut Ui) {
         let p = Palette::of(ui.ctx());
         let faint = |t: String| RichText::new(t).size(11.5).color(p.faint);
@@ -943,6 +1081,9 @@ impl App {
                 self.snapshot.processes.len(),
                 self.snapshot.collect_time.as_secs_f64() * 1e3,
             )));
+            if self.settings.speed == Speed::Paused {
+                widgets::status_chip(ui, "已暂停更新", p.muted);
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 match &self.snapshot.net_status {
                     NetStatus::Running => {}
@@ -970,6 +1111,7 @@ impl App {
                 icons: &mut self.icons,
                 scroll_to: self.scroll_to.take(),
                 services: &self.services_by_pid,
+                hidden: &self.settings.hidden_columns,
             },
         );
         let ctx = ui.ctx().clone();
@@ -1099,6 +1241,24 @@ impl eframe::App for App {
             View::Processes => {
                 central.show(ui, |ui| self.table(ui));
             }
+            View::Users => {
+                if self
+                    .sessions_at
+                    .is_none_or(|t| t.elapsed() > Duration::from_secs(2))
+                {
+                    self.sessions = pulse_probe::sessions::list();
+                    self.sessions_at = Some(Instant::now());
+                }
+                let actions = central
+                    .show(ui, |ui| {
+                        ui.add_space(4.0);
+                        users_view::show(ui, &self.sessions, &self.snapshot)
+                    })
+                    .inner;
+                if let Some(a) = actions.into_iter().next() {
+                    self.pending_user = Some(a);
+                }
+            }
             View::Startup => {
                 if self.startup.is_empty() && self.startup_rx.is_none() {
                     self.reload_startup(ui.ctx());
@@ -1156,10 +1316,17 @@ impl eframe::App for App {
                         )
                     })
                     .inner;
-                if let Some(perf::PerfAction::Search(name)) = action {
-                    self.filter = name;
-                    self.dirty = true;
-                    self.view = View::Processes;
+                match action {
+                    Some(perf::PerfAction::Search(name)) => {
+                        self.filter = name;
+                        self.dirty = true;
+                        self.view = View::Processes;
+                    }
+                    Some(perf::PerfAction::Copy(text)) => {
+                        ui.ctx().copy_text(text);
+                        self.notify_ok("已复制设备摘要".into(), None);
+                    }
+                    None => {}
                 }
             }
         }
@@ -1206,12 +1373,45 @@ impl eframe::App for App {
             self.startup = items;
             self.startup_rx = None;
         }
+        if let Some(action) = &self.pending_user {
+            let (id, title, body, button) = match action {
+                UserAction::Disconnect(id, name) => (
+                    *id,
+                    format!("断开 {name} 的连接？"),
+                    "会话会保持登录状态，程序继续运行，用户可以稍后重新连接。".to_string(),
+                    "断开连接",
+                ),
+                UserAction::Logoff(id, name) => (
+                    *id,
+                    format!("注销 {name}？"),
+                    "该用户所有打开的程序都会被关闭，未保存的数据将会丢失。".to_string(),
+                    "注销",
+                ),
+            };
+            match dialogs::confirm(&ctx, "user", &title, &body, button) {
+                Some(Decision::Confirm) => {
+                    let logoff = matches!(action, UserAction::Logoff(..));
+                    let r = if logoff {
+                        pulse_probe::sessions::logoff(id)
+                    } else {
+                        pulse_probe::sessions::disconnect(id)
+                    };
+                    self.pending_user = None;
+                    self.sessions_at = None;
+                    self.report(vec![r], &format!("{button}会话 {id}"));
+                }
+                Some(Decision::Cancel) => self.pending_user = None,
+                None => {}
+            }
+        }
         while let Ok(t) = self.jobs.1.try_recv() {
             self.toasts.push(t);
         }
         dialogs::toasts(&ctx, &mut self.toasts);
-        let modal_open =
-            self.pending_kill.is_some() || self.affinity.is_some() || self.run_task.is_some();
+        let modal_open = self.pending_kill.is_some()
+            || self.affinity.is_some()
+            || self.run_task.is_some()
+            || self.pending_user.is_some();
         if self.view == View::Processes && !modal_open && ui.ctx().memory(|m| m.focused().is_none())
         {
             self.keyboard(ui);
@@ -1270,6 +1470,17 @@ fn cmd_summary(cmd: &str) -> Option<String> {
         })
         .collect();
     (!summary.is_empty()).then(|| summary.join(" "))
+}
+
+/// 命令行参数作为初始搜索词，例如 `pulse :5173`。
+/// 通过"替换任务管理器"启动时，系统会把 taskmgr.exe 的路径和 /7 之类的开关传进来，要忽略。
+fn initial_filter() -> String {
+    std::env::args()
+        .skip(1)
+        .filter(|a| !a.starts_with('/'))
+        .filter(|a| !a.to_lowercase().ends_with("taskmgr.exe"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn fmt_filetime(t: i64) -> String {

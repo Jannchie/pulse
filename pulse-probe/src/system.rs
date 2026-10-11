@@ -231,20 +231,21 @@ pub struct MemoryModule {
     pub form_factor: &'static str,
 }
 
-/// 从 SMBIOS 类型 17（Memory Device）读取已插入的内存条。
-pub fn memory_modules() -> Vec<MemoryModule> {
+/// 从 SMBIOS 类型 17（Memory Device）读取已插入的内存条，以及插槽总数（含空插槽）。
+pub fn memory_modules() -> (Vec<MemoryModule>, u32) {
     let len = unsafe { GetSystemFirmwareTable(RSMB, 0, None) } as usize;
     if len == 0 {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let mut buf = vec![0u8; len];
     if unsafe { GetSystemFirmwareTable(RSMB, 0, Some(&mut buf)) } as usize != len || len < 8 {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     // RawSMBIOSData：8 字节头，之后是结构表。
     let table_len = u32::from_le_bytes(buf[4..8].try_into().unwrap()) as usize;
     let table = &buf[8..(8 + table_len).min(len)];
     let mut out = Vec::new();
+    let mut slots = 0u32;
     let mut off = 0;
     while off + 4 <= table.len() {
         let kind = table[off];
@@ -274,6 +275,9 @@ pub fn memory_modules() -> Vec<MemoryModule> {
                 .get(o..o + 2)
                 .map(|b| u16::from_le_bytes([b[0], b[1]]))
         };
+        if kind == 17 {
+            slots += 1;
+        }
         if kind == 17 && flen >= 0x1B {
             let raw = u16_at(0x0C).unwrap_or(0);
             let size = match raw {
@@ -328,7 +332,17 @@ pub fn memory_modules() -> Vec<MemoryModule> {
         }
         off = end + 2;
     }
-    out
+    (out, slots)
+}
+
+/// 主板上安装的物理内存总量（含被硬件保留、操作系统不可用的部分）。
+pub fn installed_memory() -> Option<u64> {
+    let mut kb = 0u64;
+    unsafe {
+        windows::Win32::System::SystemInformation::GetPhysicallyInstalledSystemMemory(&mut kb)
+    }
+    .ok()?;
+    Some(kb * 1024)
 }
 
 fn reg_string(key: &str, value: &str) -> Option<String> {

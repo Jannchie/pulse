@@ -10,6 +10,7 @@ pub mod nic;
 pub mod os;
 pub mod ports;
 pub mod services;
+pub mod sessions;
 pub mod startup;
 pub mod system;
 
@@ -183,6 +184,10 @@ pub struct Snapshot {
     pub uptime: Duration,
     pub memory: system::MemoryDetail,
     pub memory_modules: Arc<Vec<system::MemoryModule>>,
+    /// 内存插槽总数（含空插槽），读不到时为 0。
+    pub memory_slots: u32,
+    /// 安装的物理内存；减去可用总量即"为硬件保留"。
+    pub memory_installed: Option<u64>,
     pub disks: Vec<disk::DiskStat>,
     pub nics: Vec<nic::NicStat>,
 }
@@ -217,6 +222,8 @@ pub struct Collector {
     elevated: bool,
     cpu_info: Arc<system::CpuInfo>,
     memory_modules: Arc<Vec<system::MemoryModule>>,
+    memory_slots: u32,
+    memory_installed: Option<u64>,
     disks: disk::DiskMonitor,
     nics: nic::NicMonitor,
 }
@@ -230,6 +237,7 @@ impl Default for Collector {
 impl Collector {
     pub fn new() -> Self {
         let elevated = os::is_elevated();
+        let (modules, slots) = system::memory_modules();
         let (net, net_status) = if !elevated {
             (None, NetStatus::NeedsAdmin)
         } else {
@@ -253,7 +261,9 @@ impl Collector {
             net_status,
             elevated,
             cpu_info: Arc::new(system::CpuInfo::query()),
-            memory_modules: Arc::new(system::memory_modules()),
+            memory_modules: Arc::new(modules),
+            memory_slots: slots,
+            memory_installed: system::installed_memory(),
             disks: disk::DiskMonitor::new(),
             nics: nic::NicMonitor::new(),
         }
@@ -478,6 +488,8 @@ impl Collector {
             uptime: system::uptime(),
             memory: system::MemoryDetail::query(),
             memory_modules: self.memory_modules.clone(),
+            memory_slots: self.memory_slots,
+            memory_installed: self.memory_installed,
             disks: self.disks.sample(),
             nics: self.nics.sample(),
             collect_time: started.elapsed(),

@@ -34,6 +34,8 @@ pub enum Device {
 pub enum PerfAction {
     /// 回到进程页并搜索这个名字。
     Search(String),
+    /// 复制设备摘要到剪贴板。
+    Copy(String),
 }
 
 const SIDEBAR_W: f32 = 236.0;
@@ -55,7 +57,16 @@ pub fn show(
         ScrollArea::vertical()
             .id_salt("perf-side")
             .auto_shrink([false, false])
-            .show(ui, |ui| sidebar(ui, snap, series, device));
+            .show(ui, |ui| {
+                sidebar(ui, snap, series, device);
+                ui.add_space(10.0);
+                if widgets::tool_button(ui, Icon::Clipboard, "复制摘要", true, false)
+                    .on_hover_text("把当前设备的信息复制为文本")
+                    .clicked()
+                {
+                    action = Some(PerfAction::Copy(summary(*device, snap)));
+                }
+            });
     });
     ui.scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
         ScrollArea::vertical()
@@ -693,11 +704,16 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
             ("非分页缓冲池", fmt_bytes(m.nonpaged_pool)),
             (
                 "已用插槽",
-                if modules.is_empty() {
-                    "—".into()
-                } else {
-                    modules.len().to_string()
+                match (modules.len(), snap.memory_slots) {
+                    (0, _) => "—".into(),
+                    (used, 0) => used.to_string(),
+                    (used, slots) => format!("{used} / {slots}"),
                 },
+            ),
+            (
+                "为硬件保留",
+                snap.memory_installed
+                    .map_or("—".into(), |i| fmt_bytes(i.saturating_sub(m.total))),
             ),
         ],
     );
@@ -813,6 +829,22 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
                 },
             ),
             ("分区", d.volumes.len().to_string()),
+            (
+                "系统盘",
+                if d.volumes.iter().any(|v| v.system) {
+                    "是".into()
+                } else {
+                    "否".into()
+                },
+            ),
+            (
+                "页面文件",
+                if d.volumes.iter().any(|v| v.pagefile) {
+                    "是".into()
+                } else {
+                    "否".into()
+                },
+            ),
         ],
     );
 
@@ -829,11 +861,17 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
                 ui.allocate_exact_size(vec2(ui.available_width(), 58.0), Sense::hover());
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, CornerRadius::same(10), p.surface);
-            let title = if v.label.is_empty() {
+            let mut title = if v.label.is_empty() {
                 format!("{}:", v.letter)
             } else {
                 format!("{}:  {}", v.letter, v.label)
             };
+            if v.system {
+                title.push_str("  · 系统");
+            }
+            if v.pagefile {
+                title.push_str("  · 页面文件");
+            }
             painter.text(
                 rect.left_top() + vec2(14.0, 10.0),
                 Align2::LEFT_TOP,
@@ -1031,6 +1069,10 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
         ("开机以来接收", fmt_bytes(n.rx_total)),
         ("开机以来发送", fmt_bytes(n.tx_total)),
     ];
+    if let (Some(ssid), Some(signal)) = (&n.ssid, n.signal) {
+        items.insert(0, ("Wi-Fi 网络", ssid.clone()));
+        items.insert(1, ("信号强度", format!("{signal}%")));
+    }
     if let Some(v4) = n.ipv4.first() {
         items.insert(4, ("IPv4", v4.clone()));
     }
@@ -1042,4 +1084,130 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
             ui.label(RichText::new(a).monospace().size(12.0).color(p.muted));
         }
     }
+}
+
+/// 当前设备的纯文本摘要（"复制摘要"）。
+fn summary(device: Device, snap: &Snapshot) -> String {
+    let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
+    let mut out = Vec::new();
+    match device {
+        Device::Cpu => {
+            let i = &snap.cpu_info;
+            out.push(format!("CPU\t{}", i.name));
+            out.push(format!("利用率\t{:.0}%", snap.cpu_total));
+            if let Some(mhz) = snap.cpu_mhz {
+                out.push(format!("速度\t{:.2} GHz", mhz as f64 / 1000.0));
+            }
+            out.push(format!("基准速度\t{:.2} GHz", i.base_mhz as f64 / 1000.0));
+            out.push(format!("插槽\t{}", i.sockets));
+            out.push(format!("内核\t{}", i.cores));
+            out.push(format!("逻辑处理器\t{}", i.logical));
+            out.push(format!(
+                "L1 / L2 / L3 缓存\t{} / {} / {}",
+                fmt_bytes(i.l1),
+                fmt_bytes(i.l2),
+                fmt_bytes(i.l3)
+            ));
+            out.push(format!("进程\t{}", snap.processes.len()));
+            out.push(format!("正常运行时间\t{}", fmt_duration(snap.uptime)));
+        }
+        Device::Memory => {
+            let m = &snap.memory;
+            out.push(format!("内存\t{:.1} GB", gb(m.total)));
+            out.push(format!("使用中\t{:.1} GB", gb(m.in_use())));
+            out.push(format!("可用\t{:.1} GB", gb(m.available)));
+            out.push(format!(
+                "已提交\t{:.1} / {:.1} GB",
+                gb(m.commit_used),
+                gb(m.commit_limit)
+            ));
+            out.push(format!("已缓存\t{:.1} GB", gb(m.cache)));
+            out.push(format!("分页缓冲池\t{}", fmt_bytes(m.paged_pool)));
+            out.push(format!("非分页缓冲池\t{}", fmt_bytes(m.nonpaged_pool)));
+            for mm in snap.memory_modules.iter() {
+                out.push(format!(
+                    "{}\t{} {} {} MT/s {} {}",
+                    mm.locator,
+                    fmt_bytes(mm.size),
+                    mm.kind,
+                    mm.speed,
+                    mm.manufacturer,
+                    mm.part_number
+                ));
+            }
+        }
+        Device::Disk(i) => {
+            if let Some(d) = snap.disks.iter().find(|d| d.index == i) {
+                out.push(format!("磁盘 {}\t{}", d.index, d.model));
+                out.push(format!("类型\t{}", disk_kind(d)));
+                out.push(format!("容量\t{}", fmt_bytes(d.size)));
+                out.push(format!("活动时间\t{:.0}%", d.active));
+                out.push(format!(
+                    "读取 / 写入\t{}/s / {}/s",
+                    fmt_bytes(d.read_rate),
+                    fmt_bytes(d.write_rate)
+                ));
+                out.push(format!("平均响应时间\t{:.2} ms", d.response_ms));
+                if let Some(t) = d.health.temperature {
+                    out.push(format!("温度\t{t}°C"));
+                }
+                if let Some(n) = &d.health.nvme {
+                    out.push(format!(
+                        "剩余寿命\t{}%",
+                        100u8.saturating_sub(n.percentage_used.min(100))
+                    ));
+                    out.push(format!("通电时间\t{} 小时", n.power_on_hours));
+                    out.push(format!("累计写入\t{}", fmt_tb(n.data_written)));
+                }
+                for v in &d.volumes {
+                    out.push(format!(
+                        "{}:\t{} 可用，共 {} {}",
+                        v.letter,
+                        fmt_bytes(v.free),
+                        fmt_bytes(v.total),
+                        v.file_system
+                    ));
+                }
+            }
+        }
+        Device::Network(i) => {
+            if let Some(n) = snap.nics.iter().find(|n| n.index == i) {
+                out.push(format!("{}\t{}", n.name, n.description));
+                out.push(format!("类型\t{}", n.kind));
+                if let Some(ssid) = &n.ssid {
+                    out.push(format!("Wi-Fi 网络\t{ssid}"));
+                }
+                out.push(format!("链路速度\t{}", fmt_bits(n.link_speed / 8)));
+                out.push(format!(
+                    "接收 / 发送\t{} / {}",
+                    fmt_bits(n.rx_rate),
+                    fmt_bits(n.tx_rate)
+                ));
+                for a in n.ipv4.iter().chain(&n.ipv6) {
+                    out.push(format!("地址\t{a}"));
+                }
+                out.push(format!("MAC\t{}", n.mac));
+            }
+        }
+        Device::Gpu(i) => {
+            if let Some(g) = snap.gpus.get(i) {
+                out.push(format!("GPU {i}\t{}", g.name));
+                out.push(format!("利用率\t{:.0}%", g.usage));
+                for (name, u) in &g.engines {
+                    out.push(format!("{name}\t{u:.1}%"));
+                }
+                out.push(format!(
+                    "专用显存\t{:.2} / {:.1} GB",
+                    gb(g.dedicated_used),
+                    gb(g.dedicated_total)
+                ));
+                out.push(format!(
+                    "共享 GPU 内存\t{:.2} / {:.1} GB",
+                    gb(g.shared_used),
+                    gb(g.shared_total)
+                ));
+            }
+        }
+    }
+    out.join("\n")
 }

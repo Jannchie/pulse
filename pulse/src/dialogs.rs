@@ -518,3 +518,49 @@ pub fn run_task(ctx: &egui::Context, d: &mut RunDialog, elevated: bool) -> Optio
     }
     decision
 }
+
+// ---------------------------------------------------------------- 通用确认
+
+/// 通用的危险操作确认框（注销用户等）。
+pub fn confirm(
+    ctx: &egui::Context,
+    id: &str,
+    title: &str,
+    body: &str,
+    button_label: &str,
+) -> Option<Decision> {
+    let p = Palette::of(ctx);
+    let mut decision = None;
+    let modal = egui::Modal::new(Id::new(("confirm", id)))
+        .frame(dialog_frame(&p))
+        .backdrop_color(Color32::from_black_alpha(110))
+        .show(ctx, |ui| {
+            ui.set_width(400.0);
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+                widgets::icon(ui, Icon::AlertTriangle, r.center(), 20.0, p.danger);
+                ui.label(
+                    RichText::new(title)
+                        .size(16.0)
+                        .family(semibold())
+                        .color(p.text),
+                );
+            });
+            ui.add_space(6.0);
+            ui.label(RichText::new(body).size(13.0).color(p.muted));
+            ui.add_space(14.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if button(ui, button_label, Kind::Danger, true).clicked() {
+                    decision = Some(Decision::Confirm);
+                }
+                if button(ui, "取消", Kind::Secondary, true).clicked() {
+                    decision = Some(Decision::Cancel);
+                }
+            });
+        });
+    if decision.is_none() && modal.should_close() {
+        decision = Some(Decision::Cancel);
+    }
+    decision
+}

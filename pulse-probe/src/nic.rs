@@ -33,10 +33,15 @@ pub struct NicStat {
     /// 开机以来的累计收发字节。
     pub rx_total: u64,
     pub tx_total: u64,
+    /// Wi-Fi 已连接网络的名称与信号质量（0–100）。
+    pub ssid: Option<String>,
+    pub signal: Option<u32>,
 }
 
 struct Adapter {
     index: u32,
+    /// "{GUID}"，用来对上 WLAN 接口。
+    guid: String,
     name: String,
     description: String,
     kind: &'static str,
@@ -78,6 +83,11 @@ impl NicMonitor {
             self.adapters_at = Some(Instant::now());
         }
         let counters = counters();
+        let wifi = if self.adapters.iter().any(|a| a.kind == "Wi-Fi") {
+            wifi_connections()
+        } else {
+            Vec::new()
+        };
         let now = Instant::now();
         let mut next = Vec::with_capacity(self.adapters.len());
         let out = self
@@ -96,6 +106,9 @@ impl NicMonitor {
                     None => (0, 0),
                 };
                 next.push((a.index, now, rx, tx));
+                let wlan = wifi
+                    .iter()
+                    .find(|w| w.0.eq_ignore_ascii_case(a.guid.trim_matches(['{', '}'])));
                 Some(NicStat {
                     index: a.index,
                     name: a.name.clone(),
@@ -110,6 +123,8 @@ impl NicMonitor {
                     tx_rate,
                     rx_total: rx,
                     tx_total: tx,
+                    ssid: wlan.map(|w| w.1.clone()),
+                    signal: wlan.map(|w| w.2),
                 })
             })
             .collect();
@@ -204,6 +219,7 @@ fn adapters() -> Vec<Adapter> {
             .join(":");
         out.push(Adapter {
             index,
+            guid: unsafe { a.AdapterName.to_string() }.unwrap_or_default(),
             name: unsafe { a.FriendlyName.to_string() }.unwrap_or_default(),
             description: unsafe { a.Description.to_string() }.unwrap_or_default(),
             kind,
@@ -214,5 +230,61 @@ fn adapters() -> Vec<Adapter> {
             mac,
         });
     }
+    out
+}
+
+/// 已连接的 Wi-Fi：(接口 GUID 不带花括号, SSID, 信号质量)。
+fn wifi_connections() -> Vec<(String, String, u32)> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::NetworkManagement::WiFi::{
+        WLAN_CONNECTION_ATTRIBUTES, WLAN_INTERFACE_INFO_LIST, WlanCloseHandle, WlanEnumInterfaces,
+        WlanFreeMemory, WlanOpenHandle, WlanQueryInterface, wlan_intf_opcode_current_connection,
+    };
+    let mut version = 0u32;
+    let mut handle = HANDLE::default();
+    if unsafe { WlanOpenHandle(2, None, &mut version, &mut handle) } != 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut list: *mut WLAN_INTERFACE_INFO_LIST = std::ptr::null_mut();
+    if unsafe { WlanEnumInterfaces(handle, None, &mut list) } == 0 && !list.is_null() {
+        let infos = unsafe {
+            std::slice::from_raw_parts(
+                (*list).InterfaceInfo.as_ptr(),
+                (*list).dwNumberOfItems as usize,
+            )
+        };
+        for info in infos {
+            let mut size = 0u32;
+            let mut data: *mut core::ffi::c_void = std::ptr::null_mut();
+            let r = unsafe {
+                WlanQueryInterface(
+                    handle,
+                    &info.InterfaceGuid,
+                    wlan_intf_opcode_current_connection,
+                    None,
+                    &mut size,
+                    &mut data,
+                    None,
+                )
+            };
+            if r != 0 || data.is_null() {
+                continue;
+            }
+            let attrs = unsafe { &*(data as *const WLAN_CONNECTION_ATTRIBUTES) };
+            let ssid = &attrs.wlanAssociationAttributes.dot11Ssid;
+            let name = String::from_utf8_lossy(&ssid.ucSSID[..(ssid.uSSIDLength as usize).min(32)])
+                .to_string();
+            let guid = format!("{:?}", info.InterfaceGuid);
+            out.push((
+                guid,
+                name,
+                attrs.wlanAssociationAttributes.wlanSignalQuality,
+            ));
+            unsafe { WlanFreeMemory(data) };
+        }
+        unsafe { WlanFreeMemory(list.cast()) };
+    }
+    unsafe { WlanCloseHandle(handle, None) };
     out
 }

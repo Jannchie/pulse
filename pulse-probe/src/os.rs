@@ -221,3 +221,78 @@ pub fn format_filetime(t: i64) -> String {
         local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute
     )
 }
+
+const IFEO_TASKMGR: &str =
+    r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe";
+
+/// 是否已用 IFEO 的 Debugger 值把任务管理器（含 Ctrl+Shift+Esc）重定向到 Pulse。
+pub fn taskmgr_replaced() -> bool {
+    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+    let key: Vec<u16> = IFEO_TASKMGR.encode_utf16().chain([0]).collect();
+    let mut buf = [0u16; 1024];
+    let mut len = (buf.len() * 2) as u32;
+    let ok = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(key.as_ptr()),
+            w!("Debugger"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut len),
+        )
+    }
+    .is_ok();
+    ok && String::from_utf16_lossy(&buf[..(len as usize / 2).saturating_sub(1)])
+        .to_lowercase()
+        .contains("pulse")
+}
+
+/// 打开或关闭"替换任务管理器"。写 HKLM，需要管理员。
+pub fn set_taskmgr_replaced(on: bool) -> Result<(), String> {
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{
+        HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE, REG_OPEN_CREATE_OPTIONS, REG_SZ, RegCloseKey,
+        RegCreateKeyExW, RegDeleteValueW, RegSetValueExW,
+    };
+    let key_path: Vec<u16> = IFEO_TASKMGR.encode_utf16().chain([0]).collect();
+    let mut key = HKEY::default();
+    let r = unsafe {
+        RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(key_path.as_ptr()),
+            None,
+            PCWSTR::null(),
+            REG_OPEN_CREATE_OPTIONS(0),
+            KEY_SET_VALUE,
+            None,
+            &mut key,
+            None,
+        )
+    };
+    if r != ERROR_SUCCESS {
+        return Err(
+            windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(r.0)).message(),
+        );
+    }
+    let r = if on {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let value = format!("\"{}\"", exe.display());
+        let data: Vec<u8> = value
+            .encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        unsafe { RegSetValueExW(key, w!("Debugger"), None, REG_SZ, Some(&data)) }
+    } else {
+        unsafe { RegDeleteValueW(key, w!("Debugger")) }
+    };
+    unsafe {
+        let _ = RegCloseKey(key);
+    }
+    if r == ERROR_SUCCESS || (!on && r.0 == 2) {
+        Ok(())
+    } else {
+        Err(windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(r.0)).message())
+    }
+}
