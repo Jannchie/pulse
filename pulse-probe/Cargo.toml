@@ -1,0 +1,30 @@
+[package]
+name = "pulse-probe"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+windows = { version = "0.62", features = [
+    "Wdk_Graphics_Direct3D",
+    "Wdk_System_SystemInformation",
+    "Wdk_System_Threading",
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Gdi",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Diagnostics_Etw",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Power",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
