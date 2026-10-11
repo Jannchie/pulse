@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::wide;
 use windows::Win32::System::Services::{
     ChangeServiceConfig2W, ChangeServiceConfigW, CloseServiceHandle, ControlService,
     ENUM_SERVICE_STATUS_PROCESSW, EnumServicesStatusExW, OpenSCManagerW, OpenServiceW,
@@ -71,7 +72,7 @@ impl StartType {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Service {
     pub name: Arc<str>,
     pub display_name: Arc<str>,
@@ -101,9 +102,8 @@ pub struct ServiceMonitor {
     configs: HashMap<Arc<str>, Config>,
     last: Arc<Vec<Service>>,
     at: Option<Instant>,
+    interval: Duration,
 }
-
-const INTERVAL: Duration = Duration::from_secs(3);
 
 impl Default for ServiceMonitor {
     fn default() -> Self {
@@ -117,7 +117,13 @@ impl ServiceMonitor {
             configs: HashMap::new(),
             last: Arc::new(Vec::new()),
             at: None,
+            interval: Duration::from_secs(3),
         }
+    }
+
+    /// 服务页可见时频繁刷新，其余时候只为悬停提示保留一个慢速的 pid → 服务映射。
+    pub fn set_interval(&mut self, interval: Duration) {
+        self.interval = interval;
     }
 
     /// 让下一次 `sample` 立即刷新，并重新读取某个服务的配置。
@@ -129,11 +135,11 @@ impl ServiceMonitor {
     }
 
     pub fn sample(&mut self) -> Arc<Vec<Service>> {
-        if self.at.is_some_and(|t| t.elapsed() < INTERVAL) {
+        if self.at.is_some_and(|t| t.elapsed() < self.interval) {
             return self.last.clone();
         }
         self.at = Some(Instant::now());
-        let Some(scm) = Scm::open(SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE) else {
+        let Ok(scm) = open_scm(SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE) else {
             return self.last.clone();
         };
         let mut out = Vec::new();
@@ -157,7 +163,10 @@ impl ServiceMonitor {
             });
         }
         out.sort_by_cached_key(|s| s.name.to_lowercase());
-        self.last = Arc::new(out);
+        // 没变化就沿用旧的 Arc：调用方用指针比较判断是否需要重绘、重建映射。
+        if *self.last != out {
+            self.last = Arc::new(out);
+        }
         self.last.clone()
     }
 }
@@ -173,17 +182,10 @@ fn state(raw: u32) -> State {
     }
 }
 
-struct Scm(SC_HANDLE);
+/// SCM 或服务句柄，离开作用域时关闭。
+struct ScHandle(SC_HANDLE);
 
-impl Scm {
-    fn open(access: u32) -> Option<Self> {
-        unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), access) }
-            .ok()
-            .map(Scm)
-    }
-}
-
-impl Drop for Scm {
+impl Drop for ScHandle {
     fn drop(&mut self) {
         unsafe {
             let _ = CloseServiceHandle(self.0);
@@ -191,8 +193,10 @@ impl Drop for Scm {
     }
 }
 
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain([0]).collect()
+fn open_scm(access: u32) -> windows::core::Result<ScHandle> {
+    Ok(ScHandle(unsafe {
+        OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), access)?
+    }))
 }
 
 fn text(p: PWSTR) -> String {
@@ -262,7 +266,7 @@ fn query_config(scm: SC_HANDLE, name: &str) -> Config {
     let Ok(svc) = (unsafe { OpenServiceW(scm, PCWSTR(w.as_ptr()), SERVICE_QUERY_CONFIG) }) else {
         return fallback;
     };
-    let svc = Svc(svc);
+    let svc = ScHandle(svc);
     let mut buf = vec![0u64; 1024];
     let mut needed = 0u32;
     let ok = unsafe {
@@ -332,24 +336,15 @@ pub fn svchost_group(binary: &str) -> Option<String> {
     it.next().map(str::to_string)
 }
 
-struct Svc(SC_HANDLE);
-
-impl Drop for Svc {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = CloseServiceHandle(self.0);
-        }
-    }
-}
-
-fn open_service(name: &str, access: u32) -> windows::core::Result<Svc> {
-    let scm = Scm(unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT)? });
+fn open_service(name: &str, access: u32) -> windows::core::Result<ScHandle> {
+    let scm = open_scm(SC_MANAGER_CONNECT)?;
     let w = wide(name);
-    let h = unsafe { OpenServiceW(scm.0, PCWSTR(w.as_ptr()), access)? };
-    Ok(Svc(h))
+    Ok(ScHandle(unsafe {
+        OpenServiceW(scm.0, PCWSTR(w.as_ptr()), access)?
+    }))
 }
 
-fn current_state(svc: &Svc) -> Option<u32> {
+fn current_state(svc: &ScHandle) -> Option<u32> {
     let mut buf = [0u8; size_of::<SERVICE_STATUS_PROCESS>()];
     let mut n = 0u32;
     unsafe { QueryServiceStatusEx(svc.0, SC_STATUS_PROCESS_INFO, Some(&mut buf), &mut n) }.ok()?;
@@ -361,7 +356,7 @@ fn current_state(svc: &Svc) -> Option<u32> {
 }
 
 /// 等服务到达目标状态，最长 `timeout`。
-fn wait_for(svc: &Svc, target: u32, timeout: Duration) -> bool {
+fn wait_for(svc: &ScHandle, target: u32, timeout: Duration) -> bool {
     let start = Instant::now();
     while start.elapsed() < timeout {
         if current_state(svc) == Some(target) {

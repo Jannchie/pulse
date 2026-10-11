@@ -346,8 +346,8 @@ pub fn installed_memory() -> Option<u64> {
 }
 
 fn reg_string(key: &str, value: &str) -> Option<String> {
-    let key: Vec<u16> = key.encode_utf16().chain([0]).collect();
-    let value: Vec<u16> = value.encode_utf16().chain([0]).collect();
+    let key = crate::wide(key);
+    let value = crate::wide(value);
     let mut buf = [0u16; 256];
     let mut len = (buf.len() * 2) as u32;
     let r = unsafe {
@@ -369,8 +369,8 @@ fn reg_string(key: &str, value: &str) -> Option<String> {
 }
 
 fn reg_dword(key: &str, value: &str) -> Option<u32> {
-    let key: Vec<u16> = key.encode_utf16().chain([0]).collect();
-    let value: Vec<u16> = value.encode_utf16().chain([0]).collect();
+    let key = crate::wide(key);
+    let value = crate::wide(value);
     let mut v = 0u32;
     let mut len = 4u32;
     let r = unsafe {

@@ -4,7 +4,6 @@ pub const PX_MIN: u32 = 12;
 pub const PX_MAX: u32 = 40;
 
 // 列表里的图标不一定都已用到。
-#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Icon {
     Search,
@@ -52,7 +51,6 @@ pub enum Icon {
     Stop,
     Check,
     Monitor,
-    Signal,
     Timer,
     Keyboard,
     Clipboard,
@@ -110,7 +108,6 @@ impl Icon {
             Icon::Stop => "stop",
             Icon::Check => "check",
             Icon::Monitor => "monitor",
-            Icon::Signal => "signal",
             Icon::Timer => "timer",
             Icon::Keyboard => "keyboard",
             Icon::Clipboard => "clipboard",
@@ -127,7 +124,7 @@ impl Icon {
     }
 }
 
-static TABLE: [[&str; 29]; 53] = [
+static TABLE: [[&str; 29]; 52] = [
     // search
     [
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 10.5a6.5 6.5 0 1 0 13 0 6.5 6.5 0 1 0-13 0m11.1 4.6l5.4 5.4\" stroke-width=\"1.5\"/></svg>",
@@ -1567,38 +1564,6 @@ static TABLE: [[&str; 29]; 53] = [
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"38\" height=\"38\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.86 3.8h14.5a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H4.86a2 2 0 0 1-2-2V5.8a2 2 0 0 1 2-2zm7.25 12.5v4m-3.25 0h6.5\" stroke-width=\"1.5\"/></svg>",
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"39\" height=\"39\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.58 3.83h14.5a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H4.58a2 2 0 0 1-2-2V5.83a2 2 0 0 1 2-2zm7.25 12.5v4m-3.25 0h6.5\" stroke-width=\"1.5\"/></svg>",
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.95 3.75h14.5a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H4.95a2 2 0 0 1-2-2V5.75a2 2 0 0 1 2-2zm7.25 12.5v4m-3.25 0h6.5\" stroke-width=\"1.5\"/></svg>",
-    ],
-    // signal
-    [
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.25 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.56 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.68 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.25 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.25 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"17\" height=\"17\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.01 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3.92 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"19\" height=\"19\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.46 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.65 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"21\" height=\"21\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.89 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"22\" height=\"22\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.98 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"23\" height=\"23\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.08 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.25 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"25\" height=\"25\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.41 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"26\" height=\"26\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.56 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"27\" height=\"27\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.64 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"28\" height=\"28\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.82 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"29\" height=\"29\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.11 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"30\" height=\"30\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.45 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"31\" height=\"31\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.38 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.5 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"33\" height=\"33\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.52 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"34\" height=\"34\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.78 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"35\" height=\"35\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.82 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"36\" height=\"36\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.25 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"37\" height=\"37\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.18 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"38\" height=\"38\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.46 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"39\" height=\"39\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.56 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.75 20V17m5 3V13.5m5 6.5V9.5m5 10.5V5\" stroke-width=\"1.5\"/></svg>",
     ],
     // timer
     [

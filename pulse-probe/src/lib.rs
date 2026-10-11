@@ -30,6 +30,11 @@ use windows::Win32::System::Threading::{
 
 pub use windows::core::Error as WinError;
 
+/// Rust 字符串 → 以 0 结尾的 UTF-16，供各种 W 版 Win32 API 使用。
+pub(crate) fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain([0]).collect()
+}
+
 pub use os::{is_elevated, kill, relaunch_elevated, reveal_in_explorer};
 
 /// phnt 中的完整 SYSTEM_PROCESS_INFORMATION（windows crate 里那份把时间字段藏成了 Reserved）。

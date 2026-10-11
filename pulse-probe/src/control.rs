@@ -39,7 +39,7 @@ unsafe extern "system" {
 
 pub type Result<T> = windows::core::Result<T>;
 
-fn open(pid: u32, access: PROCESS_ACCESS_RIGHTS) -> Result<OwnedHandle> {
+pub(crate) fn open(pid: u32, access: PROCESS_ACCESS_RIGHTS) -> Result<OwnedHandle> {
     let h = unsafe { OpenProcess(access, false, pid)? };
     Ok(unsafe { OwnedHandle::from_raw_handle(h.0) })
 }
@@ -314,7 +314,7 @@ pub fn create_dump(pid: u32, name: &str) -> Result<PathBuf> {
 
 /// 打开资源管理器的文件属性对话框。
 pub fn show_properties(path: &str) {
-    let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
+    let wide = crate::wide(path);
     unsafe {
         let _ = SHObjectProperties(None, SHOP_FILEPATH, PCWSTR(wide.as_ptr()), PCWSTR::null());
     }
@@ -333,7 +333,7 @@ pub fn search_online(query: &str) {
 }
 
 pub fn open_url(url: &str) {
-    let wide: Vec<u16> = url.encode_utf16().chain([0]).collect();
+    let wide = crate::wide(url);
     unsafe {
         ShellExecuteW(
             None,
@@ -354,8 +354,8 @@ pub fn run(command: &str, admin: bool) -> std::result::Result<(), String> {
         return Err("命令为空".into());
     }
     let (file, args) = split_command(command);
-    let file_w: Vec<u16> = file.encode_utf16().chain([0]).collect();
-    let args_w: Vec<u16> = args.encode_utf16().chain([0]).collect();
+    let file_w = crate::wide(&file);
+    let args_w = crate::wide(&args);
     let verb = if admin { w!("runas") } else { w!("open") };
     let r = unsafe {
         ShellExecuteW(

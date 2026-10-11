@@ -2,19 +2,20 @@
 
 use std::sync::Arc;
 
-use eframe::egui::{self, Align, Color32, Layout, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
+use eframe::egui::{self, Align, Color32, Layout, Rect, RichText, Sense, Ui, pos2, vec2};
 use egui_extras::{Column, TableBuilder};
 use pulse_probe::startup::StartupItem;
 
 use crate::icons::Icons;
 use crate::icons_gen::Icon;
 use crate::theme::{Palette, semibold};
-use crate::{fmt_filetime, widgets};
+use crate::widgets;
+use pulse_probe::os::format_filetime as fmt_filetime;
 
 pub enum StartupAction {
     SetEnabled(usize, bool),
-    Reveal(String),
-    Properties(String),
+    Reveal(Arc<str>),
+    Properties(Arc<str>),
     Search(String),
     Copy(String),
     OpenFolder,
@@ -75,16 +76,7 @@ pub fn show(
         .column(Column::exact(200.0).clip(true))
         .header(34.0, |mut h| {
             for label in ["名称", "发布者", "状态", "来源"] {
-                h.col(|ui| {
-                    let r = ui.max_rect();
-                    ui.painter().hline(
-                        r.x_range().expand(6.0),
-                        r.bottom() - 0.5,
-                        Stroke::new(1.0, p.border),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(RichText::new(label).size(12.0).color(p.muted));
-                });
+                h.col(|ui| widgets::header_label(ui, label, false));
             }
         })
         .body(|body| {
@@ -98,8 +90,7 @@ pub fn show(
                         pos2(rect.left() + 14.0, rect.center().y),
                         vec2(20.0, 20.0),
                     );
-                    let path: Option<Arc<str>> = it.path.as_deref().map(Arc::from);
-                    match path.as_ref().and_then(|p| icons.get(p)) {
+                    match it.path.as_ref().and_then(|p| icons.get(p)) {
                         Some(tex) => {
                             ui.painter().image(
                                 tex.id(),
@@ -183,12 +174,8 @@ pub fn show(
 }
 
 fn menu(ui: &mut Ui, i: usize, it: &StartupItem, elevated: bool, actions: &mut Vec<StartupAction>) {
-    let p = Palette::of(ui.ctx());
-    ui.set_min_width(210.0);
-    ui.spacing_mut().item_spacing.y = 2.0;
-    ui.add_space(2.0);
-    ui.label(RichText::new(&it.name).size(12.0).color(p.muted));
-    ui.add_space(2.0);
+    let _p = Palette::of(ui.ctx());
+    widgets::menu_heading(ui, &it.name, 210.0);
     let locked = it.source.needs_admin() && !elevated;
     let (glyph, label) = if it.enabled {
         (Icon::Pause, "禁用")

@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use crate::wide;
 use windows::Win32::Foundation::{ERROR_SUCCESS, FILETIME};
 use windows::Win32::Storage::FileSystem::{SearchPathW, WIN32_FIND_DATAW};
 use windows::Win32::System::Com::{
@@ -77,7 +78,7 @@ pub struct StartupItem {
     pub name: String,
     pub command: String,
     /// 解析出的可执行文件路径。
-    pub path: Option<String>,
+    pub path: Option<std::sync::Arc<str>>,
     pub source: Source,
     pub enabled: bool,
     /// 禁用的时刻（FILETIME）。
@@ -132,13 +133,15 @@ pub fn list() -> Vec<StartupItem> {
 
 fn item(key: String, name: String, command: String, source: Source) -> StartupItem {
     let (enabled, disabled_at) = approved_state(source, &key);
-    let path = exe_path(&command);
-    let publisher = path
-        .as_deref()
-        .and_then(|p| crate::os::version_string(p, "CompanyName"));
-    let description = path
-        .as_deref()
-        .and_then(|p| crate::os::version_string(p, "FileDescription"));
+    let path = exe_path(&command).map(std::sync::Arc::<str>::from);
+    let (publisher, description) = match path.as_deref() {
+        Some(p) => {
+            let mut v =
+                crate::os::version_strings(p, &["CompanyName", "FileDescription"]).into_iter();
+            (v.next().flatten(), v.next().flatten())
+        }
+        None => (None, None),
+    };
     StartupItem {
         key,
         name,
@@ -209,10 +212,6 @@ pub fn set_enabled(item: &StartupItem, enabled: bool) -> Result<(), String> {
 
 fn win32_message(code: u32) -> String {
     windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(code)).message()
-}
-
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain([0]).collect()
 }
 
 fn open_key(root: HKEY, path: &str) -> Option<HKEY> {

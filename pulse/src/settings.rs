@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use crate::table::Col;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Speed {
     High,
@@ -83,8 +85,8 @@ pub struct Settings {
     pub always_on_top: bool,
     pub theme: ThemeChoice,
     pub grouped: bool,
-    /// 隐藏的列（列标签）。
-    pub hidden_columns: Vec<String>,
+    /// 隐藏的列。
+    pub hidden_columns: Vec<Col>,
 }
 
 impl Default for Settings {
@@ -140,9 +142,7 @@ impl Settings {
                 "hidden_columns" => {
                     s.hidden_columns = v
                         .split(',')
-                        .map(str::trim)
-                        .filter(|c| !c.is_empty())
-                        .map(String::from)
+                        .filter_map(|c| Col::from_id(c.trim()))
                         .collect()
                 }
                 _ => {}
@@ -158,7 +158,11 @@ impl Settings {
             self.always_on_top,
             self.theme.key(),
             self.grouped,
-            self.hidden_columns.join(",")
+            self.hidden_columns
+                .iter()
+                .map(|c| c.id())
+                .collect::<Vec<_>>()
+                .join(",")
         )
     }
 
@@ -182,7 +186,7 @@ mod tests {
             always_on_top: true,
             theme: ThemeChoice::Dark,
             grouped: false,
-            hidden_columns: vec!["PID".into(), "CPU 时间".into()],
+            hidden_columns: vec![Col::Pid, Col::CpuTime],
         };
         assert_eq!(Settings::parse(&s.serialize()), s);
         assert_eq!(Settings::parse("garbage\nspeed=nope"), Settings::default());

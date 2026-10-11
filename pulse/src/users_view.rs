@@ -1,9 +1,9 @@
 //! 用户页：每个登录会话的资源占用，断开连接 / 注销。
 
-use eframe::egui::{Align, Layout, RichText, Sense, Stroke, Ui, vec2};
+use eframe::egui::{Align, Layout, RichText, Sense, Ui, vec2};
 use egui_extras::{Column, TableBuilder};
 use pulse_probe::Snapshot;
-use pulse_probe::sessions::Session;
+use pulse_probe::sessions::{Session, SessionState};
 
 use crate::icons_gen::Icon;
 use crate::theme::{Palette, metric, semibold};
@@ -23,9 +23,9 @@ struct Usage {
     net: u64,
 }
 
-pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Vec<UserAction> {
+pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Option<UserAction> {
     let p = Palette::of(ui.ctx());
-    let mut actions = Vec::new();
+    let mut action = None;
     let usage: Vec<Usage> = sessions
         .iter()
         .map(|s| {
@@ -71,25 +71,7 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Vec<UserActio
                 ("磁盘", true),
                 ("网络", true),
             ] {
-                h.col(|ui| {
-                    let r = ui.max_rect();
-                    ui.painter().hline(
-                        r.x_range().expand(6.0),
-                        r.bottom() - 0.5,
-                        Stroke::new(1.0, p.border),
-                    );
-                    let layout = if right {
-                        Layout::right_to_left(Align::Center)
-                    } else {
-                        Layout::left_to_right(Align::Center)
-                    };
-                    ui.with_layout(layout, |ui| {
-                        if !right {
-                            ui.add_space(4.0);
-                        }
-                        ui.label(RichText::new(label).size(12.0).color(p.muted));
-                    });
-                });
+                h.col(|ui| widgets::header_label(ui, label, right));
             }
         })
         .body(|body| {
@@ -118,12 +100,10 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Vec<UserActio
                     );
                 });
                 row.col(|ui| {
-                    ui.label(RichText::new(s.state).size(12.5).color(p.text));
+                    ui.label(RichText::new(s.state.label()).size(12.5).color(p.text));
                 });
                 let right = |ui: &mut Ui, text: String| {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(RichText::new(text).color(p.text))
-                    });
+                    widgets::right_label(ui, RichText::new(text).color(p.text))
                 };
                 row.col(|ui| right(ui, u.processes.to_string()));
                 row.col(|ui| {
@@ -137,19 +117,17 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Vec<UserActio
                 row.col(|ui| right(ui, fmt_rate(u.disk)));
                 row.col(|ui| right(ui, fmt_rate(u.net)));
                 row.response().context_menu(|ui| {
-                    ui.set_min_width(200.0);
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(RichText::new(&name).size(12.0).color(p.muted));
-                    if s.state == "活动"
+                    widgets::menu_heading(ui, &name, 200.0);
+                    if s.state == SessionState::Active
                         && widgets::menu_item(ui, Icon::Unlink, "断开连接", false).clicked()
                     {
-                        actions.push(UserAction::Disconnect(s.id, name.clone()));
+                        action = Some(UserAction::Disconnect(s.id, name.clone()));
                     }
                     if widgets::menu_item(ui, Icon::Logout, "注销", true).clicked() {
-                        actions.push(UserAction::Logoff(s.id, name.clone()));
+                        action = Some(UserAction::Logoff(s.id, name.clone()));
                     }
                 });
             });
         });
-    actions
+    action
 }

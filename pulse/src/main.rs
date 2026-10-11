@@ -162,12 +162,21 @@ fn spawn_collector(ctx: egui::Context, interval: Arc<AtomicU64>) -> Arc<Mutex<Sh
     shared
 }
 
+enum Modal {
+    Kill(KillRequest),
+    Affinity(AffinityDialog),
+    Run(RunDialog),
+    User(UserAction),
+}
+
 /// 服务列表由单独的线程采集：首次读取几百个服务的配置要半秒多，放进进程采集线程会拖慢启动。
 #[derive(Default)]
 struct ServicesShared {
     list: Arc<Vec<Service>>,
     /// 操作完成后请求立即刷新；内层是需要重新读取配置的服务名。
     refresh: Option<Option<String>>,
+    /// 服务页正在显示。不显示时只为悬停提示维护 pid → 服务映射，刷新慢得多。
+    active: bool,
 }
 
 fn spawn_services(ctx: egui::Context) -> Arc<Mutex<ServicesShared>> {
@@ -178,8 +187,12 @@ fn spawn_services(ctx: egui::Context) -> Arc<Mutex<ServicesShared>> {
         .spawn(move || {
             let mut monitor = ServiceMonitor::new();
             loop {
-                if let Some(name) = out.lock().unwrap().refresh.take() {
-                    monitor.invalidate(name.as_deref());
+                {
+                    let mut s = out.lock().unwrap();
+                    if let Some(name) = s.refresh.take() {
+                        monitor.invalidate(name.as_deref());
+                    }
+                    monitor.set_interval(Duration::from_secs(if s.active { 3 } else { 15 }));
                 }
                 let list = monitor.sample();
                 let changed = {
@@ -286,15 +299,12 @@ struct App {
     sort: SortKey,
     descending: bool,
     filter: String,
-    grouped: bool,
     listening_only: bool,
     expanded: HashSet<String>,
     selected: Option<Selection>,
     icons: Icons,
-    /// 等待用户确认的结束请求。
-    pending_kill: Option<KillRequest>,
-    affinity: Option<AffinityDialog>,
-    run_task: Option<RunDialog>,
+    /// 当前打开的对话框，同一时间最多一个。
+    modal: Option<Modal>,
     toasts: Vec<Toast>,
     /// 后台任务（转储等）完成后发回的通知。
     jobs: (Sender<Toast>, Receiver<Toast>),
@@ -303,14 +313,13 @@ struct App {
     services_shared: Arc<Mutex<ServicesShared>>,
     services: Arc<Vec<Service>>,
     services_view: ServicesState,
-    startup: Vec<StartupItem>,
+    /// None 表示还没读过。
+    startup: Option<Vec<StartupItem>>,
     startup_view: StartupState,
     /// 正在后台读取启动项。
     startup_rx: Option<Receiver<Vec<StartupItem>>>,
     sessions: Vec<pulse_probe::sessions::Session>,
     sessions_at: Option<Instant>,
-    /// 待确认的注销 / 断开连接。
-    pending_user: Option<UserAction>,
     settings: Settings,
     interval: Arc<AtomicU64>,
     taskmgr_replaced: bool,
@@ -347,26 +356,22 @@ impl App {
             descending: true,
             // 命令行参数作为初始搜索词，例如 `pulse :5173` 直接定位占用端口的进程。
             filter: initial_filter(),
-            grouped: settings.grouped,
             listening_only: false,
             expanded: HashSet::new(),
             selected: None,
             icons: Icons::new(ctx),
-            pending_kill: None,
-            affinity: None,
-            run_task: None,
+            modal: None,
             toasts: Vec::new(),
             jobs: channel(),
             services_by_pid: HashMap::new(),
             services_shared: spawn_services(ctx.clone()),
             services: Arc::default(),
             services_view: ServicesState::default(),
-            startup: Vec::new(),
+            startup: None,
             startup_view: StartupState::default(),
             startup_rx: None,
             sessions: Vec::new(),
             sessions_at: None,
-            pending_user: None,
             interval,
             taskmgr_replaced: pulse_probe::os::taskmgr_replaced(),
             settings,
@@ -376,7 +381,11 @@ impl App {
     }
 
     fn pull(&mut self) {
-        let list = self.services_shared.lock().unwrap().list.clone();
+        let list = {
+            let mut s = self.services_shared.lock().unwrap();
+            s.active = self.view == View::Services;
+            s.list.clone()
+        };
         if !Arc::ptr_eq(&list, &self.services) {
             self.services_by_pid.clear();
             for svc in list.iter().filter(|s| s.pid > 0) {
@@ -425,17 +434,13 @@ impl App {
                 Some((vec![p.pid], format!("{} ({})", p.name, p.pid)))
             }
             Selection::Group(key) => {
-                let pids: Vec<u32> = procs
+                let members: Vec<_> = procs
                     .iter()
                     .filter(|p| p.name.to_lowercase() == *key)
-                    .map(|p| p.pid)
                     .collect();
-                let name = procs
-                    .iter()
-                    .find(|p| p.name.to_lowercase() == *key)?
-                    .name
-                    .clone();
-                Some((pids.clone(), format!("{} 的 {} 个进程", name, pids.len())))
+                let name = &members.first()?.name;
+                let label = format!("{name} 的 {} 个进程", members.len());
+                Some((members.iter().map(|p| p.pid).collect(), label))
             }
         }
     }
@@ -451,7 +456,9 @@ impl App {
                 self.dirty = true;
             }
             // 强制结束一律先弹确认框，真正执行在 `kill_confirmed`。
-            Action::Kill { pids, label } => self.pending_kill = Some(KillRequest { pids, label }),
+            Action::Kill { pids, label } => {
+                self.modal = Some(Modal::Kill(KillRequest { pids, label }))
+            }
             Action::Close { pids, label } => {
                 let sent: usize = pids.iter().map(|&pid| control::close_windows(pid)).sum();
                 if sent == 0 {
@@ -484,16 +491,12 @@ impl App {
                 );
             }
             Action::Efficiency { pids, label, on } => {
-                let verb = if on {
-                    "为 {} 开启效率模式"
-                } else {
-                    "为 {} 关闭效率模式"
-                };
                 let results = pids
                     .iter()
                     .map(|&pid| control::set_efficiency_mode(pid, on))
                     .collect();
-                self.report(results, &verb.replace("{}", &label));
+                let verb = if on { "开启" } else { "关闭" };
+                self.report(results, &format!("为 {label} {verb}效率模式"));
             }
             Action::Priority {
                 pid,
@@ -508,12 +511,12 @@ impl App {
             }
             Action::Affinity { pid, label } => match control::affinity(pid) {
                 Ok((mask, system)) => {
-                    self.affinity = Some(AffinityDialog {
+                    self.modal = Some(Modal::Affinity(AffinityDialog {
                         pid,
                         label,
                         mask,
                         system,
-                    })
+                    }))
                 }
                 Err(e) => {
                     self.notify_err(format!("无法读取 {label} 的相关性"), Some(error_text(&e)))
@@ -524,21 +527,15 @@ impl App {
                     format!("正在为 {name} 创建转储文件…"),
                     Some("完整内存转储可能需要几秒到几十秒".into()),
                 );
-                let tx = self.jobs.0.clone();
-                let ctx = ctx.clone();
-                std::thread::spawn(move || {
-                    let toast = match control::create_dump(pid, &name) {
-                        Ok(path) => {
-                            let path = path.to_string_lossy().to_string();
-                            pulse_probe::reveal_in_explorer(&path);
-                            Toast::ok(format!("已为 {name} 创建转储文件"), Some(path))
-                        }
-                        Err(e) => {
-                            Toast::err(format!("无法为 {name} 创建转储文件"), Some(error_text(&e)))
-                        }
-                    };
-                    let _ = tx.send(toast);
-                    ctx.request_repaint();
+                self.spawn_job(ctx, move || match control::create_dump(pid, &name) {
+                    Ok(path) => {
+                        let path = path.to_string_lossy().to_string();
+                        pulse_probe::reveal_in_explorer(&path);
+                        Toast::ok(format!("已为 {name} 创建转储文件"), Some(path))
+                    }
+                    Err(e) => {
+                        Toast::err(format!("无法为 {name} 创建转储文件"), Some(error_text(&e)))
+                    }
                 });
             }
             Action::Properties(path) => control::show_properties(&path),
@@ -548,6 +545,25 @@ impl App {
             Action::Copy(text) => ctx.copy_text(text),
             Action::Sort(key) => self.set_sort(key),
         }
+    }
+
+    /// 在后台线程执行 `job`，完成后把它返回的通知送回 UI。
+    fn spawn_job(&self, ctx: &egui::Context, job: impl FnOnce() -> Toast + Send + 'static) {
+        let (tx, ctx) = (self.jobs.0.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(job());
+            ctx.request_repaint();
+        });
+    }
+
+    /// 回到进程页并用 `filter` 搜索。
+    fn show_processes(&mut self, filter: String, select: Option<Selection>) {
+        self.view = View::Processes;
+        self.filter = filter;
+        if select.is_some() {
+            self.selected = select;
+        }
+        self.dirty = true;
     }
 
     fn goto_services(&mut self, pid: u32) {
@@ -571,7 +587,7 @@ impl App {
         use pulse_probe::control;
         match action {
             StartupAction::SetEnabled(i, on) => {
-                let Some(item) = self.startup.get_mut(i) else {
+                let Some(item) = self.startup.as_mut().and_then(|v| v.get_mut(i)) else {
                     return;
                 };
                 let verb = if on { "启用" } else { "禁用" };
@@ -600,70 +616,49 @@ impl App {
 
     fn apply_service(&mut self, ctx: &egui::Context, action: ServiceAction) {
         use pulse_probe::services;
-        let (jobs, shared) = (self.jobs.0.clone(), self.services_shared.clone());
-        let job =
-            |label: String, run: Box<dyn FnOnce() -> Result<(), String> + Send>, name: String| {
-                let (tx, shared, ctx) = (jobs.clone(), shared.clone(), ctx.clone());
-                std::thread::spawn(move || {
-                    let toast = match run() {
-                        Ok(()) => Toast::ok(format!("已{label}"), None),
-                        Err(e) => Toast::err(format!("无法{label}"), Some(e)),
-                    };
-                    shared.lock().unwrap().refresh = Some(Some(name));
-                    let _ = tx.send(toast);
-                    ctx.request_repaint();
-                });
-            };
-        match action {
+        type Job = Box<dyn FnOnce(&str) -> Result<(), String> + Send>;
+        // (描述, 服务名, 执行, 是否要先提示"正在…"——启停服务可能要等好几秒)
+        let (label, name, run, slow): (String, String, Job, bool) = match action {
             ServiceAction::Start(n) => {
-                self.notify_ok(format!("正在启动服务 {n}…"), None);
-                let m = n.clone();
-                job(
-                    format!("启动服务 {n}"),
-                    Box::new(move || services::start(&m)),
-                    n,
-                );
+                (format!("启动服务 {n}"), n, Box::new(services::start), true)
             }
-            ServiceAction::Stop(n) => {
-                self.notify_ok(format!("正在停止服务 {n}…"), None);
-                let m = n.clone();
-                job(
-                    format!("停止服务 {n}"),
-                    Box::new(move || services::stop(&m)),
-                    n,
-                );
-            }
-            ServiceAction::Restart(n) => {
-                self.notify_ok(format!("正在重新启动服务 {n}…"), None);
-                let m = n.clone();
-                job(
-                    format!("重新启动服务 {n}"),
-                    Box::new(move || services::restart(&m)),
-                    n,
-                );
-            }
-            ServiceAction::SetStartType(n, t) => {
-                let m = n.clone();
-                job(
-                    format!("将 {n} 的启动类型改为{}", t.label()),
-                    Box::new(move || services::set_start_type(&m, t)),
-                    n,
-                );
-            }
+            ServiceAction::Stop(n) => (format!("停止服务 {n}"), n, Box::new(services::stop), true),
+            ServiceAction::Restart(n) => (
+                format!("重新启动服务 {n}"),
+                n,
+                Box::new(services::restart),
+                true,
+            ),
+            ServiceAction::SetStartType(n, t) => (
+                format!("将 {n} 的启动类型改为{}", t.label()),
+                n,
+                Box::new(move |n: &str| services::set_start_type(n, t)),
+                false,
+            ),
             ServiceAction::GotoProcess(pid) => {
-                self.view = View::Processes;
-                self.filter = pid.to_string();
-                self.selected = Some(Selection::Process(pid));
-                self.dirty = true;
+                return self.show_processes(pid.to_string(), Some(Selection::Process(pid)));
             }
-            ServiceAction::Copy(text) => ctx.copy_text(text),
-            ServiceAction::Search(q) => pulse_probe::control::search_online(&q),
+            ServiceAction::Copy(text) => return ctx.copy_text(text),
+            ServiceAction::Search(q) => return pulse_probe::control::search_online(&q),
             ServiceAction::OpenManager => {
                 if let Err(e) = pulse_probe::control::run("services.msc", false) {
                     self.notify_err("无法打开服务管理器".into(), Some(e));
                 }
+                return;
             }
+        };
+        if slow {
+            self.notify_ok(format!("正在{label}…"), None);
         }
+        let shared = self.services_shared.clone();
+        self.spawn_job(ctx, move || {
+            let result = run(&name);
+            shared.lock().unwrap().refresh = Some(Some(name));
+            match result {
+                Ok(()) => Toast::ok(format!("已{label}"), None),
+                Err(e) => Toast::err(format!("无法{label}"), Some(e)),
+            }
+        });
     }
 
     fn notify_ok(&mut self, title: String, detail: Option<String>) {
@@ -699,50 +694,58 @@ impl App {
         }
     }
 
-    fn kill_confirmed(&mut self, req: KillRequest) {
-        // E_ACCESSDENIED
-        const ACCESS_DENIED: i32 = 0x8007_0005_u32 as i32;
-        let mut failures = Vec::new();
-        for &pid in &req.pids {
-            if let Err(e) = pulse_probe::kill(pid) {
-                failures.push(e);
+    fn confirm_modal(&mut self, modal: Modal) {
+        match modal {
+            Modal::Kill(req) => self.kill_confirmed(req),
+            Modal::Affinity(d) => {
+                let r = pulse_probe::control::set_affinity(d.pid, d.mask);
+                self.report(vec![r], &format!("设置 {} 的相关性", d.label));
+            }
+            Modal::Run(d) => match pulse_probe::control::run(&d.command, d.admin) {
+                Ok(()) => self.notify_ok(format!("已运行 {}", d.command.trim()), None),
+                // 出错时保留对话框，让用户改命令。
+                Err(e) => {
+                    self.modal = Some(Modal::Run(RunDialog {
+                        error: Some(e),
+                        ..d
+                    }))
+                }
+            },
+            Modal::User(a) => {
+                let (r, id) = match a {
+                    UserAction::Logoff(id, _) => (pulse_probe::sessions::logoff(id), id),
+                    UserAction::Disconnect(id, _) => (pulse_probe::sessions::disconnect(id), id),
+                };
+                let (_, _, button) = user_prompt(&a);
+                self.sessions_at = None;
+                self.report(vec![r], &format!("{button}会话 {id}"));
             }
         }
-        let denied = failures.iter().any(|e| e.code().0 == ACCESS_DENIED);
-        let reason = failures.first().map(|e| {
-            let msg = e.message().trim().to_string();
-            let msg = if msg.is_empty() {
-                format!("错误 0x{:08X}", e.code().0)
-            } else {
-                msg
-            };
-            if denied && !self.snapshot.elevated {
-                format!("{msg}。以管理员身份重启 Pulse 后再试。")
-            } else {
-                msg
-            }
-        });
-        let toast = match failures.len() {
-            0 => Toast::ok(format!("已结束 {}", req.label), None),
-            n if n == req.pids.len() => Toast::err(format!("无法结束 {}", req.label), reason),
-            n => Toast::err(format!("{} 中有 {n} 个未能结束", req.label), reason),
-        };
-        self.toasts.push(toast);
     }
 
-    /// ↑/↓ 移动选中行，Home/End 跳到首尾，Enter 展开分组或切换到应用窗口。
-    fn keyboard(&mut self, ui: &Ui) {
-        let (up, down, home, end, enter) = ui.input(|i| {
+    fn kill_confirmed(&mut self, req: KillRequest) {
+        let results = req.pids.iter().map(|&pid| pulse_probe::kill(pid)).collect();
+        self.report(results, &format!("结束 {}", req.label));
+    }
+
+    /// ↑/↓ 移动选中行，Home/End 跳到首尾，Enter 展开分组或切换到应用窗口，Delete 结束选中项。
+    fn keyboard(&mut self, ui: &Ui) -> Option<Action> {
+        let (up, down, home, end, enter, delete) = ui.input(|i| {
             (
                 i.key_pressed(Key::ArrowUp),
                 i.key_pressed(Key::ArrowDown),
                 i.key_pressed(Key::Home),
                 i.key_pressed(Key::End),
                 i.key_pressed(Key::Enter),
+                i.key_pressed(Key::Delete),
             )
         });
+        if delete {
+            let (pids, label) = self.selected_pids()?;
+            return Some(Action::Kill { pids, label });
+        }
         if !(up || down || home || end || enter) {
-            return;
+            return None;
         }
         let selectable: Vec<(usize, Selection)> = self
             .table
@@ -758,32 +761,20 @@ impl App {
             })
             .collect();
         if selectable.is_empty() {
-            return;
+            return None;
         }
         let current = self
             .selected
             .as_ref()
             .and_then(|s| selectable.iter().position(|(_, x)| x == s));
         if enter {
-            match &self.selected {
-                Some(Selection::Group(key)) => {
-                    let ctx = ui.ctx().clone();
-                    self.apply(&ctx, Action::Toggle(key.clone()));
+            return match self.selected.as_ref()? {
+                Selection::Group(key) => Some(Action::Toggle(key.clone())),
+                Selection::Process(pid) => {
+                    let p = self.snapshot.processes.iter().find(|p| p.pid == *pid)?;
+                    p.window.as_ref().map(|w| Action::SwitchTo(w.hwnd))
                 }
-                Some(Selection::Process(pid)) => {
-                    if let Some(w) = self
-                        .snapshot
-                        .processes
-                        .iter()
-                        .find(|p| p.pid == *pid)
-                        .and_then(|p| p.window.as_ref())
-                    {
-                        pulse_probe::control::switch_to(w.hwnd);
-                    }
-                }
-                None => {}
-            }
-            return;
+            };
         }
         let last = selectable.len() - 1;
         let next = match (current, up, down, home, end) {
@@ -797,6 +788,7 @@ impl App {
         let (row, sel) = selectable[next].clone();
         self.selected = Some(sel);
         self.scroll_to = Some(row);
+        None
     }
 
     fn cards(&mut self, ui: &mut Ui) {
@@ -936,11 +928,10 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if widgets::segmented(
                     ui,
-                    &mut self.grouped,
+                    &mut self.settings.grouped,
                     [(Icon::Layers, "分组"), (Icon::List, "列表")],
                 ) {
                     self.dirty = true;
-                    self.settings.grouped = self.grouped;
                     self.settings.save();
                 }
                 ui.add_space(4.0);
@@ -958,7 +949,7 @@ impl App {
                     self.apply(&ctx, Action::Kill { pids, label });
                 }
                 if widgets::tool_button(ui, Icon::Plus, "运行新任务", true, false).clicked() {
-                    self.run_task = Some(RunDialog::default());
+                    self.modal = Some(Modal::Run(RunDialog::default()));
                 }
                 if !elevated
                     && widgets::tool_button(ui, Icon::Shield, "以管理员身份重启", true, false)
@@ -979,9 +970,7 @@ impl App {
         ui.menu_image_text_button(icon, "设置", |ui| {
             ui.set_min_width(240.0);
             ui.spacing_mut().item_spacing.y = 2.0;
-            let speed_icon = widgets::icon_image(ui, Icon::Timer, 15.0, p.muted);
-            ui.menu_image_text_button(speed_icon, "更新速度", |ui| {
-                ui.set_min_width(170.0);
+            widgets::submenu(ui, Icon::Timer, "更新速度", 170.0, |ui| {
                 for sp in Speed::ALL {
                     if widgets::menu_check(ui, Icon::Check, sp.label(), self.settings.speed == sp)
                         .clicked()
@@ -990,9 +979,7 @@ impl App {
                     }
                 }
             });
-            let theme_icon = widgets::icon_image(ui, Icon::Monitor, 15.0, p.muted);
-            ui.menu_image_text_button(theme_icon, "主题", |ui| {
-                ui.set_min_width(150.0);
+            widgets::submenu(ui, Icon::Monitor, "主题", 150.0, |ui| {
                 for t in ThemeChoice::ALL {
                     if widgets::menu_check(ui, Icon::Check, t.label(), self.settings.theme == t)
                         .clicked()
@@ -1001,17 +988,14 @@ impl App {
                     }
                 }
             });
-            let cols_icon = widgets::icon_image(ui, Icon::Layers, 15.0, p.muted);
-            ui.menu_image_text_button(cols_icon, "显示的列", |ui| {
-                ui.set_min_width(150.0);
+            widgets::submenu(ui, Icon::Layers, "显示的列", 150.0, |ui| {
                 for c in table::Col::ALL {
-                    let label = c.label().to_string();
-                    let shown = !self.settings.hidden_columns.contains(&label);
-                    if widgets::menu_check(ui, Icon::Check, &label, shown).clicked() {
+                    let shown = !self.settings.hidden_columns.contains(&c);
+                    if widgets::menu_check(ui, Icon::Check, c.label(), shown).clicked() {
                         if shown {
-                            self.settings.hidden_columns.push(label);
+                            self.settings.hidden_columns.push(c);
                         } else {
-                            self.settings.hidden_columns.retain(|x| *x != label);
+                            self.settings.hidden_columns.retain(|&x| x != c);
                         }
                     }
                 }
@@ -1107,7 +1091,7 @@ impl App {
                 selected: self.selected.as_ref(),
                 sort: self.sort,
                 descending: self.descending,
-                grouped: self.grouped,
+                grouped: self.settings.grouped,
                 icons: &mut self.icons,
                 scroll_to: self.scroll_to.take(),
                 services: &self.services_by_pid,
@@ -1196,7 +1180,7 @@ impl eframe::App for App {
                 &self.snapshot,
                 &Query {
                     filter: &self.filter,
-                    grouped: self.grouped,
+                    grouped: self.settings.grouped,
                     listening_only: self.listening_only,
                     sort: self.sort,
                     descending: self.descending,
@@ -1255,29 +1239,28 @@ impl eframe::App for App {
                         users_view::show(ui, &self.sessions, &self.snapshot)
                     })
                     .inner;
-                if let Some(a) = actions.into_iter().next() {
-                    self.pending_user = Some(a);
+                if let Some(a) = actions {
+                    self.modal = Some(Modal::User(a));
                 }
             }
             View::Startup => {
-                if self.startup.is_empty() && self.startup_rx.is_none() {
+                if self.startup.is_none() && self.startup_rx.is_none() {
                     self.reload_startup(ui.ctx());
                 }
                 let actions = central
                     .show(ui, |ui| {
                         ui.add_space(4.0);
-                        if self.startup.is_empty() {
+                        let Some(items) = &self.startup else {
                             ui.label(RichText::new("正在读取启动项…").color(p.muted));
-                            Vec::new()
-                        } else {
-                            startup_view::show(
-                                ui,
-                                &self.startup,
-                                &mut self.startup_view,
-                                &mut self.icons,
-                                self.snapshot.elevated,
-                            )
-                        }
+                            return Vec::new();
+                        };
+                        startup_view::show(
+                            ui,
+                            items,
+                            &mut self.startup_view,
+                            &mut self.icons,
+                            self.snapshot.elevated,
+                        )
                     })
                     .inner;
                 let ctx = ui.ctx().clone();
@@ -1317,11 +1300,7 @@ impl eframe::App for App {
                     })
                     .inner;
                 match action {
-                    Some(perf::PerfAction::Search(name)) => {
-                        self.filter = name;
-                        self.dirty = true;
-                        self.view = View::Processes;
-                    }
+                    Some(perf::PerfAction::Search(name)) => self.show_processes(name, None),
                     Some(perf::PerfAction::Copy(text)) => {
                         ui.ctx().copy_text(text);
                         self.notify_ok("已复制设备摘要".into(), None);
@@ -1332,102 +1311,59 @@ impl eframe::App for App {
         }
 
         let ctx = ui.ctx().clone();
-        if let Some(req) = &self.pending_kill {
-            match dialogs::confirm_kill(&ctx, req, &self.snapshot) {
-                Some(Decision::Confirm) => {
-                    let req = self.pending_kill.take().unwrap();
-                    self.kill_confirmed(req);
+        if let Some(modal) = &mut self.modal {
+            let decision = match modal {
+                Modal::Kill(req) => dialogs::confirm_kill(&ctx, req, &self.snapshot),
+                Modal::Affinity(d) => dialogs::affinity(&ctx, d),
+                Modal::Run(d) => dialogs::run_task(&ctx, d, self.snapshot.elevated),
+                Modal::User(a) => {
+                    let (title, body, button) = user_prompt(a);
+                    dialogs::confirm(&ctx, "user", &title, body, button)
                 }
-                Some(Decision::Cancel) => self.pending_kill = None,
-                None => {}
-            }
-        }
-        if let Some(d) = &mut self.affinity {
-            match dialogs::affinity(&ctx, d) {
+            };
+            match decision {
                 Some(Decision::Confirm) => {
-                    let d = self.affinity.take().unwrap();
-                    let r = pulse_probe::control::set_affinity(d.pid, d.mask);
-                    self.report(vec![r], &format!("设置 {} 的相关性", d.label));
+                    let modal = self.modal.take().unwrap();
+                    self.confirm_modal(modal);
                 }
-                Some(Decision::Cancel) => self.affinity = None,
-                None => {}
-            }
-        }
-        if let Some(d) = &mut self.run_task {
-            match dialogs::run_task(&ctx, d, self.snapshot.elevated) {
-                Some(Decision::Confirm) => match pulse_probe::control::run(&d.command, d.admin) {
-                    Ok(()) => {
-                        let cmd = d.command.trim().to_string();
-                        self.run_task = None;
-                        self.notify_ok(format!("已运行 {cmd}"), None);
-                    }
-                    Err(e) => d.error = Some(e),
-                },
-                Some(Decision::Cancel) => self.run_task = None,
+                Some(Decision::Cancel) => self.modal = None,
                 None => {}
             }
         }
         if let Some(rx) = &self.startup_rx
             && let Ok(items) = rx.try_recv()
         {
-            self.startup = items;
+            self.startup = Some(items);
             self.startup_rx = None;
-        }
-        if let Some(action) = &self.pending_user {
-            let (id, title, body, button) = match action {
-                UserAction::Disconnect(id, name) => (
-                    *id,
-                    format!("断开 {name} 的连接？"),
-                    "会话会保持登录状态，程序继续运行，用户可以稍后重新连接。".to_string(),
-                    "断开连接",
-                ),
-                UserAction::Logoff(id, name) => (
-                    *id,
-                    format!("注销 {name}？"),
-                    "该用户所有打开的程序都会被关闭，未保存的数据将会丢失。".to_string(),
-                    "注销",
-                ),
-            };
-            match dialogs::confirm(&ctx, "user", &title, &body, button) {
-                Some(Decision::Confirm) => {
-                    let logoff = matches!(action, UserAction::Logoff(..));
-                    let r = if logoff {
-                        pulse_probe::sessions::logoff(id)
-                    } else {
-                        pulse_probe::sessions::disconnect(id)
-                    };
-                    self.pending_user = None;
-                    self.sessions_at = None;
-                    self.report(vec![r], &format!("{button}会话 {id}"));
-                }
-                Some(Decision::Cancel) => self.pending_user = None,
-                None => {}
-            }
         }
         while let Ok(t) = self.jobs.1.try_recv() {
             self.toasts.push(t);
         }
         dialogs::toasts(&ctx, &mut self.toasts);
-        let modal_open = self.pending_kill.is_some()
-            || self.affinity.is_some()
-            || self.run_task.is_some()
-            || self.pending_user.is_some();
-        if self.view == View::Processes && !modal_open && ui.ctx().memory(|m| m.focused().is_none())
-        {
-            self.keyboard(ui);
-        }
-
-        // Delete 结束选中项；输入框有焦点或确认框打开时不响应，免得删字时误杀进程。
-        let nothing_focused = ui.ctx().memory(|m| m.focused().is_none());
-        if nothing_focused
-            && self.view == View::Processes
-            && !modal_open
-            && ui.input(|i| i.key_pressed(Key::Delete))
-            && let Some((pids, label)) = self.selected_pids()
+        if self.view == View::Processes
+            && self.modal.is_none()
+            && ui.ctx().memory(|m| m.focused().is_none())
+            && let Some(action) = self.keyboard(ui)
         {
             let ctx = ui.ctx().clone();
-            self.apply(&ctx, Action::Kill { pids, label });
+            self.apply(&ctx, action);
         }
+    }
+}
+
+/// 注销 / 断开连接确认框的 (标题, 说明, 按钮)。
+fn user_prompt(a: &UserAction) -> (String, &'static str, &'static str) {
+    match a {
+        UserAction::Disconnect(_, name) => (
+            format!("断开 {name} 的连接？"),
+            "会话会保持登录状态，程序继续运行，用户可以稍后重新连接。",
+            "断开连接",
+        ),
+        UserAction::Logoff(_, name) => (
+            format!("注销 {name}？"),
+            "该用户所有打开的程序都会被关闭，未保存的数据将会丢失。",
+            "注销",
+        ),
     }
 }
 
@@ -1473,18 +1409,13 @@ fn cmd_summary(cmd: &str) -> Option<String> {
 }
 
 /// 命令行参数作为初始搜索词，例如 `pulse :5173`。
-/// 通过"替换任务管理器"启动时，系统会把 taskmgr.exe 的路径和 /7 之类的开关传进来，要忽略。
+/// 通过"替换任务管理器"启动时命令行是 `pulse.exe --taskmgr <taskmgr.exe 路径> /7 …`，标记之后的都忽略。
 fn initial_filter() -> String {
     std::env::args()
         .skip(1)
-        .filter(|a| !a.starts_with('/'))
-        .filter(|a| !a.to_lowercase().ends_with("taskmgr.exe"))
+        .take_while(|a| a != pulse_probe::os::TASKMGR_FLAG)
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn fmt_filetime(t: i64) -> String {
-    pulse_probe::os::format_filetime(t)
 }
 
 /// 系统错误的可读描述（为空时退回错误码）。
@@ -1545,7 +1476,7 @@ fn fmt_rate(b: u64) -> String {
     if b == 0 {
         "—".into()
     } else {
-        format!("{}/s", fmt_bytes(b))
+        fmt_rate_full(b)
     }
 }
 

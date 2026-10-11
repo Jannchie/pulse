@@ -196,7 +196,7 @@ fn raw(h: &OwnedHandle) -> HANDLE {
 }
 
 fn open(path: &str, access: u32) -> Option<OwnedHandle> {
-    let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
+    let wide = crate::wide(path);
     let h = unsafe {
         CreateFileW(
             PCWSTR(wide.as_ptr()),
@@ -440,7 +440,7 @@ fn volumes() -> Vec<(u32, Volume)> {
             continue;
         }
         let letter = (b'A' + i as u8) as char;
-        let root: Vec<u16> = format!("{letter}:\\").encode_utf16().chain([0]).collect();
+        let root = crate::wide(&format!("{letter}:\\"));
         // DRIVE_REMOVABLE = 2, DRIVE_FIXED = 3
         let kind = unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) };
         if kind != 2 && kind != 3 {

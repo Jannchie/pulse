@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::thread::JoinHandle;
 
+use crate::wide;
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_SUCCESS, WIN32_ERROR};
 use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
 use windows::Win32::System::Diagnostics::Etw::{
@@ -178,10 +179,6 @@ impl Properties {
     fn as_mut_ptr(&mut self) -> *mut EVENT_TRACE_PROPERTIES {
         self.0.as_mut_ptr().cast()
     }
-}
-
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// 所有物理网卡的累计 [接收, 发送] 字节。

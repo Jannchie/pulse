@@ -1,6 +1,6 @@
 //! 服务页：搜索、状态筛选、启动 / 停止 / 重启、修改启动类型、在服务与进程之间跳转。
 
-use eframe::egui::{self, Align, Align2, FontId, Layout, RichText, Sense, Stroke, Ui, vec2};
+use eframe::egui::{self, Align, Align2, FontId, Layout, RichText, Sense, Ui, vec2};
 use egui_extras::{Column, TableBuilder};
 use pulse_probe::services::{Service, StartType, State};
 
@@ -21,6 +21,8 @@ pub struct ServicesState {
     pub filter: String,
     pub state: Filter,
     pub selected: Option<String>,
+    /// 过滤结果缓存：(列表指针, 搜索词, 状态筛选) → 行下标。鼠标移动时每秒上百帧，不必每帧重算。
+    rows: Option<(usize, String, Filter, Vec<usize>)>,
 }
 
 pub enum ServiceAction {
@@ -34,6 +36,7 @@ pub enum ServiceAction {
     OpenManager,
 }
 
+/// `needle` 已经是小写。
 fn matches(s: &Service, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
@@ -41,7 +44,7 @@ fn matches(s: &Service, needle: &str) -> bool {
     if let Ok(pid) = needle.parse::<u32>() {
         return s.pid == pid;
     }
-    let n = needle.to_lowercase();
+    let n = needle;
     [
         Some(&s.name),
         Some(&s.display_name),
@@ -50,22 +53,36 @@ fn matches(s: &Service, needle: &str) -> bool {
     ]
     .into_iter()
     .flatten()
-    .any(|f| f.to_lowercase().contains(&n))
+    .any(|f| f.to_lowercase().contains(n))
 }
 
 pub fn show(ui: &mut Ui, services: &[Service], st: &mut ServicesState) -> Vec<ServiceAction> {
     let p = Palette::of(ui.ctx());
     let mut actions = Vec::new();
-    let needle = st.filter.trim().to_string();
-    let rows: Vec<&Service> = services
-        .iter()
-        .filter(|s| match st.state {
-            Filter::All => true,
-            Filter::Running => s.state == State::Running,
-            Filter::Stopped => s.state == State::Stopped,
-        })
-        .filter(|s| matches(s, &needle))
-        .collect();
+    let needle = st.filter.trim().to_lowercase();
+    let key = (services.as_ptr() as usize, needle.clone(), st.state);
+    if st
+        .rows
+        .as_ref()
+        .is_none_or(|(ptr, f, state, _)| (*ptr, f.clone(), *state) != key)
+    {
+        let rows = (0..services.len())
+            .filter(|&i| {
+                let s = &services[i];
+                let state_ok = match st.state {
+                    Filter::All => true,
+                    Filter::Running => s.state == State::Running,
+                    Filter::Stopped => s.state == State::Stopped,
+                };
+                state_ok && matches(s, &needle)
+            })
+            .collect();
+        st.rows = Some((key.0, key.1, key.2, rows));
+    }
+    let rows: Vec<&Service> = st
+        .rows
+        .as_ref()
+        .map_or(Vec::new(), |r| r.3.iter().map(|&i| &services[i]).collect());
     let selected = st
         .selected
         .as_ref()
@@ -152,25 +169,7 @@ pub fn show(ui: &mut Ui, services: &[Service], st: &mut ServicesState) -> Vec<Se
                 ("启动类型", false),
                 ("组", false),
             ] {
-                h.col(|ui| {
-                    let r = ui.max_rect();
-                    ui.painter().hline(
-                        r.x_range().expand(6.0),
-                        r.bottom() - 0.5,
-                        Stroke::new(1.0, p.border),
-                    );
-                    let layout = if right {
-                        Layout::right_to_left(Align::Center)
-                    } else {
-                        Layout::left_to_right(Align::Center)
-                    };
-                    ui.with_layout(layout, |ui| {
-                        if !right {
-                            ui.add_space(4.0);
-                        }
-                        ui.label(RichText::new(label).size(12.0).color(p.muted));
-                    });
-                });
+                h.col(|ui| widgets::header_label(ui, label, right));
             }
         })
         .body(|body| {
@@ -197,14 +196,12 @@ pub fn show(ui: &mut Ui, services: &[Service], st: &mut ServicesState) -> Vec<Se
                     }
                 });
                 row.col(|ui| {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let text = if s.pid > 0 {
-                            s.pid.to_string()
-                        } else {
-                            String::new()
-                        };
-                        ui.label(RichText::new(text).color(p.faint));
-                    });
+                    let text = if s.pid > 0 {
+                        s.pid.to_string()
+                    } else {
+                        String::new()
+                    };
+                    widgets::right_label(ui, RichText::new(text).color(p.faint));
                 });
                 row.col(|ui| state_cell(ui, s.state));
                 row.col(|ui| {
@@ -247,16 +244,8 @@ fn state_cell(ui: &mut Ui, state: State) {
 }
 
 fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
-    let p = Palette::of(ui.ctx());
-    ui.set_min_width(220.0);
-    ui.spacing_mut().item_spacing.y = 2.0;
-    ui.add_space(2.0);
-    ui.label(
-        RichText::new(s.display_name.as_ref())
-            .size(12.0)
-            .color(p.muted),
-    );
-    ui.add_space(2.0);
+    let _p = Palette::of(ui.ctx());
+    widgets::menu_heading(ui, &s.display_name, 220.0);
     let name = s.name.to_string();
     let running = s.state == State::Running;
     if s.state == State::Stopped
@@ -274,20 +263,15 @@ fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
         }
     }
     if s.start_type != StartType::Boot {
-        ui.menu_image_text_button(
-            widgets::icon_image(ui, Icon::Settings, 15.0, p.muted),
-            "启动类型",
-            |ui| {
-                ui.set_min_width(170.0);
-                for t in StartType::EDITABLE {
-                    if widgets::menu_check(ui, Icon::Check, t.label(), s.start_type == t).clicked()
-                        && s.start_type != t
-                    {
-                        actions.push(ServiceAction::SetStartType(name.clone(), t));
-                    }
+        widgets::submenu(ui, Icon::Settings, "启动类型", 170.0, |ui| {
+            for t in StartType::EDITABLE {
+                if widgets::menu_check(ui, Icon::Check, t.label(), s.start_type == t).clicked()
+                    && s.start_type != t
+                {
+                    actions.push(ServiceAction::SetStartType(name.clone(), t));
                 }
-            },
-        );
+            }
+        });
     }
     ui.separator();
     if s.pid > 0 && widgets::menu_item(ui, Icon::Window, "转到进程", false).clicked() {
@@ -299,22 +283,17 @@ fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
             s.name, s.display_name
         )));
     }
-    ui.menu_image_text_button(
-        widgets::icon_image(ui, Icon::Copy, 15.0, p.muted),
-        "复制",
-        |ui| {
-            ui.set_min_width(150.0);
-            for (label, value) in [
-                ("服务名", s.name.to_string()),
-                ("显示名称", s.display_name.to_string()),
-                ("可执行路径", s.binary.to_string()),
-            ] {
-                if !value.is_empty() && widgets::menu_item(ui, Icon::Copy, label, false).clicked() {
-                    actions.push(ServiceAction::Copy(value));
-                }
+    widgets::submenu(ui, Icon::Copy, "复制", 150.0, |ui| {
+        for (label, value) in [
+            ("服务名", s.name.to_string()),
+            ("显示名称", s.display_name.to_string()),
+            ("可执行路径", s.binary.to_string()),
+        ] {
+            if !value.is_empty() && widgets::menu_item(ui, Icon::Copy, label, false).clicked() {
+                actions.push(ServiceAction::Copy(value));
             }
-        },
-    );
+        }
+    });
     if widgets::menu_item(ui, Icon::ExternalLink, "打开服务管理器", false).clicked() {
         actions.push(ServiceAction::OpenManager);
     }

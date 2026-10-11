@@ -87,8 +87,8 @@ pub fn semibold() -> FontFamily {
     FontFamily::Name("semibold".into())
 }
 
-/// 表格行高。滚轮一格滚 3 行，与 Windows 默认一致。
-const ROW_HEIGHT: f32 = 30.0;
+/// 进程、服务表格的行高。滚轮一格滚 3 行，与 Windows 默认一致。
+pub const ROW_HEIGHT: f32 = 30.0;
 
 pub fn install(ctx: &egui::Context) {
     install_fonts(ctx);

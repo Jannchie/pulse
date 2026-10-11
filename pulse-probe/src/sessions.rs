@@ -14,7 +14,7 @@ pub struct Session {
     pub domain: String,
     /// WinStation 名，如 Console、RDP-Tcp#0。
     pub station: String,
-    pub state: &'static str,
+    pub state: SessionState,
     /// Pulse 自己所在的会话。
     pub current: bool,
 }
@@ -52,11 +52,28 @@ pub fn list() -> Vec<Session> {
     out
 }
 
-fn state(s: WTS_CONNECTSTATE_CLASS) -> &'static str {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SessionState {
+    Active,
+    Disconnected,
+    Other,
+}
+
+impl SessionState {
+    pub fn label(self) -> &'static str {
+        match self {
+            SessionState::Active => "活动",
+            SessionState::Disconnected => "已断开",
+            SessionState::Other => "其他",
+        }
+    }
+}
+
+fn state(s: WTS_CONNECTSTATE_CLASS) -> SessionState {
     match s {
-        x if x == WTSActive => "活动",
-        x if x == WTSDisconnected => "已断开",
-        _ => "其他",
+        x if x == WTSActive => SessionState::Active,
+        x if x == WTSDisconnected => SessionState::Disconnected,
+        _ => SessionState::Other,
     }
 }
 

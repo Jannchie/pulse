@@ -194,7 +194,7 @@ pub fn gpu_card(ui: &mut Ui, width: f32, snap: &Snapshot, history: &[f32]) -> Re
     let name = snap
         .gpus
         .first()
-        .map_or("未检测到", |g| short_name(&g.name))
+        .map_or("未检测到", |g| short_gpu_name(&g.name))
         .to_string();
     let (resp, c) = card_frame(ui, width, "GPU", Icon::Gpu, &name, color, false);
     let painter = ui.painter_at(c.expand(1.0));
@@ -304,7 +304,8 @@ pub fn disk_card(ui: &mut Ui, width: f32, snap: &Snapshot) -> Response {
     resp
 }
 
-fn short_name(name: &str) -> &str {
+/// 去掉显卡名里的厂商前缀："NVIDIA GeForce RTX 3090" → "RTX 3090"。
+pub fn short_gpu_name(name: &str) -> &str {
     ["NVIDIA GeForce ", "NVIDIA ", "AMD Radeon ", "Intel(R) "]
         .iter()
         .find_map(|prefix| name.strip_prefix(prefix))
@@ -820,6 +821,89 @@ pub fn chevron(ui: &Ui, center: Pos2, expanded: bool, color: Color32) {
         Icon::ChevronRight
     };
     icon(ui, glyph, center, 14.0, color);
+}
+
+// ---------------------------------------------------------------- 表格与菜单的共用部件
+
+/// 表头单元格：底部细线 + 左/右对齐的标签。返回标签的响应（可用于点击排序）。
+pub fn table_header(
+    ui: &mut Ui,
+    label: RichText,
+    right_aligned: bool,
+    trailing: impl FnOnce(&mut Ui),
+) -> Response {
+    let p = Palette::of(ui.ctx());
+    let r = ui.max_rect();
+    ui.painter().hline(
+        r.x_range().expand(6.0),
+        r.bottom() - 0.5,
+        Stroke::new(1.0, p.border),
+    );
+    let layout = if right_aligned {
+        egui::Layout::right_to_left(egui::Align::Center)
+    } else {
+        egui::Layout::left_to_right(egui::Align::Center)
+    };
+    let mut trailing = Some(trailing);
+    ui.with_layout(layout, |ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if !right_aligned {
+            ui.add_space(4.0);
+        }
+        // 附加内容（排序箭头）总在标签外侧：右对齐列里先放，左对齐列里后放。
+        if right_aligned && let Some(f) = trailing.take() {
+            f(ui);
+        }
+        let resp = ui.add(egui::Label::new(label).sense(Sense::click()));
+        if let Some(f) = trailing.take() {
+            f(ui);
+        }
+        resp
+    })
+    .inner
+}
+
+/// 普通表头：12px 次要色标签。
+pub fn header_label(ui: &mut Ui, label: &str, right_aligned: bool) {
+    let p = Palette::of(ui.ctx());
+    table_header(
+        ui,
+        RichText::new(label).size(12.0).color(p.muted),
+        right_aligned,
+        |_| {},
+    );
+}
+
+/// 右对齐的单元格文字。
+pub fn right_label(ui: &mut Ui, text: RichText) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.label(text)
+    });
+}
+
+/// 右键菜单顶部的标题行。
+pub fn menu_heading(ui: &mut Ui, text: &str, min_width: f32) {
+    let p = Palette::of(ui.ctx());
+    ui.set_min_width(min_width);
+    ui.spacing_mut().item_spacing.y = 2.0;
+    ui.add_space(2.0);
+    ui.label(RichText::new(text).size(12.0).color(p.muted));
+    ui.add_space(2.0);
+}
+
+/// 带图标的子菜单入口。
+pub fn submenu(
+    ui: &mut Ui,
+    glyph: Icon,
+    label: &str,
+    min_width: f32,
+    add_contents: impl FnOnce(&mut Ui),
+) {
+    let p = Palette::of(ui.ctx());
+    ui.menu_image_text_button(icon_image(ui, glyph, 15.0, p.muted), label, |ui| {
+        ui.set_min_width(min_width);
+        add_contents(ui);
+    });
 }
 
 #[cfg(test)]

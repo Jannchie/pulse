@@ -212,7 +212,7 @@ fn sidebar(ui: &mut Ui, snap: &Snapshot, series: &Series, device: &mut Device) {
             icon: Icon::Gpu,
             color: metric::GPU,
             title: format!("GPU {i}"),
-            sub: format!("{} · {:.0}%", short_gpu(&g.name), g.usage),
+            sub: format!("{} · {:.0}%", widgets::short_gpu_name(&g.name), g.usage),
             spark: get(&format!("gpu.{i}")),
             max: Some(1.0),
         });
@@ -490,13 +490,6 @@ fn fmt_duration(d: std::time::Duration) -> String {
         s / 60 % 60,
         s % 60
     )
-}
-
-fn short_gpu(name: &str) -> &str {
-    ["NVIDIA GeForce ", "NVIDIA ", "AMD Radeon ", "Intel(R) "]
-        .iter()
-        .find_map(|prefix| name.strip_prefix(prefix))
-        .unwrap_or(name)
 }
 
 fn letters(d: &DiskStat) -> String {

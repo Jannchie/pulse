@@ -84,11 +84,8 @@ pub(crate) fn image_path(handle: &OwnedHandle) -> Option<String> {
 }
 
 pub fn kill(pid: u32) -> windows::core::Result<()> {
-    unsafe {
-        let h = OpenProcess(PROCESS_TERMINATE, false, pid)?;
-        let h = OwnedHandle::from_raw_handle(h.0);
-        TerminateProcess(HANDLE(h.as_raw_handle()), 1)
-    }
+    let h = crate::control::open(pid, PROCESS_TERMINATE)?;
+    unsafe { TerminateProcess(HANDLE(h.as_raw_handle()), 1) }
 }
 
 /// 在资源管理器中定位文件。
@@ -100,16 +97,20 @@ pub fn reveal_in_explorer(path: &str) {
 
 /// exe 的文件描述（资源管理器"属性 → 详细信息"里的那个），例如 Code.exe → "Visual Studio Code"。
 pub(crate) fn file_description(path: &str) -> Option<String> {
-    version_string(path, "FileDescription")
+    version_strings(path, &["FileDescription"]).pop().flatten()
 }
 
-/// 读取 exe 版本资源里的字符串，如 "FileDescription"、"CompanyName"。
-pub fn version_string(path: &str, key: &str) -> Option<String> {
+/// 读取 exe 版本资源里的字符串，如 "FileDescription"、"CompanyName"。文件只读一次，按 `keys` 顺序返回。
+pub fn version_strings(path: &str, keys: &[&str]) -> Vec<Option<String>> {
+    version_strings_inner(path, keys).unwrap_or_else(|| vec![None; keys.len()])
+}
+
+fn version_strings_inner(path: &str, keys: &[&str]) -> Option<Vec<Option<String>>> {
     use windows::Win32::Storage::FileSystem::{
         GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
     };
 
-    let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
+    let wide = crate::wide(path);
     let path = PCWSTR(wide.as_ptr());
     let size = unsafe { GetFileVersionInfoSizeW(path, None) };
     if size == 0 {
@@ -119,7 +120,7 @@ pub fn version_string(path: &str, key: &str) -> Option<String> {
     unsafe { GetFileVersionInfoW(path, None, size, data.as_mut_ptr().cast()) }.ok()?;
 
     let query = |sub: &str| -> Option<(*const u8, usize)> {
-        let sub: Vec<u16> = sub.encode_utf16().chain([0]).collect();
+        let sub = crate::wide(sub);
         let mut ptr = std::ptr::null_mut();
         let mut len = 0u32;
         let ok = unsafe {
@@ -142,17 +143,16 @@ pub fn version_string(path: &str, key: &str) -> Option<String> {
         }
     }
     langs.extend(["040904b0", "040904e4", "080404b0", "000004b0"].map(String::from));
-    for lang in langs {
-        if let Some((ptr, len)) = query(&format!(r"\StringFileInfo\{lang}\{key}")) {
+    let lookup = |key: &str| {
+        langs.iter().find_map(|lang| {
+            let (ptr, len) = query(&format!(r"\StringFileInfo\{lang}\{key}"))?;
             let units = unsafe { std::slice::from_raw_parts(ptr as *const u16, len) };
             let end = units.iter().position(|&c| c == 0).unwrap_or(units.len());
             let s = String::from_utf16_lossy(&units[..end]).trim().to_string();
-            if !s.is_empty() {
-                return Some(s);
-            }
-        }
-    }
-    None
+            (!s.is_empty()).then_some(s)
+        })
+    };
+    Some(keys.iter().map(|k| lookup(k)).collect())
 }
 
 /// 进程命令行（Windows 8.1+ 的 ProcessCommandLineInformation，有限查询权限即可）。
@@ -222,13 +222,16 @@ pub fn format_filetime(t: i64) -> String {
     )
 }
 
+/// 通过"替换任务管理器"启动时命令行里的标记。
+pub const TASKMGR_FLAG: &str = "--taskmgr";
+
 const IFEO_TASKMGR: &str =
     r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe";
 
 /// 是否已用 IFEO 的 Debugger 值把任务管理器（含 Ctrl+Shift+Esc）重定向到 Pulse。
 pub fn taskmgr_replaced() -> bool {
     use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
-    let key: Vec<u16> = IFEO_TASKMGR.encode_utf16().chain([0]).collect();
+    let key = crate::wide(IFEO_TASKMGR);
     let mut buf = [0u16; 1024];
     let mut len = (buf.len() * 2) as u32;
     let ok = unsafe {
@@ -255,7 +258,7 @@ pub fn set_taskmgr_replaced(on: bool) -> Result<(), String> {
         HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE, REG_OPEN_CREATE_OPTIONS, REG_SZ, RegCloseKey,
         RegCreateKeyExW, RegDeleteValueW, RegSetValueExW,
     };
-    let key_path: Vec<u16> = IFEO_TASKMGR.encode_utf16().chain([0]).collect();
+    let key_path = crate::wide(IFEO_TASKMGR);
     let mut key = HKEY::default();
     let r = unsafe {
         RegCreateKeyExW(
@@ -277,7 +280,8 @@ pub fn set_taskmgr_replaced(on: bool) -> Result<(), String> {
     }
     let r = if on {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let value = format!("\"{}\"", exe.display());
+        // 带上 --taskmgr：系统会把 taskmgr.exe 路径和开关附加在后面，Pulse 见到标记就忽略其后的参数。
+        let value = format!("\"{}\" {TASKMGR_FLAG}", exe.display());
         let data: Vec<u8> = value
             .encode_utf16()
             .chain([0])

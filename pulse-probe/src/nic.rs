@@ -54,6 +54,8 @@ struct Adapter {
 
 pub struct NicMonitor {
     adapters: Vec<Adapter>,
+    /// 已连接的 Wi-Fi（接口 GUID, SSID, 信号），随适配器列表一起刷新：WLAN 查询要走 RPC，没必要每秒做。
+    wifi: Vec<(String, String, u32)>,
     adapters_at: Option<Instant>,
     /// index → (时刻, 收, 发)
     prev: Vec<(u32, Instant, u64, u64)>,
@@ -69,6 +71,7 @@ impl NicMonitor {
     pub fn new() -> Self {
         Self {
             adapters: Vec::new(),
+            wifi: Vec::new(),
             adapters_at: None,
             prev: Vec::new(),
         }
@@ -80,14 +83,15 @@ impl NicMonitor {
             .is_none_or(|t| t.elapsed() >= ADAPTER_INTERVAL)
         {
             self.adapters = adapters();
+            self.wifi = if self.adapters.iter().any(|a| a.kind == "Wi-Fi") {
+                wifi_connections()
+            } else {
+                Vec::new()
+            };
             self.adapters_at = Some(Instant::now());
         }
         let counters = counters();
-        let wifi = if self.adapters.iter().any(|a| a.kind == "Wi-Fi") {
-            wifi_connections()
-        } else {
-            Vec::new()
-        };
+        let wifi = &self.wifi;
         let now = Instant::now();
         let mut next = Vec::with_capacity(self.adapters.len());
         let out = self
