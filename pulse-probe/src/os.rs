@@ -100,6 +100,11 @@ pub fn reveal_in_explorer(path: &str) {
 
 /// exe 的文件描述（资源管理器"属性 → 详细信息"里的那个），例如 Code.exe → "Visual Studio Code"。
 pub(crate) fn file_description(path: &str) -> Option<String> {
+    version_string(path, "FileDescription")
+}
+
+/// 读取 exe 版本资源里的字符串，如 "FileDescription"、"CompanyName"。
+pub fn version_string(path: &str, key: &str) -> Option<String> {
     use windows::Win32::Storage::FileSystem::{
         GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
     };
@@ -138,7 +143,7 @@ pub(crate) fn file_description(path: &str) -> Option<String> {
     }
     langs.extend(["040904b0", "040904e4", "080404b0", "000004b0"].map(String::from));
     for lang in langs {
-        if let Some((ptr, len)) = query(&format!(r"\StringFileInfo\{lang}\FileDescription")) {
+        if let Some((ptr, len)) = query(&format!(r"\StringFileInfo\{lang}\{key}")) {
             let units = unsafe { std::slice::from_raw_parts(ptr as *const u16, len) };
             let end = units.iter().position(|&c| c == 0).unwrap_or(units.len());
             let s = String::from_utf16_lossy(&units[..end]).trim().to_string();
@@ -193,4 +198,26 @@ pub(crate) fn command_line(handle: &OwnedHandle) -> Option<String> {
     let s = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(ptr, bytes / 2) });
     let s = s.trim();
     (!s.is_empty()).then(|| s.to_string())
+}
+
+/// FILETIME（100ns，自 1601 年起，UTC）→ 本地时间 `YYYY-MM-DD HH:MM`。
+pub fn format_filetime(t: i64) -> String {
+    use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    let ft = FILETIME {
+        dwLowDateTime: t as u32,
+        dwHighDateTime: (t >> 32) as u32,
+    };
+    let (mut utc, mut local) = (SYSTEMTIME::default(), SYSTEMTIME::default());
+    unsafe {
+        if FileTimeToSystemTime(&ft, &mut utc).is_err()
+            || SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).is_err()
+        {
+            return "—".into();
+        }
+    }
+    format!(
+        "{}-{:02}-{:02} {:02}:{:02}",
+        local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute
+    )
 }

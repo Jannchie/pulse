@@ -7,6 +7,7 @@ mod icons_gen;
 mod model;
 mod perf;
 mod services_view;
+mod startup_view;
 mod table;
 mod theme;
 mod widgets;
@@ -27,7 +28,9 @@ use icons_gen::Icon;
 use model::{Query, Row, SortKey, Table};
 use perf::{Device, Series};
 use pulse_probe::services::{Service, ServiceMonitor};
+use pulse_probe::startup::StartupItem;
 use services_view::{ServiceAction, ServicesState};
+use startup_view::{StartupAction, StartupState};
 use theme::{Palette, metric};
 
 const INTERVAL: Duration = Duration::from_secs(1);
@@ -204,6 +207,7 @@ enum View {
     Processes,
     Performance,
     Services,
+    Startup,
 }
 
 #[derive(Clone, PartialEq)]
@@ -288,6 +292,10 @@ struct App {
     services_shared: Arc<Mutex<ServicesShared>>,
     services: Arc<Vec<Service>>,
     services_view: ServicesState,
+    startup: Vec<StartupItem>,
+    startup_view: StartupState,
+    /// 正在后台读取启动项。
+    startup_rx: Option<Receiver<Vec<StartupItem>>>,
     /// 键盘导航后让表格滚动到这一行。
     scroll_to: Option<usize>,
     /// 最近一秒内的重绘时刻，用来确认空闲时没有空转。
@@ -327,6 +335,9 @@ impl App {
             services_shared: spawn_services(ctx.clone()),
             services: Arc::default(),
             services_view: ServicesState::default(),
+            startup: Vec::new(),
+            startup_view: StartupState::default(),
+            startup_rx: None,
             scroll_to: None,
             passes: VecDeque::new(),
         }
@@ -511,6 +522,48 @@ impl App {
         self.view = View::Services;
         self.services_view.filter = pid.to_string();
         self.services_view.state = services_view::Filter::All;
+    }
+
+    /// 读取启动项要访问几十个 exe 的版本资源，放到后台线程。
+    fn reload_startup(&mut self, ctx: &egui::Context) {
+        let (tx, rx) = channel();
+        self.startup_rx = Some(rx);
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(pulse_probe::startup::list());
+            ctx.request_repaint();
+        });
+    }
+
+    fn apply_startup(&mut self, ctx: &egui::Context, action: StartupAction) {
+        use pulse_probe::control;
+        match action {
+            StartupAction::SetEnabled(i, on) => {
+                let Some(item) = self.startup.get_mut(i) else {
+                    return;
+                };
+                let verb = if on { "启用" } else { "禁用" };
+                match pulse_probe::startup::set_enabled(item, on) {
+                    Ok(()) => {
+                        item.enabled = on;
+                        let name = item.name.clone();
+                        self.notify_ok(format!("已{verb} {name} 的开机启动"), None);
+                    }
+                    Err(e) => {
+                        let name = item.name.clone();
+                        self.notify_err(format!("无法{verb} {name}"), Some(e));
+                    }
+                }
+            }
+            StartupAction::Reveal(path) => pulse_probe::reveal_in_explorer(&path),
+            StartupAction::Properties(path) => control::show_properties(&path),
+            StartupAction::Search(q) => control::search_online(&q),
+            StartupAction::Copy(text) => ctx.copy_text(text),
+            StartupAction::OpenFolder => {
+                let _ = control::run("shell:startup", false);
+            }
+            StartupAction::Refresh => self.reload_startup(ctx),
+        }
     }
 
     fn apply_service(&mut self, ctx: &egui::Context, action: ServiceAction) {
@@ -781,6 +834,7 @@ impl App {
                 (View::Processes, Icon::List, "进程"),
                 (View::Performance, Icon::Activity, "性能"),
                 (View::Services, Icon::Settings, "服务"),
+                (View::Startup, Icon::Rocket, "启动应用"),
             ] {
                 let on = self.view == view;
                 let galley = ui.painter().layout_no_wrap(
@@ -1045,6 +1099,32 @@ impl eframe::App for App {
             View::Processes => {
                 central.show(ui, |ui| self.table(ui));
             }
+            View::Startup => {
+                if self.startup.is_empty() && self.startup_rx.is_none() {
+                    self.reload_startup(ui.ctx());
+                }
+                let actions = central
+                    .show(ui, |ui| {
+                        ui.add_space(4.0);
+                        if self.startup.is_empty() {
+                            ui.label(RichText::new("正在读取启动项…").color(p.muted));
+                            Vec::new()
+                        } else {
+                            startup_view::show(
+                                ui,
+                                &self.startup,
+                                &mut self.startup_view,
+                                &mut self.icons,
+                                self.snapshot.elevated,
+                            )
+                        }
+                    })
+                    .inner;
+                let ctx = ui.ctx().clone();
+                for a in actions {
+                    self.apply_startup(&ctx, a);
+                }
+            }
             View::Services => {
                 let actions = central
                     .show(ui, |ui| {
@@ -1120,6 +1200,12 @@ impl eframe::App for App {
                 None => {}
             }
         }
+        if let Some(rx) = &self.startup_rx
+            && let Ok(items) = rx.try_recv()
+        {
+            self.startup = items;
+            self.startup_rx = None;
+        }
         while let Ok(t) = self.jobs.1.try_recv() {
             self.toasts.push(t);
         }
@@ -1184,6 +1270,10 @@ fn cmd_summary(cmd: &str) -> Option<String> {
         })
         .collect();
     (!summary.is_empty()).then(|| summary.join(" "))
+}
+
+fn fmt_filetime(t: i64) -> String {
+    pulse_probe::os::format_filetime(t)
 }
 
 /// 系统错误的可读描述（为空时退回错误码）。

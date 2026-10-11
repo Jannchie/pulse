@@ -669,6 +669,48 @@ pub fn menu_item(ui: &mut Ui, glyph: Icon, label: &str, danger: bool) -> Respons
     resp
 }
 
+/// 开关。返回的响应在切换时 `changed()`。
+pub fn switch(ui: &mut Ui, on: &mut bool, enabled: bool) -> Response {
+    let p = Palette::of(ui.ctx());
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(36.0, 20.0), sense);
+    if enabled && resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let track = match (*on, enabled) {
+        (true, true) => p.accent,
+        (true, false) => p.accent.gamma_multiply(0.4),
+        (false, _) => p.track,
+    };
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(10), track);
+    if !*on {
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(10),
+            Stroke::new(1.0, p.border),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let x = if *on {
+        rect.right() - 10.0
+    } else {
+        rect.left() + 10.0
+    };
+    let knob = if *on { Color32::WHITE } else { p.muted };
+    ui.painter()
+        .circle_filled(pos2(x, rect.center().y), 6.5, knob);
+    if enabled {
+        resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
 /// 带勾选标记的菜单项（勾在右侧）。
 pub fn menu_check(ui: &mut Ui, glyph: Icon, label: &str, checked: bool) -> Response {
     let p = Palette::of(ui.ctx());
