@@ -325,6 +325,40 @@ pub fn disk_card(ui: &mut Ui, width: f32, snap: &Snapshot) -> Response {
     resp
 }
 
+/// Pulse 图标，按物理像素渲染成贴图（每个尺寸缓存一份），点阵不糊。返回所占区域。
+pub fn brand_mark(ui: &mut Ui, size: f32) -> Rect {
+    let ctx = ui.ctx().clone();
+    let px = (size * ctx.pixels_per_point()).round().max(16.0) as u32;
+    let id = egui::Id::new(("brand-mark", px));
+    let tex = match ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        Some(t) => t,
+        None => {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [px as usize, px as usize],
+                &crate::brand_art::brand_rgba(px),
+            );
+            let t = ctx.load_texture(format!("brand-{px}"), image, egui::TextureOptions::NEAREST);
+            ctx.data_mut(|d| d.insert_temp(id, t.clone()));
+            t
+        }
+    };
+    let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+    // 左上角对齐到物理像素，贴图与屏幕像素一一对应。
+    let ppp = ctx.pixels_per_point();
+    let min = pos2(
+        (rect.left() * ppp).round() / ppp,
+        (rect.top() * ppp).round() / ppp,
+    );
+    let draw = Rect::from_min_size(min, vec2(px as f32 / ppp, px as f32 / ppp));
+    ui.painter().image(
+        tex.id(),
+        draw,
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+    rect
+}
+
 /// 去掉显卡名里的厂商前缀："NVIDIA GeForce RTX 3090" → "RTX 3090"。
 pub fn short_gpu_name(name: &str) -> &str {
     ["NVIDIA GeForce ", "NVIDIA ", "AMD Radeon ", "Intel(R) "]

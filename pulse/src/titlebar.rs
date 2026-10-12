@@ -55,6 +55,7 @@ pub fn install(cc: &eframe::CreationContext<'_>) -> bool {
     };
     let hwnd = HWND(w.hwnd.get() as *mut _);
     let _ = CTX.set(cc.egui_ctx.clone());
+    set_window_icon(hwnd);
     unsafe {
         if !SetWindowSubclass(hwnd, Some(subclass), 1, 0).as_bool() {
             return false;
@@ -72,6 +73,41 @@ pub fn install(cc: &eframe::CreationContext<'_>) -> bool {
     }
     INSTALLED.store(true, Ordering::Relaxed);
     true
+}
+
+/// 窗口与任务栏图标改用 exe 里的图标资源（build.rs 生成，含 16–256 多个尺寸），
+/// 按当前 DPI 取合适的尺寸，比 eframe 用一张位图缩放清晰。
+fn set_window_icon(hwnd: HWND) {
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW, SM_CXICON, SM_CXSMICON,
+        SendMessageW, WM_SETICON,
+    };
+    unsafe {
+        let Ok(module) = GetModuleHandleW(None) else {
+            return;
+        };
+        let dpi = GetDpiForWindow(hwnd);
+        for (kind, metric) in [(ICON_SMALL, SM_CXSMICON), (ICON_BIG, SM_CXICON)] {
+            let px = GetSystemMetricsForDpi(metric, dpi);
+            // 资源 ID 1（见 build.rs 生成的 .rc），即 MAKEINTRESOURCE(1)：用整数充当指针。
+            if let Ok(icon) = LoadImageW(
+                Some(module.into()),
+                windows::core::PCWSTR(std::ptr::without_provenance(1)),
+                IMAGE_ICON,
+                px,
+                px,
+                LR_DEFAULTCOLOR,
+            ) {
+                SendMessageW(
+                    hwnd,
+                    WM_SETICON,
+                    Some(WPARAM(kind as usize)),
+                    Some(LPARAM(icon.0 as isize)),
+                );
+            }
+        }
+    }
 }
 
 /// 是否由 Pulse 自己绘制标题栏。

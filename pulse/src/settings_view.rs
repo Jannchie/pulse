@@ -125,6 +125,31 @@ pub fn show(
                             }
                         });
                     });
+
+                    group(ui, "关于", |ui| {
+                        ui.add_space(16.0);
+                        ui.horizontal(|ui| {
+                            widgets::brand_mark(ui, 56.0);
+                            ui.add_space(10.0);
+                            ui.vertical(|ui| {
+                                let p = Palette::of(ui.ctx());
+                                ui.spacing_mut().item_spacing.y = 4.0;
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(format!("Pulse {}", env!("CARGO_PKG_VERSION")))
+                                        .size(15.0)
+                                        .family(semibold())
+                                        .color(p.text),
+                                );
+                                ui.label(
+                                    RichText::new("用点阵描绘系统脉搏的 Windows 任务管理器。")
+                                        .size(12.0)
+                                        .color(p.muted),
+                                );
+                            });
+                        });
+                        ui.add_space(16.0);
+                    });
                     ui.add_space(16.0);
                 });
             });

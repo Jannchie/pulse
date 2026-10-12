@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod brand_art;
 mod dialogs;
 mod gpu_panel;
 mod icons;
@@ -47,7 +48,13 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("Pulse")
             .with_inner_size([1200.0, 780.0])
-            .with_min_inner_size([1100.0, 640.0]),
+            .with_min_inner_size([1100.0, 640.0])
+            // 先给一个图标，免得出现 eframe 默认的 egui 标志；窗口建好后 titlebar 会换成 exe 资源里的多尺寸图标。
+            .with_icon(std::sync::Arc::new(egui::IconData {
+                rgba: brand_art::brand_rgba(64),
+                width: 64,
+                height: 64,
+            })),
         // NVIDIA 等驱动的 OpenGL vsync 在 SwapBuffers 里忙等，鼠标划过表格时能吃满一个核。
         // 窗口由 DWM 合成本就不会撕裂，所以直接关掉。重绘只由输入事件触发（见 theme 里关掉的动画），
         // 不会空转；在 UI 线程里睡眠限帧反而会让驱动线程忙等，实测更耗 CPU。
@@ -887,8 +894,8 @@ impl App {
         let ui = &mut child;
         ui.spacing_mut().item_spacing.x = 4.0;
 
-        let (mark, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
-        widgets::icon(ui, Icon::Activity, mark.center(), 18.0, p.accent);
+        widgets::brand_mark(ui, 20.0);
+        ui.add_space(2.0);
         ui.label(
             RichText::new("Pulse")
                 .size(13.5)
