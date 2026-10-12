@@ -43,8 +43,17 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Option<UserAc
 
     ui.label(
         RichText::new(match sessions.len() {
-            1 => t!("1 个已登录的用户会话", "1 signed-in user session").to_string(),
-            n => tf!("{n} 个已登录的用户会话", "{n} signed-in user sessions"),
+            1 => t!(
+                "1 个已登录的用户会话",
+                "1 signed-in user session",
+                "サインイン中のユーザー セッション：1 件"
+            )
+            .to_string(),
+            n => tf!(
+                "{n} 个已登录的用户会话",
+                "{n} signed-in user sessions",
+                "サインイン中のユーザー セッション：{n} 件"
+            ),
         })
         .size(13.0)
         .color(p.muted),
@@ -65,14 +74,14 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Option<UserAc
         .column(Column::exact(90.0))
         .header(34.0, |mut h| {
             for (label, right) in [
-                (t!("用户", "User"), false),
-                (t!("会话", "Session"), false),
-                (t!("状态", "Status"), false),
-                (t!("进程", "Processes"), true),
+                (t!("用户", "User", "ユーザー"), false),
+                (t!("会话", "Session", "セッション"), false),
+                (t!("状态", "Status", "状態"), false),
+                (t!("进程", "Processes", "プロセス"), true),
                 ("CPU", true),
-                (t!("内存", "Memory"), true),
-                (t!("磁盘", "Disk"), true),
-                (t!("网络", "Network"), true),
+                (t!("内存", "Memory", "メモリ"), true),
+                (t!("磁盘", "Disk", "ディスク"), true),
+                (t!("网络", "Network", "ネットワーク"), true),
             ] {
                 h.col(|ui| widgets::header_label(ui, label, right));
             }
@@ -92,7 +101,7 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Option<UserAc
                     widgets::icon(ui, Icon::User, r.center(), 18.0, p.accent);
                     ui.label(RichText::new(&name).family(semibold()).color(p.text));
                     if s.current {
-                        widgets::status_chip(ui, t!("当前", "You"), p.muted);
+                        widgets::status_chip(ui, t!("当前", "You", "自分"), p.muted);
                     }
                 });
                 row.col(|ui| {
@@ -122,12 +131,23 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Option<UserAc
                 row.response().context_menu(|ui| {
                     widgets::menu_heading(ui, &name, 200.0);
                     if s.state == SessionState::Active
-                        && widgets::menu_item(ui, Icon::Unlink, t!("断开连接", "Disconnect"), false)
-                            .clicked()
+                        && widgets::menu_item(
+                            ui,
+                            Icon::Unlink,
+                            t!("断开连接", "Disconnect", "切断"),
+                            false,
+                        )
+                        .clicked()
                     {
                         action = Some(UserAction::Disconnect(s.id, name.clone()));
                     }
-                    if widgets::menu_item(ui, Icon::Logout, t!("注销", "Sign out"), true).clicked()
+                    if widgets::menu_item(
+                        ui,
+                        Icon::Logout,
+                        t!("注销", "Sign out", "サインアウト"),
+                        true,
+                    )
+                    .clicked()
                     {
                         action = Some(UserAction::Logoff(s.id, name.clone()));
                     }

@@ -44,17 +44,17 @@ pub fn page(
         ui,
         &[
             Kpi::new(
-                t!("利用率", "Utilization"),
+                t!("利用率", "Utilization", "使用率"),
                 format!("{:.0}", gpu.usage),
                 "%",
                 metric::GPU,
             )
-            .caption(busiest.map_or(t!("空闲", "Idle").into(), |e| {
-                tf!("最忙：{}", "Busiest: {}", e.0)
+            .caption(busiest.map_or(t!("空闲", "Idle", "アイドル").into(), |e| {
+                tf!("最忙：{}", "Busiest: {}", "最大負荷：{}", e.0)
             }))
             .bar(gpu.usage / 100.0),
             Kpi::new(
-                t!("专用显存", "Dedicated GPU memory"),
+                t!("专用显存", "Dedicated GPU memory", "専用 GPU メモリ"),
                 format!("{:.1}", gb(gpu.dedicated_used)),
                 format!("/ {:.0} GB", gb(gpu.dedicated_total)),
                 metric::GPU,
@@ -65,24 +65,25 @@ pub fn page(
             ))
             .bar(frac(gpu.dedicated_used, gpu.dedicated_total)),
             Kpi::new(
-                t!("共享 GPU 内存", "Shared GPU memory"),
+                t!("共享 GPU 内存", "Shared GPU memory", "共有 GPU メモリ"),
                 format!("{:.1}", gb(gpu.shared_used)),
                 format!("/ {:.0} GB", gb(gpu.shared_total)),
                 metric::MEMORY,
             )
             .caption(t!(
                 "显存不够时借用的系统内存",
-                "System RAM used as overflow"
+                "System RAM used as overflow",
+                "専用メモリの不足時に使用"
             ))
             .bar(frac(gpu.shared_used, gpu.shared_total)),
             Kpi::new(
-                t!("使用中的程序", "Programs using GPU"),
+                t!("使用中的程序", "Programs using GPU", "使用中のプログラム"),
                 users.len().to_string(),
-                t!("个", ""),
+                t!("个", "", "個"),
                 metric::GPU,
             )
             .caption(users.first().map_or("—".into(), |u| {
-                tf!("显存最多：{}", "Most VRAM: {}", u.name)
+                tf!("显存最多：{}", "Most VRAM: {}", "VRAM 最大：{}", u.name)
             })),
         ],
     );
@@ -93,7 +94,7 @@ pub fn page(
         |ui| {
             chart(
                 ui,
-                t!("利用率", "Utilization"),
+                t!("利用率", "Utilization", "使用率"),
                 150.0,
                 &[(&h.usage, metric::GPU, false)],
                 Some(1.0),
@@ -104,7 +105,7 @@ pub fn page(
         |ui| {
             chart(
                 ui,
-                t!("专用显存", "Dedicated GPU memory"),
+                t!("专用显存", "Dedicated GPU memory", "専用 GPU メモリ"),
                 150.0,
                 &[(&h.dedicated, metric::GPU, false)],
                 Some(1.0),
@@ -118,11 +119,18 @@ pub fn page(
     two_columns(
         ui,
         |ui| {
-            section(ui, t!("引擎", "Engines"));
+            section(ui, t!("引擎", "Engines", "エンジン"));
             engines(ui, gpu, h);
         },
         |ui| {
-            section(ui, t!("使用 GPU 的程序", "Programs using the GPU"));
+            section(
+                ui,
+                t!(
+                    "使用 GPU 的程序",
+                    "Programs using the GPU",
+                    "GPU を使用しているプログラム"
+                ),
+            );
             action = programs(ui, &users, icons);
         },
     );
@@ -218,9 +226,13 @@ fn programs(ui: &mut Ui, list: &[Program], icons: &mut Icons) -> Option<PanelAct
     let p = Palette::of(ui.ctx());
     if list.is_empty() {
         ui.label(
-            egui::RichText::new(t!("没有程序在使用 GPU", "No programs are using the GPU"))
-                .size(12.0)
-                .color(p.faint),
+            egui::RichText::new(t!(
+                "没有程序在使用 GPU",
+                "No programs are using the GPU",
+                "GPU を使用しているプログラムはありません"
+            ))
+            .size(12.0)
+            .color(p.faint),
         );
         return None;
     }
@@ -245,11 +257,15 @@ fn programs(ui: &mut Ui, list: &[Program], icons: &mut Icons) -> Option<PanelAct
     };
     head(
         card.left() + 14.0,
-        t!("程序", "Program"),
+        t!("程序", "Program", "プログラム"),
         Align2::LEFT_CENTER,
     );
     head(col_gpu, "GPU", Align2::RIGHT_CENTER);
-    head(col_vram, t!("专用显存", "VRAM"), Align2::RIGHT_CENTER);
+    head(
+        col_vram,
+        t!("专用显存", "VRAM", "VRAM"),
+        Align2::RIGHT_CENTER,
+    );
 
     let max = shown[0].dedicated.max(1);
     let mut action = None;
@@ -329,9 +345,15 @@ fn programs(ui: &mut Ui, list: &[Program], icons: &mut Icons) -> Option<PanelAct
         let tip = tf!(
             "{}{}\n专用显存 {} · 共享 {}\n点击在进程列表中搜索",
             "{}{}\nDedicated {} · shared {}\nClick to search in the process list",
+            "{}{}\n専用 {} · 共有 {}\nクリックしてプロセス一覧で検索",
             prog.name,
             if prog.count > 1 {
-                tf!("（{} 个进程）", " ({} processes)", prog.count)
+                tf!(
+                    "（{} 个进程）",
+                    " ({} processes)",
+                    " ({} 個のプロセス)",
+                    prog.count
+                )
             } else {
                 String::new()
             },
@@ -349,9 +371,14 @@ fn programs(ui: &mut Ui, list: &[Program], icons: &mut Icons) -> Option<PanelAct
     if list.len() > ROWS {
         ui.add_space(4.0);
         ui.label(
-            egui::RichText::new(tf!("另有 {} 个程序", "{} more", list.len() - ROWS))
-                .size(11.5)
-                .color(p.faint),
+            egui::RichText::new(tf!(
+                "另有 {} 个程序",
+                "{} more",
+                "ほか {} 個のプログラム",
+                list.len() - ROWS
+            ))
+            .size(11.5)
+            .color(p.faint),
         );
     }
     action

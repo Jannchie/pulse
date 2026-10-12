@@ -269,7 +269,7 @@ impl MemoryModule {
             0x09 => "DIMM",
             0x0D => "SODIMM",
             0x0F => "FB-DIMM",
-            0x0B => crate::t!("板载", "Onboard"),
+            0x0B => crate::t!("板载", "Onboard", "オンボード"),
             _ => "",
         }
     }

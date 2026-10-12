@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Align, Color32, Layout, Rect, RichText, Sense, Ui, pos2, vec2};
 use egui_extras::{Column, TableBuilder};
+use pulse_probe::i18n::{Lang, lang};
 use pulse_probe::startup::StartupItem;
 use pulse_probe::{t, tf};
 
@@ -90,7 +91,7 @@ pub fn show(
             300.0,
             t!(
                 "搜索名称、发布者、命令行",
-                "Search name, publisher, command line"
+                "Search name, publisher, command line", "名前、発行元、コマンド ラインで検索"
             ),
         );
         if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
@@ -103,17 +104,17 @@ pub fn show(
             (
                 Filter::All,
                 Icon::List,
-                tf!("全部 {}", "All {}", items.len()),
+                tf!("全部 {}", "All {}", "すべて {}", items.len()),
             ),
             (
                 Filter::Enabled,
                 Icon::Play,
-                tf!("已启用 {enabled}", "Enabled {enabled}"),
+                tf!("已启用 {enabled}", "Enabled {enabled}", "有効 {enabled}"),
             ),
             (
                 Filter::Disabled,
                 Icon::Pause,
-                tf!("已禁用 {}", "Disabled {}", items.len() - enabled),
+                tf!("已禁用 {}", "Disabled {}", "無効 {}", items.len() - enabled),
             ),
         ] {
             let mut on = st.state == f;
@@ -122,20 +123,20 @@ pub fn show(
             }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if widgets::tool_button(ui, Icon::Refresh, t!("刷新", "Refresh"), true, false).clicked()
+            if widgets::tool_button(ui, Icon::Refresh, t!("刷新", "Refresh", "最新の情報に更新"), true, false).clicked()
             {
                 actions.push(StartupAction::Refresh);
             }
             if widgets::tool_button(
                 ui,
                 Icon::FolderOpen,
-                t!("启动文件夹", "Startup folder"),
+                t!("启动文件夹", "Startup folder", "スタートアップ フォルダー"),
                 true,
                 false,
             )
             .on_hover_text(t!(
                 "打开当前用户的启动文件夹，放进去的快捷方式会在登录时运行",
-                "Open your Startup folder. Shortcuts placed there run when you sign in"
+                "Open your Startup folder. Shortcuts placed there run when you sign in", "現在のユーザーのスタートアップ フォルダーを開きます。ここに置いたショートカットはサインイン時に実行されます"
             ))
             .clicked()
             {
@@ -145,7 +146,7 @@ pub fn show(
                 ui.label(
                     RichText::new(t!(
                         "修改\"所有用户\"的启动项需要管理员权限",
-                        "Changing all-users items requires admin rights"
+                        "Changing all-users items requires admin rights", "全ユーザーの項目を変更するには管理者権限が必要です"
                     ))
                     .size(12.0)
                     .color(p.faint),
@@ -163,13 +164,20 @@ pub fn show(
         .column(Column::remainder().at_least(280.0).clip(true))
         .column(Column::exact(190.0).clip(true))
         .column(Column::exact(120.0))
-        .column(Column::exact(200.0).clip(true))
+        // 日文的"スタートアップ フォルダー (現在のユーザー)"最长。
+        .column(
+            Column::exact(match lang() {
+                Lang::Zh | Lang::En => 200.0,
+                Lang::Ja => 270.0,
+            })
+            .clip(true),
+        )
         .header(34.0, |mut h| {
             for label in [
-                t!("名称", "Name"),
-                t!("发布者", "Publisher"),
-                t!("状态", "Status"),
-                t!("来源", "Source"),
+                t!("名称", "Name", "名前"),
+                t!("发布者", "Publisher", "発行元"),
+                t!("状态", "Status", "状態"),
+                t!("来源", "Source", "登録場所"),
             ] {
                 h.col(|ui| widgets::header_label(ui, label, false));
             }
@@ -229,9 +237,9 @@ pub fn show(
                         actions.push(StartupAction::SetEnabled(i, on));
                     }
                     let label = if it.enabled {
-                        t!("已启用", "Enabled")
+                        t!("已启用", "Enabled", "有効")
                     } else {
-                        t!("已禁用", "Disabled")
+                        t!("已禁用", "Disabled", "無効")
                     };
                     let resp = ui.label(RichText::new(label).size(12.5).color(if it.enabled {
                         p.text
@@ -241,10 +249,16 @@ pub fn show(
                     if locked {
                         resp.on_hover_text(t!(
                             "需要以管理员身份运行 Pulse",
-                            "Requires running Pulse as administrator"
+                            "Requires running Pulse as administrator",
+                            "Pulse を管理者として実行する必要があります"
                         ));
                     } else if let Some(t) = it.disabled_at {
-                        resp.on_hover_text(tf!("禁用于 {}", "Disabled on {}", fmt_filetime(t)));
+                        resp.on_hover_text(tf!(
+                            "禁用于 {}",
+                            "Disabled on {}",
+                            "{} に無効化",
+                            fmt_filetime(t)
+                        ));
                     }
                 });
                 row.col(|ui| {
@@ -272,7 +286,12 @@ pub fn show(
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
             ui.label(
-                RichText::new(t!("没有匹配的启动项", "No matching startup apps")).color(p.faint),
+                RichText::new(t!(
+                    "没有匹配的启动项",
+                    "No matching startup apps",
+                    "一致するスタートアップ アプリはありません"
+                ))
+                .color(p.faint),
             );
         });
     }
@@ -284,9 +303,9 @@ fn menu(ui: &mut Ui, i: usize, it: &StartupItem, elevated: bool, actions: &mut V
     widgets::menu_heading(ui, &it.name, 210.0);
     let locked = it.source.needs_admin() && !elevated;
     let (glyph, label) = if it.enabled {
-        (Icon::Pause, t!("禁用", "Disable"))
+        (Icon::Pause, t!("禁用", "Disable", "無効にする"))
     } else {
-        (Icon::Play, t!("启用", "Enable"))
+        (Icon::Play, t!("启用", "Enable", "有効にする"))
     };
     let resp = ui
         .add_enabled_ui(!locked, |ui| widgets::menu_item(ui, glyph, label, false))
@@ -299,24 +318,38 @@ fn menu(ui: &mut Ui, i: usize, it: &StartupItem, elevated: bool, actions: &mut V
         if widgets::menu_item(
             ui,
             Icon::FolderOpen,
-            t!("打开文件位置", "Open file location"),
+            t!("打开文件位置", "Open file location", "ファイルの場所を開く"),
             false,
         )
         .clicked()
         {
             actions.push(StartupAction::Reveal(path.clone()));
         }
-        if widgets::menu_item(ui, Icon::Info, t!("属性", "Properties"), false).clicked() {
+        if widgets::menu_item(
+            ui,
+            Icon::Info,
+            t!("属性", "Properties", "プロパティ"),
+            false,
+        )
+        .clicked()
+        {
             actions.push(StartupAction::Properties(path.clone()));
         }
     }
-    if widgets::menu_item(ui, Icon::Globe, t!("在线搜索", "Search online"), false).clicked() {
+    if widgets::menu_item(
+        ui,
+        Icon::Globe,
+        t!("在线搜索", "Search online", "オンラインで検索"),
+        false,
+    )
+    .clicked()
+    {
         actions.push(StartupAction::Search(it.name.clone()));
     }
     if widgets::menu_item(
         ui,
         Icon::Terminal,
-        t!("复制命令行", "Copy command line"),
+        t!("复制命令行", "Copy command line", "コマンド ラインをコピー"),
         false,
     )
     .clicked()

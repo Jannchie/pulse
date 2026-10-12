@@ -101,7 +101,8 @@ pub fn show(ui: &mut Ui, services: &[Service], st: &mut ServicesState) -> Vec<Se
             300.0,
             t!(
                 "搜索服务名、显示名、描述、组或 PID",
-                "Search name, description, group or PID"
+                "Search name, description, group or PID",
+                "名前、説明、グループ、PID で検索"
             ),
         );
         if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
@@ -112,14 +113,22 @@ pub fn show(ui: &mut Ui, services: &[Service], st: &mut ServicesState) -> Vec<Se
             .filter(|s| s.state == State::Running)
             .count();
         for (f, label) in [
-            (Filter::All, tf!("全部 {}", "All {}", services.len())),
+            (
+                Filter::All,
+                tf!("全部 {}", "All {}", "すべて {}", services.len()),
+            ),
             (
                 Filter::Running,
-                tf!("运行中 {running}", "Running {running}"),
+                tf!("运行中 {running}", "Running {running}", "実行中 {running}"),
             ),
             (
                 Filter::Stopped,
-                tf!("已停止 {}", "Stopped {}", services.len() - running),
+                tf!(
+                    "已停止 {}",
+                    "Stopped {}",
+                    "停止 {}",
+                    services.len() - running
+                ),
             ),
         ] {
             let mut on = st.state == f;
@@ -136,11 +145,15 @@ pub fn show(ui: &mut Ui, services: &[Service], st: &mut ServicesState) -> Vec<Se
             if widgets::tool_button(
                 ui,
                 Icon::ExternalLink,
-                t!("服务管理器", "Services app"),
+                t!("服务管理器", "Services app", "サービス管理ツール"),
                 true,
                 false,
             )
-            .on_hover_text(t!("打开 services.msc", "Open services.msc"))
+            .on_hover_text(t!(
+                "打开 services.msc",
+                "Open services.msc",
+                "services.msc を開く"
+            ))
             .clicked()
             {
                 actions.push(ServiceAction::OpenManager);
@@ -152,7 +165,7 @@ pub fn show(ui: &mut Ui, services: &[Service], st: &mut ServicesState) -> Vec<Se
             if widgets::tool_button(
                 ui,
                 Icon::Refresh,
-                t!("重新启动", "Restart"),
+                t!("重新启动", "Restart", "再起動"),
                 can_stop,
                 false,
             )
@@ -161,12 +174,20 @@ pub fn show(ui: &mut Ui, services: &[Service], st: &mut ServicesState) -> Vec<Se
             {
                 actions.push(ServiceAction::Restart(s.name.to_string()));
             }
-            if widgets::tool_button(ui, Icon::Stop, t!("停止", "Stop"), can_stop, true).clicked()
+            if widgets::tool_button(ui, Icon::Stop, t!("停止", "Stop", "停止"), can_stop, true)
+                .clicked()
                 && let Some(s) = sel
             {
                 actions.push(ServiceAction::Stop(s.name.to_string()));
             }
-            if widgets::tool_button(ui, Icon::Play, t!("启动", "Start"), can_start, false).clicked()
+            if widgets::tool_button(
+                ui,
+                Icon::Play,
+                t!("启动", "Start", "開始"),
+                can_start,
+                false,
+            )
+            .clicked()
                 && let Some(s) = sel
             {
                 actions.push(ServiceAction::Start(s.name.to_string()));
@@ -187,15 +208,19 @@ pub fn show(ui: &mut Ui, services: &[Service], st: &mut ServicesState) -> Vec<Se
         .column(Column::exact(match lang() {
             Lang::Zh => 130.0,
             Lang::En => 165.0,
+            Lang::Ja => 165.0,
         }))
         .column(Column::exact(170.0).clip(true))
         .header(34.0, |mut h| {
             for (label, right) in [
-                (t!("名称", "Name"), false),
+                (t!("名称", "Name", "名前"), false),
                 ("PID", true),
-                (t!("状态", "Status"), false),
-                (t!("启动类型", "Startup type"), false),
-                (t!("组", "Group"), false),
+                (t!("状态", "Status", "状態"), false),
+                (
+                    t!("启动类型", "Startup type", "スタートアップの種類"),
+                    false,
+                ),
+                (t!("组", "Group", "グループ"), false),
             ] {
                 h.col(|ui| widgets::header_label(ui, label, right));
             }
@@ -299,15 +324,22 @@ fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
     let running = s.state == State::Running;
     if s.state == State::Stopped
         && s.start_type != StartType::Disabled
-        && widgets::menu_item(ui, Icon::Play, t!("启动", "Start"), false).clicked()
+        && widgets::menu_item(ui, Icon::Play, t!("启动", "Start", "開始"), false).clicked()
     {
         actions.push(ServiceAction::Start(name.clone()));
     }
     if running && s.can_stop {
-        if widgets::menu_item(ui, Icon::Stop, t!("停止", "Stop"), true).clicked() {
+        if widgets::menu_item(ui, Icon::Stop, t!("停止", "Stop", "停止"), true).clicked() {
             actions.push(ServiceAction::Stop(name.clone()));
         }
-        if widgets::menu_item(ui, Icon::Refresh, t!("重新启动", "Restart"), false).clicked() {
+        if widgets::menu_item(
+            ui,
+            Icon::Refresh,
+            t!("重新启动", "Restart", "再起動"),
+            false,
+        )
+        .clicked()
+        {
             actions.push(ServiceAction::Restart(name.clone()));
         }
     }
@@ -315,7 +347,7 @@ fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
         widgets::submenu(
             ui,
             Icon::Settings,
-            t!("启动类型", "Startup type"),
+            t!("启动类型", "Startup type", "スタートアップの種類"),
             200.0,
             |ui| {
                 for t in StartType::EDITABLE {
@@ -330,11 +362,24 @@ fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
     }
     ui.separator();
     if s.pid > 0
-        && widgets::menu_item(ui, Icon::Window, t!("转到进程", "Go to process"), false).clicked()
+        && widgets::menu_item(
+            ui,
+            Icon::Window,
+            t!("转到进程", "Go to process", "プロセスに移動"),
+            false,
+        )
+        .clicked()
     {
         actions.push(ServiceAction::GotoProcess(s.pid));
     }
-    if widgets::menu_item(ui, Icon::Globe, t!("在线搜索", "Search online"), false).clicked() {
+    if widgets::menu_item(
+        ui,
+        Icon::Globe,
+        t!("在线搜索", "Search online", "オンラインで検索"),
+        false,
+    )
+    .clicked()
+    {
         actions.push(ServiceAction::Search(format!(
             "{} {}",
             s.name, s.display_name
@@ -343,24 +388,43 @@ fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
     if widgets::menu_item(
         ui,
         Icon::ExternalLink,
-        t!("打开服务管理器", "Open Services app"),
+        t!(
+            "打开服务管理器",
+            "Open Services app",
+            "サービス管理ツールを開く"
+        ),
         false,
     )
     .clicked()
     {
         actions.push(ServiceAction::OpenManager);
     }
-    widgets::submenu(ui, Icon::Copy, t!("复制", "Copy"), 160.0, |ui| {
-        for (label, value) in [
-            (t!("服务名", "Service name"), s.name.to_string()),
-            (t!("显示名称", "Display name"), s.display_name.to_string()),
-            (t!("可执行路径", "Executable path"), s.binary.to_string()),
-        ] {
-            if !value.is_empty() && widgets::menu_item(ui, Icon::Copy, label, false).clicked() {
-                actions.push(ServiceAction::Copy(value));
+    widgets::submenu(
+        ui,
+        Icon::Copy,
+        t!("复制", "Copy", "コピー"),
+        160.0,
+        |ui| {
+            for (label, value) in [
+                (
+                    t!("服务名", "Service name", "サービス名"),
+                    s.name.to_string(),
+                ),
+                (
+                    t!("显示名称", "Display name", "表示名"),
+                    s.display_name.to_string(),
+                ),
+                (
+                    t!("可执行路径", "Executable path", "実行ファイルのパス"),
+                    s.binary.to_string(),
+                ),
+            ] {
+                if !value.is_empty() && widgets::menu_item(ui, Icon::Copy, label, false).clicked() {
+                    actions.push(ServiceAction::Copy(value));
+                }
             }
-        }
-    });
+        },
+    );
 }
 
 fn tooltip(ui: &mut Ui, s: &Service) {
@@ -395,7 +459,11 @@ pub fn loading(ui: &mut Ui) {
     ui.painter().text(
         rect.center(),
         Align2::CENTER_CENTER,
-        t!("正在读取服务列表…", "Loading services…"),
+        t!(
+            "正在读取服务列表…",
+            "Loading services…",
+            "サービスを読み込んでいます…"
+        ),
         FontId::proportional(13.0),
         p.muted,
     );

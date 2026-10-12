@@ -60,7 +60,10 @@ pub fn confirm_kill(ctx: &egui::Context, req: &KillRequest, snap: &Snapshot) -> 
     modal(ctx, "kill-confirm", 400.0, |ui| {
         let mut decision = None;
         ui.spacing_mut().item_spacing.y = 6.0;
-        danger_title(ui, &tf!("结束 {}？", "End {}?", req.label));
+        danger_title(
+            ui,
+            &tf!("结束 {}？", "End {}?", "{} を終了しますか？", req.label),
+        );
         ui.add_space(6.0);
 
         let n = targets.len();
@@ -68,13 +71,15 @@ pub fn confirm_kill(ctx: &egui::Context, req: &KillRequest, snap: &Snapshot) -> 
             RichText::new(if n == 1 {
                 t!(
                     "将立即结束以下进程：",
-                    "This process will be ended immediately:"
+                    "This process will be ended immediately:",
+                    "次のプロセスを直ちに終了します："
                 )
                 .to_string()
             } else {
                 tf!(
                     "将立即结束以下 {n} 个进程：",
-                    "These {n} processes will be ended immediately:"
+                    "These {n} processes will be ended immediately:",
+                    "次の {n} 個のプロセスを直ちに終了します："
                 )
             })
             .color(p.muted),
@@ -100,16 +105,20 @@ pub fn confirm_kill(ctx: &egui::Context, req: &KillRequest, snap: &Snapshot) -> 
                 }
                 if n > SHOWN {
                     ui.label(
-                        RichText::new(tf!("等 {} 个", "and {} more", n - SHOWN))
+                        RichText::new(tf!("等 {} 个", "and {} more", "ほか {} 個", n - SHOWN))
                             .size(12.0)
                             .color(p.faint),
                     );
                 }
                 if n == 0 {
                     ui.label(
-                        RichText::new(t!("进程已经退出", "The process has already exited"))
-                            .size(12.0)
-                            .color(p.faint),
+                        RichText::new(t!(
+                            "进程已经退出",
+                            "The process has already exited",
+                            "プロセスはすでに終了しています"
+                        ))
+                        .size(12.0)
+                        .color(p.faint),
                     );
                 }
             });
@@ -118,7 +127,8 @@ pub fn confirm_kill(ctx: &egui::Context, req: &KillRequest, snap: &Snapshot) -> 
         ui.label(
             RichText::new(t!(
                 "进程不会收到正常退出的机会，未保存的数据将会丢失。",
-                "The process won't get a chance to exit normally. Unsaved data will be lost."
+                "The process won't get a chance to exit normally. Unsaved data will be lost.",
+                "プロセスは正常に終了できません。保存されていないデータは失われます。"
             ))
             .size(12.5)
             .color(p.muted),
@@ -129,7 +139,8 @@ pub fn confirm_kill(ctx: &egui::Context, req: &KillRequest, snap: &Snapshot) -> 
                 &tf!(
                     "{} 是系统关键进程，结束它可能导致蓝屏或注销。",
                     "{} is a critical system process. Ending it may crash Windows or sign you out.",
-                    critical.join(t!("、", ", "))
+                    "{} はシステムの重要なプロセスです。終了すると Windows が停止したり、サインアウトされたりする可能性があります。",
+                    critical.join(t!("、", ", ", "、"))
                 ),
             );
         }
@@ -138,7 +149,8 @@ pub fn confirm_kill(ctx: &egui::Context, req: &KillRequest, snap: &Snapshot) -> 
                 ui,
                 t!(
                     "其中包含 Pulse 自己，结束后本窗口会关闭。",
-                    "This includes Pulse itself. This window will close."
+                    "This includes Pulse itself. This window will close.",
+                    "Pulse 自体も含まれています。終了するとこのウィンドウは閉じます。"
                 ),
             );
         }
@@ -146,18 +158,32 @@ pub fn confirm_kill(ctx: &egui::Context, req: &KillRequest, snap: &Snapshot) -> 
         ui.add_space(12.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            if button(ui, t!("结束进程", "End process"), Kind::Danger, true).clicked()
+            if button(
+                ui,
+                t!("结束进程", "End process", "プロセスを終了する"),
+                Kind::Danger,
+                true,
+            )
+            .clicked()
                 || ui.input(|i| i.key_pressed(Key::Enter))
             {
                 decision = Some(Decision::Confirm);
             }
-            if button(ui, t!("取消", "Cancel"), Kind::Secondary, true).clicked() {
+            if button(
+                ui,
+                t!("取消", "Cancel", "キャンセル"),
+                Kind::Secondary,
+                true,
+            )
+            .clicked()
+            {
                 decision = Some(Decision::Cancel);
             }
             ui.label(
                 RichText::new(t!(
                     "Enter 确认 · Esc 取消",
-                    "Enter to confirm · Esc to cancel"
+                    "Enter to confirm · Esc to cancel",
+                    "Enter で確定 · Esc でキャンセル"
                 ))
                 .size(11.5)
                 .color(p.faint),
@@ -311,7 +337,7 @@ pub fn toasts(ctx: &egui::Context, toasts: &mut Vec<Toast>) {
             .response;
         if resp
             .interact(Sense::click())
-            .on_hover_text(t!("点击关闭", "Click to dismiss"))
+            .on_hover_text(t!("点击关闭", "Click to dismiss", "クリックして閉じる"))
             .clicked()
         {
             dismissed = Some(i);
@@ -401,7 +427,7 @@ pub fn affinity(ctx: &egui::Context, d: &mut AffinityDialog) -> Option<Decision>
     modal(ctx, "affinity", 440.0, |ui| {
         let mut decision = None;
         ui.label(
-            RichText::new(t!("处理器相关性", "Processor affinity"))
+            RichText::new(t!("处理器相关性", "Processor affinity", "プロセッサの関係"))
                 .size(16.0)
                 .family(semibold())
                 .color(p.text),
@@ -410,6 +436,7 @@ pub fn affinity(ctx: &egui::Context, d: &mut AffinityDialog) -> Option<Decision>
             RichText::new(tf!(
                 "允许 {} 在哪些处理器上运行",
                 "Choose which processors {} can run on",
+                "{} の実行を許可するプロセッサを選択してください",
                 d.label
             ))
             .size(12.5)
@@ -433,13 +460,14 @@ pub fn affinity(ctx: &egui::Context, d: &mut AffinityDialog) -> Option<Decision>
             });
         ui.add_space(12.0);
         ui.horizontal(|ui| {
-            if ui.link(t!("全选", "Select all")).clicked() {
+            if ui.link(t!("全选", "Select all", "すべて選択")).clicked() {
                 d.mask = d.system;
             }
             ui.label(
                 RichText::new(tf!(
                     "已选 {} / {}",
                     "{} of {} selected",
+                    "選択済み {} / {}",
                     (d.mask & d.system).count_ones(),
                     cpus.len()
                 ))
@@ -449,12 +477,19 @@ pub fn affinity(ctx: &egui::Context, d: &mut AffinityDialog) -> Option<Decision>
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let valid = d.mask & d.system != 0;
-                if button(ui, t!("确定", "OK"), Kind::Primary, valid).clicked()
+                if button(ui, t!("确定", "OK", "OK"), Kind::Primary, valid).clicked()
                     || (valid && ui.input(|i| i.key_pressed(Key::Enter)))
                 {
                     decision = Some(Decision::Confirm);
                 }
-                if button(ui, t!("取消", "Cancel"), Kind::Secondary, true).clicked() {
+                if button(
+                    ui,
+                    t!("取消", "Cancel", "キャンセル"),
+                    Kind::Secondary,
+                    true,
+                )
+                .clicked()
+                {
                     decision = Some(Decision::Cancel);
                 }
             });
@@ -482,7 +517,7 @@ pub fn run_task(ctx: &egui::Context, d: &mut RunDialog, elevated: bool) -> Optio
             let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
             widgets::icon(ui, Icon::Plus, r.center(), 20.0, p.accent);
             ui.label(
-                RichText::new(t!("运行新任务", "Run new task"))
+                RichText::new(t!("运行新任务", "Run new task", "新しいタスクを実行する"))
                     .size(16.0)
                     .family(semibold())
                     .color(p.text),
@@ -491,7 +526,7 @@ pub fn run_task(ctx: &egui::Context, d: &mut RunDialog, elevated: bool) -> Optio
         ui.label(
             RichText::new(t!(
                 "输入程序、文件夹、文档或网址，Windows 会用对应的程序打开。",
-                "Type the name of a program, folder, document or website, and Windows will open it."
+                "Type the name of a program, folder, document or website, and Windows will open it.", "実行するプログラム、または開くフォルダー、ドキュメント、Web サイトの名前を入力してください。Windows が対応するプログラムで開きます。"
             ))
             .size(12.5)
             .color(p.muted),
@@ -501,7 +536,8 @@ pub fn run_task(ctx: &egui::Context, d: &mut RunDialog, elevated: bool) -> Optio
             egui::TextEdit::singleline(&mut d.command)
                 .hint_text(t!(
                     r"例如 notepad、cmd、C:\Windows、https://…",
-                    r"e.g. notepad, cmd, C:\Windows, https://…"
+                    r"e.g. notepad, cmd, C:\Windows, https://…",
+                    r"例：notepad、cmd、C:\Windows、https://…"
                 ))
                 .desired_width(f32::INFINITY)
                 .margin(Margin::symmetric(10, 8)),
@@ -515,7 +551,7 @@ pub fn run_task(ctx: &egui::Context, d: &mut RunDialog, elevated: bool) -> Optio
             ui.label(
                 RichText::new(t!(
                     "Pulse 正以管理员身份运行，新任务也会继承管理员权限。",
-                    "Pulse is running as administrator, so the new task will be too."
+                    "Pulse is running as administrator, so the new task will be too.", "Pulse は管理者として実行されているため、新しいタスクも管理者権限で実行されます。"
                 ))
                 .size(12.0)
                 .color(p.faint),
@@ -525,7 +561,8 @@ pub fn run_task(ctx: &egui::Context, d: &mut RunDialog, elevated: bool) -> Optio
                 &mut d.admin,
                 t!(
                     "以管理员身份运行",
-                    "Create this task with administrative privileges"
+                    "Create this task with administrative privileges",
+                    "このタスクに管理者特権を付与して作成する"
                 ),
             );
         }
@@ -536,12 +573,19 @@ pub fn run_task(ctx: &egui::Context, d: &mut RunDialog, elevated: bool) -> Optio
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let ready = !d.command.trim().is_empty();
-            if button(ui, t!("运行", "Run"), Kind::Primary, ready).clicked()
+            if button(ui, t!("运行", "Run", "実行"), Kind::Primary, ready).clicked()
                 || (ready && ui.input(|i| i.key_pressed(Key::Enter)))
             {
                 decision = Some(Decision::Confirm);
             }
-            if button(ui, t!("取消", "Cancel"), Kind::Secondary, true).clicked() {
+            if button(
+                ui,
+                t!("取消", "Cancel", "キャンセル"),
+                Kind::Secondary,
+                true,
+            )
+            .clicked()
+            {
                 decision = Some(Decision::Cancel);
             }
         });
@@ -571,7 +615,14 @@ pub fn confirm(
             if button(ui, button_label, Kind::Danger, true).clicked() {
                 decision = Some(Decision::Confirm);
             }
-            if button(ui, t!("取消", "Cancel"), Kind::Secondary, true).clicked() {
+            if button(
+                ui,
+                t!("取消", "Cancel", "キャンセル"),
+                Kind::Secondary,
+                true,
+            )
+            .clicked()
+            {
                 decision = Some(Decision::Cancel);
             }
         });

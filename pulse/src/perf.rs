@@ -64,13 +64,14 @@ pub fn show(
                 if widgets::tool_button(
                     ui,
                     Icon::Clipboard,
-                    t!("复制摘要", "Copy summary"),
+                    t!("复制摘要", "Copy summary", "概要をコピー"),
                     true,
                     false,
                 )
                 .on_hover_text(t!(
                     "把当前设备的信息复制为文本",
-                    "Copy this device's details as text"
+                    "Copy this device's details as text",
+                    "このデバイスの情報をテキストとしてコピーします"
                 ))
                 .clicked()
                 {
@@ -91,7 +92,11 @@ pub fn show(
                         Some(d) => disk_page(ui, d, series),
                         None => missing(
                             ui,
-                            t!("这块磁盘已经不在了", "This disk is no longer available"),
+                            t!(
+                                "这块磁盘已经不在了",
+                                "This disk is no longer available",
+                                "このディスクは利用できなくなりました"
+                            ),
                         ),
                     },
                     Device::Network(i) => match snap.nics.iter().find(|n| n.index == i) {
@@ -100,7 +105,8 @@ pub fn show(
                             ui,
                             t!(
                                 "这个网络适配器已经不在了",
-                                "This network adapter is no longer available"
+                                "This network adapter is no longer available",
+                                "このネットワーク アダプターは利用できなくなりました"
                             ),
                         ),
                     },
@@ -117,7 +123,11 @@ pub fn show(
                         }
                         None => missing(
                             ui,
-                            t!("这块 GPU 已经不在了", "This GPU is no longer available"),
+                            t!(
+                                "这块 GPU 已经不在了",
+                                "This GPU is no longer available",
+                                "この GPU は利用できなくなりました"
+                            ),
                         ),
                     },
                 }
@@ -167,7 +177,7 @@ fn sidebar(ui: &mut Ui, snap: &Snapshot, series: &Series, device: &mut Device) {
             device: Device::Memory,
             icon: Icon::Memory,
             color: metric::MEMORY,
-            title: t!("内存", "Memory").into(),
+            title: t!("内存", "Memory", "メモリ").into(),
             sub: format!(
                 "{:.1}/{:.1} GB ({:.0}%)",
                 gb(snap.mem_used),
@@ -183,7 +193,13 @@ fn sidebar(ui: &mut Ui, snap: &Snapshot, series: &Series, device: &mut Device) {
             device: Device::Disk(d.index),
             icon: Icon::HardDrive,
             color: metric::DISK,
-            title: tf!("磁盘 {} ({})", "Disk {} ({})", d.index, letters(d)),
+            title: tf!(
+                "磁盘 {} ({})",
+                "Disk {} ({})",
+                "ディスク {} ({})",
+                d.index,
+                letters(d)
+            ),
             sub: format!("{} · {:.0}%", disk_kind(d), d.active),
             spark: get(&format!("disk.{}.active", d.index)),
             max: Some(1.0),
@@ -200,9 +216,9 @@ fn sidebar(ui: &mut Ui, snap: &Snapshot, series: &Series, device: &mut Device) {
             color: metric::NETWORK,
             title: n.kind.to_string(),
             sub: if n.connected {
-                format!("↓ {}  ↑ {}", fmt_bits(n.rx_rate), fmt_bits(n.tx_rate))
+                format!("↓ {} ↑ {}", fmt_bits(n.rx_rate), fmt_bits(n.tx_rate))
             } else {
-                t!("未连接", "Not connected").into()
+                t!("未连接", "Not connected", "未接続").into()
             },
             spark: {
                 let (rx, tx) = (
@@ -556,7 +572,7 @@ pub fn chart(
     painter.text(
         pos2(inner.left(), rect.bottom() - 8.0),
         Align2::LEFT_BOTTOM,
-        t!("60 秒", "60 s"),
+        t!("60 秒", "60 s", "60 秒"),
         FontId::proportional(11.0),
         p.faint,
     );
@@ -648,7 +664,7 @@ fn fmt_duration(d: std::time::Duration) -> String {
 
 fn letters(d: &DiskStat) -> String {
     if d.volumes.is_empty() {
-        t!("无分区", "No volumes").into()
+        t!("无分区", "No volumes", "ボリュームなし").into()
     } else {
         d.volumes
             .iter()
@@ -662,7 +678,7 @@ fn disk_kind(d: &DiskStat) -> String {
     let media = match d.ssd {
         Some(true) => "SSD",
         Some(false) => "HDD",
-        None => t!("磁盘", "Disk"),
+        None => t!("磁盘", "Disk", "ディスク"),
     };
     format!("{media} ({})", d.bus)
 }
@@ -680,18 +696,19 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         ui,
         &[
             Kpi::new(
-                t!("利用率", "Utilization"),
+                t!("利用率", "Utilization", "使用率"),
                 format!("{:.0}", snap.cpu_total),
                 "%",
                 metric::CPU,
             )
             .caption(tf!(
                 "最忙的逻辑处理器 {busiest:.0}%",
-                "Busiest logical CPU {busiest:.0}%"
+                "Busiest logical CPU {busiest:.0}%",
+                "最大負荷の論理プロセッサ {busiest:.0}%"
             ))
             .bar(snap.cpu_total / 100.0),
             Kpi::new(
-                t!("速度", "Speed"),
+                t!("速度", "Speed", "速度"),
                 snap.cpu_mhz
                     .map_or("—".into(), |m| format!("{:.2}", m as f64 / 1000.0)),
                 "GHz",
@@ -701,25 +718,32 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
                 tf!(
                     "基准 {:.2} GHz",
                     "Base {:.2} GHz",
+                    "基本 {:.2} GHz",
                     info.base_mhz as f64 / 1000.0
                 )
             } else {
-                t!("驱动报告的当前频率", "Reported by the driver").into()
+                t!(
+                    "驱动报告的当前频率",
+                    "Reported by the driver",
+                    "ドライバーが報告した現在の速度"
+                )
+                .into()
             }),
             Kpi::new(
-                t!("进程", "Processes"),
+                t!("进程", "Processes", "プロセス"),
                 snap.processes.len().to_string(),
-                t!("个", ""),
+                t!("个", "", "個"),
                 metric::CPU,
             )
             .caption(tf!(
                 "{threads} 线程 · {handles} 句柄",
-                "{threads} threads · {handles} handles"
+                "{threads} threads · {handles} handles",
+                "スレッド {threads} · ハンドル {handles}"
             )),
             Kpi::new(
-                t!("正常运行时间", "Up time"),
+                t!("正常运行时间", "Up time", "稼働時間"),
                 format!("{}:{:02}", up / 3600, up / 60 % 60),
-                t!("小时", "h"),
+                t!("小时", "h", "時間"),
                 metric::CPU,
             )
             .caption(fmt_duration(snap.uptime)),
@@ -730,7 +754,7 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
     let total = series.get("cpu").unwrap_or(&empty);
     chart(
         ui,
-        t!("总利用率", "Overall utilization"),
+        t!("总利用率", "Overall utilization", "全体の使用率"),
         170.0,
         &[(total, metric::CPU, false)],
         Some(1.0),
@@ -738,7 +762,7 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         &[],
     );
 
-    section(ui, t!("逻辑处理器", "Logical processors"));
+    section(ui, t!("逻辑处理器", "Logical processors", "論理プロセッサ"));
     let n = snap.cpu_cores.len();
     if info.hybrid() {
         // 大小核分两组；各组标出物理核心数与线程数。
@@ -749,6 +773,7 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
             &tf!(
                 "性能核 · {} 核 {} 线程",
                 "Performance cores · {} cores, {} threads",
+                "パフォーマンス コア · {} コア、{} スレッド",
                 info.p_cores,
                 p_idx.len()
             ),
@@ -761,6 +786,7 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
             &tf!(
                 "能效核 · {} 核 {} 线程",
                 "Efficient cores · {} cores, {} threads",
+                "高効率コア · {} コア、{} スレッド",
                 info.e_cores,
                 e.len()
             ),
@@ -770,26 +796,27 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         core_grid(ui, snap, series, &(0..n).collect::<Vec<_>>(), metric::CPU);
     }
 
-    section(ui, t!("规格", "Specifications"));
+    section(ui, t!("规格", "Specifications", "仕様"));
     let ghz = |mhz: u32| format!("{:.2} GHz", mhz as f64 / 1000.0);
     kv_list(
         ui,
         &[
             (
-                t!("基准速度", "Base speed"),
+                t!("基准速度", "Base speed", "基本速度"),
                 if info.base_mhz > 0 {
                     ghz(info.base_mhz)
                 } else {
                     "—".into()
                 },
             ),
-            (t!("插槽", "Sockets"), info.sockets.to_string()),
+            (t!("插槽", "Sockets", "ソケット"), info.sockets.to_string()),
             (
-                t!("内核", "Cores"),
+                t!("内核", "Cores", "コア"),
                 if info.hybrid() {
                     tf!(
                         "{}（{} 性能核 + {} 能效核）",
                         "{} ({} performance + {} efficient)",
+                        "{} (パフォーマンス {} + 高効率 {})",
                         info.cores,
                         info.p_cores,
                         info.e_cores
@@ -799,14 +826,27 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
                 },
             ),
             (
-                t!("逻辑处理器", "Logical processors"),
+                t!("逻辑处理器", "Logical processors", "論理プロセッサ"),
                 info.logical.to_string(),
             ),
-            (t!("L1 缓存", "L1 cache"), fmt_bytes(info.l1)),
-            (t!("L2 缓存", "L2 cache"), fmt_bytes(info.l2)),
-            (t!("L3 缓存", "L3 cache"), fmt_bytes(info.l3)),
             (
-                t!("当前频率（驱动报告）", "Current speed (driver)"),
+                t!("L1 缓存", "L1 cache", "L1 キャッシュ"),
+                fmt_bytes(info.l1),
+            ),
+            (
+                t!("L2 缓存", "L2 cache", "L2 キャッシュ"),
+                fmt_bytes(info.l2),
+            ),
+            (
+                t!("L3 缓存", "L3 cache", "L3 キャッシュ"),
+                fmt_bytes(info.l3),
+            ),
+            (
+                t!(
+                    "当前频率（驱动报告）",
+                    "Current speed (driver)",
+                    "現在の速度 (ドライバー)"
+                ),
                 snap.cpu_mhz.map_or("—".into(), ghz),
             ),
         ],
@@ -882,7 +922,7 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         ui,
         Icon::Memory,
         metric::MEMORY,
-        t!("内存", "Memory"),
+        t!("内存", "Memory", "メモリ"),
         &subtitle,
     );
     let gb = |b: u64| format!("{:.1}", b as f64 / (1u64 << 30) as f64);
@@ -891,7 +931,7 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         ui,
         &[
             Kpi::new(
-                t!("使用中", "In use"),
+                t!("使用中", "In use", "使用中"),
                 gb(m.in_use()),
                 format!("/ {} GB", gb(m.total)),
                 metric::MEMORY,
@@ -899,29 +939,46 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
             .caption(format!("{:.0}%", frac(m.in_use(), m.total) * 100.0))
             .bar(frac(m.in_use(), m.total)),
             Kpi::new(
-                t!("可用", "Available"),
+                t!("可用", "Available", "利用可能"),
                 gb(m.available),
                 "GB",
                 metric::MEMORY,
             )
-            .caption(t!("可立即分配给程序", "Ready for programs to use")),
+            .caption(t!(
+                "可立即分配给程序",
+                "Ready for programs to use",
+                "すぐにプログラムに割り当て可能"
+            )),
             Kpi::new(
-                t!("已提交", "Committed"),
+                t!("已提交", "Committed", "コミット済み"),
                 gb(m.commit_used),
                 format!("/ {} GB", gb(m.commit_limit)),
                 metric::MEMORY,
             )
-            .caption(t!("物理内存 + 页面文件", "Physical memory + page file"))
+            .caption(t!(
+                "物理内存 + 页面文件",
+                "Physical memory + page file",
+                "物理メモリ + ページ ファイル"
+            ))
             .bar(frac(m.commit_used, m.commit_limit)),
-            Kpi::new(t!("已缓存", "Cached"), gb(m.cache), "GB", metric::MEMORY)
-                .caption(t!("备用与已修改的页面", "Standby and modified pages")),
+            Kpi::new(
+                t!("已缓存", "Cached", "キャッシュ済み"),
+                gb(m.cache),
+                "GB",
+                metric::MEMORY,
+            )
+            .caption(t!(
+                "备用与已修改的页面",
+                "Standby and modified pages",
+                "スタンバイと変更済みのページ"
+            )),
         ],
     );
     ui.add_space(10.0);
     let empty = Vec::new();
     chart(
         ui,
-        t!("内存使用量", "Memory usage"),
+        t!("内存使用量", "Memory usage", "メモリ使用量"),
         170.0,
         &[(series.get("mem").unwrap_or(&empty), metric::MEMORY, false)],
         Some(1.0),
@@ -929,25 +986,25 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         &[],
     );
 
-    section(ui, t!("内存组合", "Memory composition"));
+    section(ui, t!("内存组合", "Memory composition", "メモリ構成"));
     // 使用中 / 已修改 / 备用 / 可用，与任务管理器一致。
     let (modified, standby, free) = m
         .lists
         .as_ref()
         .map_or((0, 0, m.available), |l| (l.modified, l.standby, l.free));
     let parts = [
-        (t!("使用中", "In use"), m.in_use(), metric::MEMORY),
+        (t!("使用中", "In use", "使用中"), m.in_use(), metric::MEMORY),
         (
-            t!("已修改", "Modified"),
+            t!("已修改", "Modified", "変更済み"),
             modified,
             Color32::from_rgb(0xf5, 0x9e, 0x0b),
         ),
         (
-            t!("备用", "Standby"),
+            t!("备用", "Standby", "スタンバイ"),
             standby,
             metric::MEMORY.gamma_multiply(0.45),
         ),
-        (t!("空闲", "Free"), free, p.track),
+        (t!("空闲", "Free", "空き"), free, p.track),
     ];
     // 点阵：4 行，每个点代表相同份额的内存，按类别依次（逐列从上到下）上色。
     const ROWS: usize = 4;
@@ -1010,25 +1067,32 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         ui.label(
             RichText::new(t!(
                 "已修改与备用内存需要管理员权限才能读取",
-                "Reading modified and standby memory requires administrator rights"
+                "Reading modified and standby memory requires administrator rights",
+                "変更済みとスタンバイのメモリを読み取るには管理者権限が必要です"
             ))
             .size(11.5)
             .color(p.faint),
         );
     }
 
-    section(ui, t!("详细信息", "Details"));
+    section(ui, t!("详细信息", "Details", "詳細"));
     kv_list(
         ui,
         &[
-            (t!("提交峰值", "Commit peak"), fmt_bytes(m.commit_peak)),
-            (t!("分页缓冲池", "Paged pool"), fmt_bytes(m.paged_pool)),
             (
-                t!("非分页缓冲池", "Non-paged pool"),
+                t!("提交峰值", "Commit peak", "コミットのピーク"),
+                fmt_bytes(m.commit_peak),
+            ),
+            (
+                t!("分页缓冲池", "Paged pool", "ページ プール"),
+                fmt_bytes(m.paged_pool),
+            ),
+            (
+                t!("非分页缓冲池", "Non-paged pool", "非ページ プール"),
                 fmt_bytes(m.nonpaged_pool),
             ),
             (
-                t!("已用插槽", "Slots used"),
+                t!("已用插槽", "Slots used", "使用されているスロット"),
                 match (modules.len(), snap.memory_slots) {
                     (0, _) => "—".into(),
                     (used, 0) => used.to_string(),
@@ -1036,12 +1100,12 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
                 },
             ),
             (
-                t!("为硬件保留", "Hardware reserved"),
+                t!("为硬件保留", "Hardware reserved", "ハードウェア予約済み"),
                 snap.memory_installed
                     .map_or("—".into(), |i| fmt_bytes(i.saturating_sub(m.total))),
             ),
             (
-                t!("速度", "Speed"),
+                t!("速度", "Speed", "速度"),
                 modules
                     .first()
                     .filter(|f| f.speed > 0)
@@ -1051,7 +1115,7 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
     );
 
     if !modules.is_empty() {
-        section(ui, t!("内存条", "Memory modules"));
+        section(ui, t!("内存条", "Memory modules", "メモリ モジュール"));
         for mm in modules.iter() {
             let (rect, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
@@ -1112,33 +1176,39 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
         ui,
         Icon::HardDrive,
         metric::DISK,
-        &tf!("磁盘 {} ({})", "Disk {} ({})", d.index, letters(d)),
+        &tf!(
+            "磁盘 {} ({})",
+            "Disk {} ({})",
+            "ディスク {} ({})",
+            d.index,
+            letters(d)
+        ),
         &d.model,
     );
     hero(
         ui,
         &[
             Kpi::new(
-                t!("活动时间", "Active time"),
+                t!("活动时间", "Active time", "アクティブな時間"),
                 format!("{:.0}", d.active),
                 "%",
                 metric::DISK,
             )
             .bar(d.active / 100.0),
             Kpi::new(
-                t!("读取", "Read speed"),
+                t!("读取", "Read speed", "読み取り速度"),
                 fmt_bytes(d.read_rate),
                 "/s",
                 metric::DISK,
             ),
             Kpi::new(
-                t!("写入", "Write speed"),
+                t!("写入", "Write speed", "書き込み速度"),
                 fmt_bytes(d.write_rate),
                 "/s",
                 metric::NETWORK_UP,
             ),
             Kpi::new(
-                t!("平均响应时间", "Average response time"),
+                t!("平均响应时间", "Average response time", "平均応答時間"),
                 format!("{:.2}", d.response_ms),
                 "ms",
                 metric::DISK,
@@ -1157,7 +1227,7 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
         |ui| {
             chart(
                 ui,
-                t!("活动时间", "Active time"),
+                t!("活动时间", "Active time", "アクティブな時間"),
                 150.0,
                 &[(get("active"), metric::DISK, false)],
                 Some(1.0),
@@ -1168,7 +1238,7 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
         |ui| {
             chart(
                 ui,
-                t!("传输速率", "Transfer rate"),
+                t!("传输速率", "Transfer rate", "転送速度"),
                 150.0,
                 &[
                     (get("read"), metric::DISK, false),
@@ -1177,8 +1247,8 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
                 None,
                 &|m| format!("{}/s", fmt_bytes(m as u64)),
                 &[
-                    (t!("读取", "Read"), metric::DISK),
-                    (t!("写入", "Write"), metric::NETWORK_UP),
+                    (t!("读取", "Read", "読み取り"), metric::DISK),
+                    (t!("写入", "Write", "書き込み"), metric::NETWORK_UP),
                 ],
             )
         },
@@ -1186,35 +1256,41 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
 
     health_section(ui, d);
 
-    section(ui, t!("属性", "Properties"));
+    section(ui, t!("属性", "Properties", "プロパティ"));
     let yes_no = |b: bool| {
         if b {
-            t!("是", "Yes").to_string()
+            t!("是", "Yes", "はい").to_string()
         } else {
-            t!("否", "No").to_string()
+            t!("否", "No", "いいえ").to_string()
         }
     };
     kv_list(
         ui,
         &[
-            (t!("型号", "Model"), d.model.clone()),
-            (t!("容量", "Capacity"), fmt_bytes(d.size)),
-            (t!("类型", "Type"), disk_kind(d)),
-            (t!("分区", "Volumes"), d.volumes.len().to_string()),
-            (t!("可移动", "Removable"), yes_no(d.removable)),
+            (t!("型号", "Model", "モデル"), d.model.clone()),
+            (t!("容量", "Capacity", "容量"), fmt_bytes(d.size)),
+            (t!("类型", "Type", "種類"), disk_kind(d)),
             (
-                t!("系统盘", "System disk"),
+                t!("分区", "Volumes", "ボリューム"),
+                d.volumes.len().to_string(),
+            ),
+            (
+                t!("可移动", "Removable", "リムーバブル"),
+                yes_no(d.removable),
+            ),
+            (
+                t!("系统盘", "System disk", "システム ディスク"),
                 yes_no(d.volumes.iter().any(|v| v.system)),
             ),
             (
-                t!("页面文件", "Page file"),
+                t!("页面文件", "Page file", "ページ ファイル"),
                 yes_no(d.volumes.iter().any(|v| v.pagefile)),
             ),
         ],
     );
 
     if !d.volumes.is_empty() {
-        section(ui, t!("分区", "Volumes"));
+        section(ui, t!("分区", "Volumes", "ボリューム"));
         for v in &d.volumes {
             let used = v.total.saturating_sub(v.free);
             let frac = used as f32 / v.total.max(1) as f32;
@@ -1230,10 +1306,10 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
                 format!("{}:  {}", v.letter, v.label)
             };
             if v.system {
-                title.push_str(t!("  · 系统", "  · System"));
+                title.push_str(t!("  · 系统", "  · System", "  · システム"));
             }
             if v.pagefile {
-                title.push_str(t!("  · 页面文件", "  · Page file"));
+                title.push_str(t!("  · 页面文件", "  · Page file", "  · ページ ファイル"));
             }
             painter.text(
                 rect.left_top() + vec2(14.0, 10.0),
@@ -1248,6 +1324,7 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
                 tf!(
                     "{} 可用，共 {} · {}",
                     "{} free of {} · {}",
+                    "空き {} / {} · {}",
                     fmt_bytes(v.free),
                     fmt_bytes(v.total),
                     v.file_system
@@ -1274,36 +1351,50 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
 fn health_section(ui: &mut Ui, d: &DiskStat) {
     let p = Palette::of(ui.ctx());
     let h = &d.health;
-    section(ui, t!("健康状态", "Health"));
+    section(ui, t!("健康状态", "Health", "正常性"));
     let mut items: Vec<(&str, String)> = Vec::new();
     let (status, ok) = match &h.nvme {
         Some(n) if n.critical_warning != 0 => (
             t!(
                 "警告：控制器报告了严重问题",
-                "Warning: the controller reported a critical problem"
+                "Warning: the controller reported a critical problem",
+                "警告：コントローラーが重大な問題を報告しています"
             ),
             false,
         ),
         Some(n) if n.available_spare <= n.spare_threshold => (
             t!(
                 "警告：可用备用空间低于阈值",
-                "Warning: available spare is below the threshold"
+                "Warning: available spare is below the threshold",
+                "警告：利用可能な予備領域がしきい値を下回っています"
             ),
             false,
         ),
         Some(n) if n.percentage_used >= 90 => (
             t!(
                 "注意：寿命接近耗尽",
-                "Caution: the drive is nearing the end of its life"
+                "Caution: the drive is nearing the end of its life",
+                "注意：ドライブの寿命が近づいています"
             ),
             false,
         ),
         Some(n) if n.media_errors > 0 => (
-            t!("注意：存在介质错误", "Caution: media errors were reported"),
+            t!(
+                "注意：存在介质错误",
+                "Caution: media errors were reported",
+                "注意：メディア エラーが報告されています"
+            ),
             false,
         ),
-        Some(_) => (t!("良好", "Healthy"), true),
-        None => (t!("未提供 SMART 数据", "No SMART data available"), true),
+        Some(_) => (t!("良好", "Healthy", "正常"), true),
+        None => (
+            t!(
+                "未提供 SMART 数据",
+                "No SMART data available",
+                "SMART データなし"
+            ),
+            true,
+        ),
     };
     let temp_hot = matches!((h.temperature, h.warning_temperature), (Some(t), Some(w)) if t >= w);
     // 状态条
@@ -1326,7 +1417,8 @@ fn health_section(ui: &mut Ui, d: &DiskStat) {
     let text = if temp_hot && ok {
         t!(
             "注意：温度超过警告阈值",
-            "Caution: temperature is above the warning threshold"
+            "Caution: temperature is above the warning threshold",
+            "注意：温度が警告しきい値を超えています"
         )
     } else {
         status
@@ -1344,50 +1436,68 @@ fn health_section(ui: &mut Ui, d: &DiskStat) {
         let thresholds = match (h.warning_temperature, h.critical_temperature) {
             (Some(w), Some(c)) => tf!(
                 "（警告 {w}°C · 临界 {c}°C）",
-                "(warning {w}°C · critical {c}°C)"
+                "(warning {w}°C · critical {c}°C)",
+                " (警告 {w}°C · 危険 {c}°C)"
             ),
-            (Some(w), None) => tf!("（警告 {w}°C）", "(warning {w}°C)"),
+            (Some(w), None) => tf!("（警告 {w}°C）", "(warning {w}°C)", " (警告 {w}°C)"),
             _ => String::new(),
         };
-        items.push((t!("温度", "Temperature"), format!("{t}°C {thresholds}")));
+        items.push((
+            t!("温度", "Temperature", "温度"),
+            format!("{t}°C {thresholds}"),
+        ));
     }
     if let Some(n) = &h.nvme {
         items.push((
-            t!("剩余寿命", "Life remaining"),
+            t!("剩余寿命", "Life remaining", "推定残り寿命"),
             format!("{}%", 100u8.saturating_sub(n.percentage_used.min(100))),
         ));
         items.push((
-            t!("可用备用空间", "Available spare"),
+            t!("可用备用空间", "Available spare", "利用可能な予備領域"),
             tf!(
                 "{}%（阈值 {}%）",
                 "{}% (threshold {}%)",
+                "{}% (しきい値 {}%)",
                 n.available_spare,
                 n.spare_threshold
             ),
         ));
         items.push((
-            t!("通电时间", "Power-on time"),
+            t!("通电时间", "Power-on time", "電源投入時間"),
             tf!(
                 "{} 小时（{:.1} 年）",
                 "{} hours ({:.1} years)",
+                "{} 時間 ({:.1} 年)",
                 n.power_on_hours,
                 n.power_on_hours as f64 / 8766.0
             ),
         ));
-        items.push((t!("通电次数", "Power cycles"), n.power_cycles.to_string()));
-        items.push((t!("累计写入", "Data written"), fmt_tb(n.data_written)));
-        items.push((t!("累计读取", "Data read"), fmt_tb(n.data_read)));
         items.push((
-            t!("异常关机", "Unsafe shutdowns"),
+            t!("通电次数", "Power cycles", "電源投入回数"),
+            n.power_cycles.to_string(),
+        ));
+        items.push((
+            t!("累计写入", "Data written", "総書き込み量"),
+            fmt_tb(n.data_written),
+        ));
+        items.push((
+            t!("累计读取", "Data read", "総読み取り量"),
+            fmt_tb(n.data_read),
+        ));
+        items.push((
+            t!("异常关机", "Unsafe shutdowns", "異常シャットダウン"),
             n.unsafe_shutdowns.to_string(),
         ));
-        items.push((t!("介质错误", "Media errors"), n.media_errors.to_string()));
+        items.push((
+            t!("介质错误", "Media errors", "メディア エラー"),
+            n.media_errors.to_string(),
+        ));
     }
     if items.is_empty() {
         ui.label(
             RichText::new(t!(
                 "这块磁盘没有通过系统接口报告温度或 SMART 数据（SATA 盘的完整 SMART 需要 ATA 直通，暂不支持）",
-                "This disk doesn't report temperature or SMART data through the system interface (full SMART for SATA drives needs ATA pass-through, which isn't supported yet)"
+                "This disk doesn't report temperature or SMART data through the system interface (full SMART for SATA drives needs ATA pass-through, which isn't supported yet)", "このディスクはシステム インターフェイス経由で温度や SMART データを報告していません (SATA ドライブの完全な SMART には ATA パススルーが必要ですが、現在は対応していません)"
             ))
                 .size(12.0)
                 .color(p.faint),
@@ -1422,7 +1532,7 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
     );
     let status = match (&n.ssid, n.signal) {
         (Some(ssid), Some(signal)) => Kpi::new(
-            t!("信号强度", "Signal strength"),
+            t!("信号强度", "Signal strength", "シグナルの強さ"),
             signal.to_string(),
             "%",
             metric::NETWORK,
@@ -1430,11 +1540,11 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
         .caption(ssid.clone())
         .bar(signal as f32 / 100.0),
         _ => Kpi::new(
-            t!("状态", "Status"),
+            t!("状态", "Status", "状態"),
             if n.connected {
-                t!("已连接", "Connected")
+                t!("已连接", "Connected", "接続済み")
             } else {
-                t!("未连接", "Not connected")
+                t!("未连接", "Not connected", "未接続")
             },
             "",
             metric::NETWORK,
@@ -1445,21 +1555,31 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
         ui,
         &[
             Kpi::new(
-                t!("接收", "Receive"),
+                t!("接收", "Receive", "受信"),
                 fmt_bits(n.rx_rate),
                 "",
                 metric::NETWORK,
             )
-            .caption(tf!("开机以来 {}", "{} since boot", fmt_bytes(n.rx_total))),
+            .caption(tf!(
+                "开机以来 {}",
+                "{} since boot",
+                "起動以降 {}",
+                fmt_bytes(n.rx_total)
+            )),
             Kpi::new(
-                t!("发送", "Send"),
+                t!("发送", "Send", "送信"),
                 fmt_bits(n.tx_rate),
                 "",
                 metric::NETWORK_UP,
             )
-            .caption(tf!("开机以来 {}", "{} since boot", fmt_bytes(n.tx_total))),
+            .caption(tf!(
+                "开机以来 {}",
+                "{} since boot",
+                "起動以降 {}",
+                fmt_bytes(n.tx_total)
+            )),
             Kpi::new(
-                t!("链路速度", "Link speed"),
+                t!("链路速度", "Link speed", "リンク速度"),
                 if n.link_speed > 0 {
                     fmt_bits(n.link_speed / 8)
                 } else {
@@ -1480,7 +1600,7 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
     };
     chart(
         ui,
-        t!("吞吐量", "Throughput"),
+        t!("吞吐量", "Throughput", "スループット"),
         190.0,
         &[
             (get("rx"), metric::NETWORK, false),
@@ -1489,18 +1609,18 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
         None,
         &|m| fmt_bits(m as u64),
         &[
-            (t!("接收", "Receive"), metric::NETWORK),
-            (t!("发送", "Send"), metric::NETWORK_UP),
+            (t!("接收", "Receive", "受信"), metric::NETWORK),
+            (t!("发送", "Send", "送信"), metric::NETWORK_UP),
         ],
     );
 
-    section(ui, t!("适配器", "Adapter"));
+    section(ui, t!("适配器", "Adapter", "アダプター"));
     let mut items = vec![
-        (t!("名称", "Name"), n.name.clone()),
-        (t!("描述", "Description"), n.description.clone()),
-        (t!("类型", "Type"), n.kind.to_string()),
+        (t!("名称", "Name", "名前"), n.name.clone()),
+        (t!("描述", "Description", "説明"), n.description.clone()),
+        (t!("类型", "Type", "種類"), n.kind.to_string()),
         (
-            t!("MAC 地址", "MAC address"),
+            t!("MAC 地址", "MAC address", "MAC アドレス"),
             if n.mac.is_empty() {
                 "—".into()
             } else {
@@ -1509,7 +1629,10 @@ fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
         ),
     ];
     if let Some(ssid) = &n.ssid {
-        items.push((t!("Wi-Fi 网络", "Wi-Fi network"), ssid.clone()));
+        items.push((
+            t!("Wi-Fi 网络", "Wi-Fi network", "Wi-Fi ネットワーク"),
+            ssid.clone(),
+        ));
     }
     for a in &n.ipv4 {
         items.push(("IPv4", a.clone()));
@@ -1528,60 +1651,98 @@ fn summary(device: Device, snap: &Snapshot) -> String {
         Device::Cpu => {
             let i = &snap.cpu_info;
             out.push(format!("CPU\t{}", i.name));
-            out.push(tf!("利用率\t{:.0}%", "Utilization\t{:.0}%", snap.cpu_total));
+            out.push(tf!(
+                "利用率\t{:.0}%",
+                "Utilization\t{:.0}%",
+                "使用率\t{:.0}%",
+                snap.cpu_total
+            ));
             if let Some(mhz) = snap.cpu_mhz {
                 out.push(tf!(
                     "速度\t{:.2} GHz",
                     "Speed\t{:.2} GHz",
+                    "速度\t{:.2} GHz",
                     mhz as f64 / 1000.0
                 ));
             }
             out.push(tf!(
                 "基准速度\t{:.2} GHz",
                 "Base speed\t{:.2} GHz",
+                "基本速度\t{:.2} GHz",
                 i.base_mhz as f64 / 1000.0
             ));
-            out.push(tf!("插槽\t{}", "Sockets\t{}", i.sockets));
-            out.push(tf!("内核\t{}", "Cores\t{}", i.cores));
-            out.push(tf!("逻辑处理器\t{}", "Logical processors\t{}", i.logical));
+            out.push(tf!("插槽\t{}", "Sockets\t{}", "ソケット\t{}", i.sockets));
+            out.push(tf!("内核\t{}", "Cores\t{}", "コア\t{}", i.cores));
+            out.push(tf!(
+                "逻辑处理器\t{}",
+                "Logical processors\t{}",
+                "論理プロセッサ\t{}",
+                i.logical
+            ));
             out.push(tf!(
                 "L1 / L2 / L3 缓存\t{} / {} / {}",
                 "L1 / L2 / L3 cache\t{} / {} / {}",
+                "L1 / L2 / L3 キャッシュ\t{} / {} / {}",
                 fmt_bytes(i.l1),
                 fmt_bytes(i.l2),
                 fmt_bytes(i.l3)
             ));
-            out.push(tf!("进程\t{}", "Processes\t{}", snap.processes.len()));
+            out.push(tf!(
+                "进程\t{}",
+                "Processes\t{}",
+                "プロセス\t{}",
+                snap.processes.len()
+            ));
             out.push(tf!(
                 "正常运行时间\t{}",
                 "Up time\t{}",
+                "稼働時間\t{}",
                 fmt_duration(snap.uptime)
             ));
         }
         Device::Memory => {
             let m = &snap.memory;
-            out.push(tf!("内存\t{:.1} GB", "Memory\t{:.1} GB", gb(m.total)));
-            out.push(tf!("使用中\t{:.1} GB", "In use\t{:.1} GB", gb(m.in_use())));
+            out.push(tf!(
+                "内存\t{:.1} GB",
+                "Memory\t{:.1} GB",
+                "メモリ\t{:.1} GB",
+                gb(m.total)
+            ));
+            out.push(tf!(
+                "使用中\t{:.1} GB",
+                "In use\t{:.1} GB",
+                "使用中\t{:.1} GB",
+                gb(m.in_use())
+            ));
             out.push(tf!(
                 "可用\t{:.1} GB",
                 "Available\t{:.1} GB",
+                "利用可能\t{:.1} GB",
                 gb(m.available)
             ));
             out.push(tf!(
                 "已提交\t{:.1} / {:.1} GB",
                 "Committed\t{:.1} / {:.1} GB",
+                "コミット済み\t{:.1} / {:.1} GB",
                 gb(m.commit_used),
                 gb(m.commit_limit)
             ));
-            out.push(tf!("已缓存\t{:.1} GB", "Cached\t{:.1} GB", gb(m.cache)));
+            out.push(tf!(
+                "已缓存\t{:.1} GB",
+                "Cached\t{:.1} GB",
+                "キャッシュ済み\t{:.1} GB",
+                gb(m.cache)
+            ));
             out.push(tf!(
                 "分页缓冲池\t{}",
                 "Paged pool\t{}",
+                "ページ プール\t{}",
                 fmt_bytes(m.paged_pool)
             ));
             out.push(tf!(
                 "非分页缓冲池\t{}",
                 "Non-paged pool\t{}",
+                "非ページ プール\t{}",
                 fmt_bytes(m.nonpaged_pool)
             ));
             for mm in snap.memory_modules.iter() {
@@ -1598,38 +1759,59 @@ fn summary(device: Device, snap: &Snapshot) -> String {
         }
         Device::Disk(i) => {
             if let Some(d) = snap.disks.iter().find(|d| d.index == i) {
-                out.push(tf!("磁盘 {}\t{}", "Disk {}\t{}", d.index, d.model));
-                out.push(tf!("类型\t{}", "Type\t{}", disk_kind(d)));
-                out.push(tf!("容量\t{}", "Capacity\t{}", fmt_bytes(d.size)));
-                out.push(tf!("活动时间\t{:.0}%", "Active time\t{:.0}%", d.active));
+                out.push(tf!(
+                    "磁盘 {}\t{}",
+                    "Disk {}\t{}",
+                    "ディスク {}\t{}",
+                    d.index,
+                    d.model
+                ));
+                out.push(tf!("类型\t{}", "Type\t{}", "種類\t{}", disk_kind(d)));
+                out.push(tf!(
+                    "容量\t{}",
+                    "Capacity\t{}",
+                    "容量\t{}",
+                    fmt_bytes(d.size)
+                ));
+                out.push(tf!(
+                    "活动时间\t{:.0}%",
+                    "Active time\t{:.0}%",
+                    "アクティブな時間\t{:.0}%",
+                    d.active
+                ));
                 out.push(tf!(
                     "读取 / 写入\t{}/s / {}/s",
                     "Read / write\t{}/s / {}/s",
+                    "読み取り / 書き込み\t{}/s / {}/s",
                     fmt_bytes(d.read_rate),
                     fmt_bytes(d.write_rate)
                 ));
                 out.push(tf!(
                     "平均响应时间\t{:.2} ms",
                     "Average response time\t{:.2} ms",
+                    "平均応答時間\t{:.2} ms",
                     d.response_ms
                 ));
                 if let Some(t) = d.health.temperature {
-                    out.push(tf!("温度\t{t}°C", "Temperature\t{t}°C"));
+                    out.push(tf!("温度\t{t}°C", "Temperature\t{t}°C", "温度\t{t}°C"));
                 }
                 if let Some(n) = &d.health.nvme {
                     out.push(tf!(
                         "剩余寿命\t{}%",
                         "Life remaining\t{}%",
+                        "推定残り寿命\t{}%",
                         100u8.saturating_sub(n.percentage_used.min(100))
                     ));
                     out.push(tf!(
                         "通电时间\t{} 小时",
                         "Power-on time\t{} hours",
+                        "電源投入時間\t{} 時間",
                         n.power_on_hours
                     ));
                     out.push(tf!(
                         "累计写入\t{}",
                         "Data written\t{}",
+                        "総書き込み量\t{}",
                         fmt_tb(n.data_written)
                     ));
                 }
@@ -1637,6 +1819,7 @@ fn summary(device: Device, snap: &Snapshot) -> String {
                     out.push(tf!(
                         "{}:\t{} 可用，共 {} {}",
                         "{}:\t{} free of {} {}",
+                        "{}:\t空き {} / {} {}",
                         v.letter,
                         fmt_bytes(v.free),
                         fmt_bytes(v.total),
@@ -1648,23 +1831,29 @@ fn summary(device: Device, snap: &Snapshot) -> String {
         Device::Network(i) => {
             if let Some(n) = snap.nics.iter().find(|n| n.index == i) {
                 out.push(format!("{}\t{}", n.name, n.description));
-                out.push(tf!("类型\t{}", "Type\t{}", n.kind));
+                out.push(tf!("类型\t{}", "Type\t{}", "種類\t{}", n.kind));
                 if let Some(ssid) = &n.ssid {
-                    out.push(tf!("Wi-Fi 网络\t{ssid}", "Wi-Fi network\t{ssid}"));
+                    out.push(tf!(
+                        "Wi-Fi 网络\t{ssid}",
+                        "Wi-Fi network\t{ssid}",
+                        "Wi-Fi ネットワーク\t{ssid}"
+                    ));
                 }
                 out.push(tf!(
                     "链路速度\t{}",
                     "Link speed\t{}",
+                    "リンク速度\t{}",
                     fmt_bits(n.link_speed / 8)
                 ));
                 out.push(tf!(
                     "接收 / 发送\t{} / {}",
                     "Receive / send\t{} / {}",
+                    "受信 / 送信\t{} / {}",
                     fmt_bits(n.rx_rate),
                     fmt_bits(n.tx_rate)
                 ));
                 for a in n.ipv4.iter().chain(&n.ipv6) {
-                    out.push(tf!("地址\t{a}", "Address\t{a}"));
+                    out.push(tf!("地址\t{a}", "Address\t{a}", "アドレス\t{a}"));
                 }
                 out.push(format!("MAC\t{}", n.mac));
             }
@@ -1672,19 +1861,26 @@ fn summary(device: Device, snap: &Snapshot) -> String {
         Device::Gpu(i) => {
             if let Some(g) = snap.gpus.get(i) {
                 out.push(format!("GPU {i}\t{}", g.name));
-                out.push(tf!("利用率\t{:.0}%", "Utilization\t{:.0}%", g.usage));
+                out.push(tf!(
+                    "利用率\t{:.0}%",
+                    "Utilization\t{:.0}%",
+                    "使用率\t{:.0}%",
+                    g.usage
+                ));
                 for (name, u) in &g.engines {
                     out.push(format!("{name}\t{u:.1}%"));
                 }
                 out.push(tf!(
                     "专用显存\t{:.2} / {:.1} GB",
                     "Dedicated GPU memory\t{:.2} / {:.1} GB",
+                    "専用 GPU メモリ\t{:.2} / {:.1} GB",
                     gb(g.dedicated_used),
                     gb(g.dedicated_total)
                 ));
                 out.push(tf!(
                     "共享 GPU 内存\t{:.2} / {:.1} GB",
                     "Shared GPU memory\t{:.2} / {:.1} GB",
+                    "共有 GPU メモリ\t{:.2} / {:.1} GB",
                     gb(g.shared_used),
                     gb(g.shared_total)
                 ));

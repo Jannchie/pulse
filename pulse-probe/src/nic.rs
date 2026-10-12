@@ -141,8 +141,8 @@ impl NicMonitor {
 /// 内部的网卡类型键 → 当前语言的名称。
 fn kind_label(kind: &'static str) -> &'static str {
     match kind {
-        "Ethernet" => crate::t!("以太网", "Ethernet"),
-        "Cellular" => crate::t!("蜂窝", "Cellular"),
+        "Ethernet" => crate::t!("以太网", "Ethernet", "イーサネット"),
+        "Cellular" => crate::t!("蜂窝", "Cellular", "携帯ネットワーク"),
         k => k,
     }
 }

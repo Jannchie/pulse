@@ -38,17 +38,23 @@ impl Engine {
         match &self.name {
             EngineName::Kind(kind) => match *kind {
                 DXGK_ENGINE_TYPE_3D => "3D",
-                DXGK_ENGINE_TYPE_VIDEO_DECODE => t!("视频解码", "Video Decode"),
-                DXGK_ENGINE_TYPE_VIDEO_ENCODE => t!("视频编码", "Video Encode"),
-                DXGK_ENGINE_TYPE_VIDEO_PROCESSING => t!("视频处理", "Video Processing"),
-                DXGK_ENGINE_TYPE_SCENE_ASSEMBLY => t!("场景组装", "Scene Assembly"),
-                DXGK_ENGINE_TYPE_COPY => t!("复制", "Copy"),
-                DXGK_ENGINE_TYPE_OVERLAY => t!("叠加", "Overlay"),
-                _ => t!("加密", "Crypto"),
+                DXGK_ENGINE_TYPE_VIDEO_DECODE => t!("视频解码", "Video Decode", "ビデオ デコード"),
+                DXGK_ENGINE_TYPE_VIDEO_ENCODE => {
+                    t!("视频编码", "Video Encode", "ビデオ エンコード")
+                }
+                DXGK_ENGINE_TYPE_VIDEO_PROCESSING => {
+                    t!("视频处理", "Video Processing", "ビデオ処理")
+                }
+                DXGK_ENGINE_TYPE_SCENE_ASSEMBLY => {
+                    t!("场景组装", "Scene Assembly", "シーン アセンブリ")
+                }
+                DXGK_ENGINE_TYPE_COPY => t!("复制", "Copy", "コピー"),
+                DXGK_ENGINE_TYPE_OVERLAY => t!("叠加", "Overlay", "オーバーレイ"),
+                _ => t!("加密", "Crypto", "暗号化"),
             }
             .to_string(),
             EngineName::Friendly(s) => s.clone(),
-            EngineName::Node(n) => tf!("引擎 {n}", "Engine {n}"),
+            EngineName::Node(n) => tf!("引擎 {n}", "Engine {n}", "エンジン {n}"),
         }
     }
 }

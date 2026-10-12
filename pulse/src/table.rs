@@ -72,7 +72,7 @@ pub fn show(ui: &mut Ui, v: View) -> Vec<Action> {
     }
     builder
         .header(34.0, |mut h| {
-            let header = std::iter::once((t!("名称", "Name"), SortKey::Name, false))
+            let header = std::iter::once((t!("名称", "Name", "名前"), SortKey::Name, false))
                 .chain(cols.iter().map(|c| (c.label(), c.key(), true)));
             for (label, key, right_aligned) in header {
                 h.col(|ui| {
@@ -241,7 +241,8 @@ fn header_cell(
     if key == SortKey::Network && !net_ok {
         resp = resp.on_hover_text(t!(
             "逐进程网络统计需要管理员权限",
-            "Per-process network stats require administrator rights"
+            "Per-process network stats require administrator rights",
+            "プロセスごとのネットワーク統計には管理者権限が必要です"
         ));
     }
     if resp
@@ -338,10 +339,10 @@ fn name_cell(ui: &mut Ui, c: NameCell) {
                     widgets::icon(ui, Icon::Leaf, r.center(), 13.0, metric::GPU);
                 }
                 if c.status.hung {
-                    widgets::status_chip(ui, t!("无响应", "Not responding"), p.danger);
+                    widgets::status_chip(ui, t!("无响应", "Not responding", "応答なし"), p.danger);
                 }
                 if c.status.suspended {
-                    widgets::status_chip(ui, t!("已挂起", "Suspended"), p.muted);
+                    widgets::status_chip(ui, t!("已挂起", "Suspended", "中断"), p.muted);
                 }
                 if let Some(d) = c.secondary {
                     ui.add(egui::Label::new(RichText::new(d).size(12.0).color(p.faint)).truncate());
@@ -493,14 +494,26 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         Selection::Process(pid) => (
             format!("{name} ({pid})"),
             format!("{name} · {pid}"),
-            t!("结束进程", "End task").to_string(),
+            t!("结束进程", "End task", "タスクを終了する").to_string(),
         ),
         Selection::Group(_) => {
             let n = pids.len();
             (
-                tf!("{name} 的 {n} 个进程", "{name} ({n} processes)"),
-                tf!("{name} · {n} 个进程", "{name} · {n} processes"),
-                tf!("结束全部 {n} 个进程", "End all {n} processes"),
+                tf!(
+                    "{name} 的 {n} 个进程",
+                    "{name} ({n} processes)",
+                    "{name} の {n} 個のプロセス"
+                ),
+                tf!(
+                    "{name} · {n} 个进程",
+                    "{name} · {n} processes",
+                    "{name} · {n} 個のプロセス"
+                ),
+                tf!(
+                    "结束全部 {n} 个进程",
+                    "End all {n} processes",
+                    "{n} 個のプロセスをすべて終了"
+                ),
             )
         }
     };
@@ -508,7 +521,14 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
 
     // 窗口相关
     if let Some(w) = window {
-        if widgets::menu_item(ui, Icon::Window, t!("切换到", "Switch to"), false).clicked() {
+        if widgets::menu_item(
+            ui,
+            Icon::Window,
+            t!("切换到", "Switch to", "切り替え"),
+            false,
+        )
+        .clicked()
+        {
             actions.push(Action::SwitchTo(w.hwnd));
         }
         let with_windows: Vec<u32> = members
@@ -519,12 +539,12 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         if widgets::menu_item(
             ui,
             Icon::WindowClose,
-            t!("关闭窗口（正常退出）", "Close window"),
+            t!("关闭窗口（正常退出）", "Close window", "ウィンドウを閉じる"),
             false,
         )
         .on_hover_text(t!(
             "像点关闭按钮一样请求程序退出，程序可以先保存或询问",
-            "Asks the program to exit, like clicking its close button. It can save or ask first"
+            "Asks the program to exit, like clicking its close button. It can save or ask first", "閉じるボタンをクリックしたときと同じように、プログラムに終了を要求します。プログラムは先に保存や確認を行えます"
         ))
         .clicked()
         {
@@ -547,7 +567,12 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
             && widgets::menu_item(
                 ui,
                 Icon::GitBranch,
-                &tf!("结束进程树（{} 个）", "End process tree ({})", tree.len()),
+                &tf!(
+                    "结束进程树（{} 个）",
+                    "End process tree ({})",
+                    "プロセス ツリーの終了 ({} 個)",
+                    tree.len()
+                ),
                 true,
             )
             .clicked()
@@ -556,7 +581,11 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
             let pids = tree.into_iter().rev().collect();
             actions.push(Action::Kill {
                 pids,
-                label: tf!("{name} 及其子进程", "{name} and its child processes"),
+                label: tf!(
+                    "{name} 及其子进程",
+                    "{name} and its child processes",
+                    "{name} とその子プロセス"
+                ),
             });
         }
     }
@@ -565,14 +594,15 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
     // 调度
     let all_suspended = members.iter().all(|pr| pr.suspended);
     let (glyph, text) = if all_suspended {
-        (Icon::Play, t!("恢复", "Resume"))
+        (Icon::Play, t!("恢复", "Resume", "再開"))
     } else {
-        (Icon::Pause, t!("挂起", "Suspend"))
+        (Icon::Pause, t!("挂起", "Suspend", "中断"))
     };
     if widgets::menu_item(ui, glyph, text, false)
         .on_hover_text(t!(
             "挂起会冻结进程的所有线程，恢复前它不会响应",
-            "Suspending freezes all of the process's threads. It won't respond until resumed"
+            "Suspending freezes all of the process's threads. It won't respond until resumed",
+            "中断するとプロセスのすべてのスレッドが停止し、再開するまで応答しなくなります"
         ))
         .clicked()
     {
@@ -583,10 +613,10 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         });
     }
     let eff = members.iter().all(|pr| pr.efficiency);
-    if widgets::menu_check(ui, Some(Icon::Leaf), t!("效率模式", "Efficiency mode"), eff)
+    if widgets::menu_check(ui, Some(Icon::Leaf), t!("效率模式", "Efficiency mode", "効率モード"), eff)
         .on_hover_text(t!(
             "降低优先级并启用 EcoQoS，让进程省电、少抢前台资源",
-            "Lowers priority and enables EcoQoS to save power and leave more resources for foreground apps"
+            "Lowers priority and enables EcoQoS to save power and leave more resources for foreground apps", "優先度を下げて EcoQoS を有効にし、電力を節約してフォアグラウンド アプリにリソースを譲ります"
         ))
         .clicked()
     {
@@ -601,7 +631,7 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         widgets::submenu(
             ui,
             Icon::Gauge,
-            t!("设置优先级", "Set priority"),
+            t!("设置优先级", "Set priority", "優先度の設定"),
             160.0,
             |ui| {
                 for prio in Priority::ALL {
@@ -616,7 +646,13 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
                 }
             },
         );
-        if widgets::menu_item(ui, Icon::Cpu, t!("设置相关性…", "Set affinity…"), false).clicked()
+        if widgets::menu_item(
+            ui,
+            Icon::Cpu,
+            t!("设置相关性…", "Set affinity…", "関係の設定…"),
+            false,
+        )
+        .clicked()
         {
             actions.push(Action::Affinity {
                 pid: *pid,
@@ -631,12 +667,13 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         if widgets::menu_item(
             ui,
             Icon::Download,
-            t!("创建转储文件", "Create dump file"),
+            t!("创建转储文件", "Create dump file", "ダンプ ファイルの作成"),
             false,
         )
         .on_hover_text(t!(
             "写完整内存转储到临时目录，供调试器分析",
-            "Writes a full memory dump to the temp folder for debugging"
+            "Writes a full memory dump to the temp folder for debugging",
+            "デバッグ用に、完全メモリ ダンプを一時フォルダーに書き込みます"
         ))
         .clicked()
         {
@@ -646,8 +683,13 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
             });
         }
         if services.contains_key(pid)
-            && widgets::menu_item(ui, Icon::Settings, t!("转到服务", "Go to services"), false)
-                .clicked()
+            && widgets::menu_item(
+                ui,
+                Icon::Settings,
+                t!("转到服务", "Go to services", "サービスに移動"),
+                false,
+            )
+            .clicked()
         {
             actions.push(Action::GotoServices(*pid));
         }
@@ -656,51 +698,79 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         if widgets::menu_item(
             ui,
             Icon::FolderOpen,
-            t!("打开文件位置", "Open file location"),
+            t!("打开文件位置", "Open file location", "ファイルの場所を開く"),
             false,
         )
         .clicked()
         {
             actions.push(Action::Reveal(path.clone()));
         }
-        if widgets::menu_item(ui, Icon::Info, t!("属性", "Properties"), false).clicked() {
+        if widgets::menu_item(
+            ui,
+            Icon::Info,
+            t!("属性", "Properties", "プロパティ"),
+            false,
+        )
+        .clicked()
+        {
             actions.push(Action::Properties(path.clone()));
         }
     }
-    if widgets::menu_item(ui, Icon::Globe, t!("在线搜索", "Search online"), false).clicked() {
+    if widgets::menu_item(
+        ui,
+        Icon::Globe,
+        t!("在线搜索", "Search online", "オンラインで検索"),
+        false,
+    )
+    .clicked()
+    {
         actions.push(Action::SearchOnline(name.to_string()));
     }
 
-    widgets::submenu(ui, Icon::Copy, t!("复制", "Copy"), 170.0, |ui| {
-        let mut copies: Vec<(Icon, &str, String)> =
-            vec![(Icon::Copy, t!("名称", "Name"), name.to_string())];
-        if let Selection::Process(pid) = sel {
-            copies.push((Icon::Hash, "PID", pid.to_string()));
-            if let Some(cmd) = members.first().and_then(|pr| pr.command_line.clone()) {
+    widgets::submenu(
+        ui,
+        Icon::Copy,
+        t!("复制", "Copy", "コピー"),
+        170.0,
+        |ui| {
+            let mut copies: Vec<(Icon, &str, String)> =
+                vec![(Icon::Copy, t!("名称", "Name", "名前"), name.to_string())];
+            if let Selection::Process(pid) = sel {
+                copies.push((Icon::Hash, "PID", pid.to_string()));
+                if let Some(cmd) = members.first().and_then(|pr| pr.command_line.clone()) {
+                    copies.push((
+                        Icon::Terminal,
+                        t!("命令行", "Command line", "コマンド ライン"),
+                        cmd.to_string(),
+                    ));
+                }
+            }
+            if let Some(path) = path {
                 copies.push((
-                    Icon::Terminal,
-                    t!("命令行", "Command line"),
-                    cmd.to_string(),
+                    Icon::FolderOpen,
+                    t!("路径", "Path", "パス"),
+                    path.to_string(),
                 ));
             }
-        }
-        if let Some(path) = path {
-            copies.push((Icon::FolderOpen, t!("路径", "Path"), path.to_string()));
-        }
-        if !tcp.is_empty() {
-            let ports = tcp
-                .iter()
-                .map(u16::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            copies.push((Icon::Plug, t!("监听端口", "Listening ports"), ports));
-        }
-        for (glyph, label, value) in copies {
-            if widgets::menu_item(ui, glyph, label, false).clicked() {
-                actions.push(Action::Copy(value));
+            if !tcp.is_empty() {
+                let ports = tcp
+                    .iter()
+                    .map(u16::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                copies.push((
+                    Icon::Plug,
+                    t!("监听端口", "Listening ports", "リッスン ポート"),
+                    ports,
+                ));
             }
-        }
-    });
+            for (glyph, label, value) in copies {
+                if widgets::menu_item(ui, glyph, label, false).clicked() {
+                    actions.push(Action::Copy(value));
+                }
+            }
+        },
+    );
 }
 
 fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String>>) {
@@ -709,24 +779,35 @@ fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String
     let small = |t: String| RichText::new(t).size(11.5).color(p.muted);
     ui.label(RichText::new(&pr.name).strong());
     if let Some(w) = &pr.window {
-        ui.label(small(tf!("窗口：{}", "Window: {}", w.title)));
+        ui.label(small(tf!(
+            "窗口：{}",
+            "Window: {}",
+            "ウィンドウ：{}",
+            w.title
+        )));
     }
     if let Some(d) = &pr.description {
         ui.label(small(d.to_string()));
     }
-    let mut state = vec![tf!("优先级 {}", "Priority {}", pr.priority.label())];
+    let mut state = vec![tf!(
+        "优先级 {}",
+        "Priority {}",
+        "優先度 {}",
+        pr.priority.label()
+    )];
     if pr.suspended {
-        state.push(t!("已挂起", "Suspended").into());
+        state.push(t!("已挂起", "Suspended", "中断").into());
     }
     if pr.efficiency {
-        state.push(t!("效率模式", "Efficiency mode").into());
+        state.push(t!("效率模式", "Efficiency mode", "効率モード").into());
     }
     if pr.window.as_ref().is_some_and(|w| w.hung) {
-        state.push(t!("无响应", "Not responding").into());
+        state.push(t!("无响应", "Not responding", "応答なし").into());
     }
     ui.label(small(tf!(
         "PID {} · 线程 {} · 句柄 {} · {}",
         "PID {} · {} threads · {} handles · {}",
+        "PID {} · スレッド {} · ハンドル {} · {}",
         pr.pid,
         pr.threads,
         pr.handles,
@@ -735,6 +816,7 @@ fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String
     ui.label(small(tf!(
         "已运行 {} · CPU 时间 {}（用户 {} · 内核 {}）",
         "Running for {} · CPU time {} (user {} · kernel {})",
+        "実行時間 {} · CPU 時間 {} (ユーザー {} · カーネル {})",
         fmt_uptime(pr.create_time),
         fmt_cpu_time(pr.user_time + pr.kernel_time),
         fmt_cpu_time(pr.user_time),
@@ -744,6 +826,7 @@ fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String
         ui.label(small(tf!(
             "显存 {} · 共享 GPU 内存 {}",
             "Dedicated GPU memory {} · shared {}",
+            "専用 GPU メモリ {} · 共有 GPU メモリ {}",
             fmt_bytes(pr.gpu_dedicated),
             fmt_bytes(pr.gpu_shared)
         )));
@@ -758,7 +841,11 @@ fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String
     };
     let (t, u) = (fmt_ports(Proto::Tcp), fmt_ports(Proto::Udp));
     if !t.is_empty() {
-        ui.label(small(tf!("监听 TCP {t}", "Listening on TCP {t}")));
+        ui.label(small(tf!(
+            "监听 TCP {t}",
+            "Listening on TCP {t}",
+            "TCP {t} をリッスン中"
+        )));
     }
     if !u.is_empty() {
         ui.label(small(format!("UDP {u}")));
@@ -773,14 +860,15 @@ fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String
     if let Some(svcs) = services {
         let shown: Vec<&str> = svcs.iter().take(8).map(String::as_str).collect();
         let more = if svcs.len() > 8 {
-            tf!(" 等 {} 个", " ({} total)", svcs.len())
+            tf!(" 等 {} 个", " ({} total)", " ほか (計 {} 個)", svcs.len())
         } else {
             String::new()
         };
         ui.label(small(tf!(
             "服务：{}{more}",
             "Services: {}{more}",
-            shown.join(t!("、", ", "))
+            "サービス：{}{more}",
+            shown.join(t!("、", ", ", "、"))
         )));
     }
     if let Some(cmd) = &pr.command_line {
@@ -841,12 +929,12 @@ impl Col {
         match self {
             Col::Pid => "PID",
             Col::Cpu => "CPU",
-            Col::CpuTime => t!("CPU 时间", "CPU time"),
-            Col::Memory => t!("内存", "Memory"),
+            Col::CpuTime => t!("CPU 时间", "CPU time", "CPU 時間"),
+            Col::Memory => t!("内存", "Memory", "メモリ"),
             Col::Gpu => "GPU",
-            Col::Vram => t!("显存", "VRAM"),
-            Col::Disk => t!("磁盘", "Disk"),
-            Col::Network => t!("网络", "Network"),
+            Col::Vram => t!("显存", "VRAM", "VRAM"),
+            Col::Disk => t!("磁盘", "Disk", "ディスク"),
+            Col::Network => t!("网络", "Network", "ネットワーク"),
         }
     }
 

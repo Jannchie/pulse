@@ -460,7 +460,11 @@ impl App {
                     .collect();
                 let name = &members.first()?.name;
                 let n = members.len();
-                let label = tf!("{name} 的 {n} 个进程", "{name} ({n} processes)");
+                let label = tf!(
+                    "{name} 的 {n} 个进程",
+                    "{name} ({n} processes)",
+                    "{name} の {n} 個のプロセス"
+                );
                 Some((members.iter().map(|p| p.pid).collect(), label))
             }
         }
@@ -484,22 +488,27 @@ impl App {
                 let sent: usize = pids.iter().map(|&pid| control::close_windows(pid)).sum();
                 if sent == 0 {
                     self.notify_err(
-                        tf!("无法关闭 {label}", "Couldn't close {label}"),
+                        tf!("无法关闭 {label}", "Couldn't close {label}", "{label} を閉じられませんでした"),
                         Some(
                             t!(
                                 "它没有可以关闭的窗口，可以改用结束进程",
-                                "It has no window to close. Try End task instead."
+                                "It has no window to close. Try End task instead.", "閉じられるウィンドウがありません。代わりに [タスクを終了する] を使用してください。"
                             )
                             .into(),
                         ),
                     );
                 } else {
                     self.notify_ok(
-                        tf!("已请求 {label} 关闭", "Asked {label} to close"),
+                        tf!(
+                            "已请求 {label} 关闭",
+                            "Asked {label} to close",
+                            "{label} に終了を要求しました"
+                        ),
                         Some(
                             t!(
                                 "程序可能会先询问是否保存",
-                                "It may ask whether to save first."
+                                "It may ask whether to save first.",
+                                "終了前に保存するかどうかを確認される場合があります。"
                             )
                             .into(),
                         ),
@@ -519,13 +528,29 @@ impl App {
                 };
                 let (done, failed) = if resume {
                     (
-                        tf!("已恢复 {label}", "Resumed {label}"),
-                        tf!("无法恢复 {label}", "Couldn't resume {label}"),
+                        tf!(
+                            "已恢复 {label}",
+                            "Resumed {label}",
+                            "{label} を再開しました"
+                        ),
+                        tf!(
+                            "无法恢复 {label}",
+                            "Couldn't resume {label}",
+                            "{label} を再開できませんでした"
+                        ),
                     )
                 } else {
                     (
-                        tf!("已挂起 {label}", "Suspended {label}"),
-                        tf!("无法挂起 {label}", "Couldn't suspend {label}"),
+                        tf!(
+                            "已挂起 {label}",
+                            "Suspended {label}",
+                            "{label} を中断しました"
+                        ),
+                        tf!(
+                            "无法挂起 {label}",
+                            "Couldn't suspend {label}",
+                            "{label} を中断できませんでした"
+                        ),
                     )
                 };
                 self.report(pids.iter().map(|&pid| op(pid)).collect(), done, failed);
@@ -539,22 +564,26 @@ impl App {
                     (
                         tf!(
                             "已为 {label} 开启效率模式",
-                            "Turned on efficiency mode for {label}"
+                            "Turned on efficiency mode for {label}",
+                            "{label} の効率モードをオンにしました"
                         ),
                         tf!(
                             "无法为 {label} 开启效率模式",
-                            "Couldn't turn on efficiency mode for {label}"
+                            "Couldn't turn on efficiency mode for {label}",
+                            "{label} の効率モードをオンにできませんでした"
                         ),
                     )
                 } else {
                     (
                         tf!(
                             "已为 {label} 关闭效率模式",
-                            "Turned off efficiency mode for {label}"
+                            "Turned off efficiency mode for {label}",
+                            "{label} の効率モードをオフにしました"
                         ),
                         tf!(
                             "无法为 {label} 关闭效率模式",
-                            "Couldn't turn off efficiency mode for {label}"
+                            "Couldn't turn off efficiency mode for {label}",
+                            "{label} の効率モードをオフにできませんでした"
                         ),
                     )
                 };
@@ -571,11 +600,13 @@ impl App {
                     vec![r],
                     tf!(
                         "已将 {label} 的优先级设为{prio}",
-                        "Set the priority of {label} to {prio}"
+                        "Set the priority of {label} to {prio}",
+                        "{label} の優先度を「{prio}」に設定しました"
                     ),
                     tf!(
                         "无法将 {label} 的优先级设为{prio}",
-                        "Couldn't set the priority of {label} to {prio}"
+                        "Couldn't set the priority of {label} to {prio}",
+                        "{label} の優先度を「{prio}」に設定できませんでした"
                     ),
                 );
             }
@@ -591,7 +622,8 @@ impl App {
                 Err(e) => self.notify_err(
                     tf!(
                         "无法读取 {label} 的相关性",
-                        "Couldn't read the affinity of {label}"
+                        "Couldn't read the affinity of {label}",
+                        "{label} のプロセッサの関係を読み取れませんでした"
                     ),
                     Some(error_text(&e)),
                 ),
@@ -600,12 +632,14 @@ impl App {
                 self.notify_ok(
                     tf!(
                         "正在为 {name} 创建转储文件…",
-                        "Creating a dump file for {name}…"
+                        "Creating a dump file for {name}…",
+                        "{name} のダンプ ファイルを作成しています…"
                     ),
                     Some(
                         t!(
                             "完整内存转储可能需要几秒到几十秒",
-                            "A full memory dump can take from a few seconds to a minute."
+                            "A full memory dump can take from a few seconds to a minute.",
+                            "完全メモリ ダンプには数秒から 1 分ほどかかる場合があります。"
                         )
                         .into(),
                     ),
@@ -615,14 +649,19 @@ impl App {
                         let path = path.to_string_lossy().to_string();
                         pulse_probe::reveal_in_explorer(&path);
                         Toast::ok(
-                            tf!("已为 {name} 创建转储文件", "Created a dump file for {name}"),
+                            tf!(
+                                "已为 {name} 创建转储文件",
+                                "Created a dump file for {name}",
+                                "{name} のダンプ ファイルを作成しました"
+                            ),
                             Some(path),
                         )
                     }
                     Err(e) => Toast::err(
                         tf!(
                             "无法为 {name} 创建转储文件",
-                            "Couldn't create a dump file for {name}"
+                            "Couldn't create a dump file for {name}",
+                            "{name} のダンプ ファイルを作成できませんでした"
                         ),
                         Some(error_text(&e)),
                     ),
@@ -688,18 +727,34 @@ impl App {
                         item.enabled = on;
                         let name = item.name.clone();
                         let msg = if on {
-                            tf!("已启用 {name} 的开机启动", "Enabled {name} at startup")
+                            tf!(
+                                "已启用 {name} 的开机启动",
+                                "Enabled {name} at startup",
+                                "{name} のスタートアップを有効にしました"
+                            )
                         } else {
-                            tf!("已禁用 {name} 的开机启动", "Disabled {name} at startup")
+                            tf!(
+                                "已禁用 {name} 的开机启动",
+                                "Disabled {name} at startup",
+                                "{name} のスタートアップを無効にしました"
+                            )
                         };
                         self.notify_ok(msg, None);
                     }
                     Err(e) => {
                         let name = item.name.clone();
                         let msg = if on {
-                            tf!("无法启用 {name}", "Couldn't enable {name}")
+                            tf!(
+                                "无法启用 {name}",
+                                "Couldn't enable {name}",
+                                "{name} を有効にできませんでした"
+                            )
                         } else {
-                            tf!("无法禁用 {name}", "Couldn't disable {name}")
+                            tf!(
+                                "无法禁用 {name}",
+                                "Couldn't disable {name}",
+                                "{name} を無効にできませんでした"
+                            )
                         };
                         self.notify_err(msg, Some(e));
                     }
@@ -725,9 +780,21 @@ impl App {
         let (msgs, name, run, slow): ([String; 3], String, Job, bool) = match action {
             ServiceAction::Start(n) => (
                 [
-                    tf!("正在启动服务 {n}…", "Starting service {n}…"),
-                    tf!("已启动服务 {n}", "Started service {n}"),
-                    tf!("无法启动服务 {n}", "Couldn't start service {n}"),
+                    tf!(
+                        "正在启动服务 {n}…",
+                        "Starting service {n}…",
+                        "サービス {n} を開始しています…"
+                    ),
+                    tf!(
+                        "已启动服务 {n}",
+                        "Started service {n}",
+                        "サービス {n} を開始しました"
+                    ),
+                    tf!(
+                        "无法启动服务 {n}",
+                        "Couldn't start service {n}",
+                        "サービス {n} を開始できませんでした"
+                    ),
                 ],
                 n,
                 Box::new(services::start),
@@ -735,9 +802,21 @@ impl App {
             ),
             ServiceAction::Stop(n) => (
                 [
-                    tf!("正在停止服务 {n}…", "Stopping service {n}…"),
-                    tf!("已停止服务 {n}", "Stopped service {n}"),
-                    tf!("无法停止服务 {n}", "Couldn't stop service {n}"),
+                    tf!(
+                        "正在停止服务 {n}…",
+                        "Stopping service {n}…",
+                        "サービス {n} を停止しています…"
+                    ),
+                    tf!(
+                        "已停止服务 {n}",
+                        "Stopped service {n}",
+                        "サービス {n} を停止しました"
+                    ),
+                    tf!(
+                        "无法停止服务 {n}",
+                        "Couldn't stop service {n}",
+                        "サービス {n} を停止できませんでした"
+                    ),
                 ],
                 n,
                 Box::new(services::stop),
@@ -745,9 +824,21 @@ impl App {
             ),
             ServiceAction::Restart(n) => (
                 [
-                    tf!("正在重新启动服务 {n}…", "Restarting service {n}…"),
-                    tf!("已重新启动服务 {n}", "Restarted service {n}"),
-                    tf!("无法重新启动服务 {n}", "Couldn't restart service {n}"),
+                    tf!(
+                        "正在重新启动服务 {n}…",
+                        "Restarting service {n}…",
+                        "サービス {n} を再起動しています…"
+                    ),
+                    tf!(
+                        "已重新启动服务 {n}",
+                        "Restarted service {n}",
+                        "サービス {n} を再起動しました"
+                    ),
+                    tf!(
+                        "无法重新启动服务 {n}",
+                        "Couldn't restart service {n}",
+                        "サービス {n} を再起動できませんでした"
+                    ),
                 ],
                 n,
                 Box::new(services::restart),
@@ -760,11 +851,13 @@ impl App {
                         String::new(),
                         tf!(
                             "已将 {n} 的启动类型改为{label}",
-                            "Changed the startup type of {n} to {label}"
+                            "Changed the startup type of {n} to {label}",
+                            "{n} のスタートアップの種類を「{label}」に変更しました"
                         ),
                         tf!(
                             "无法将 {n} 的启动类型改为{label}",
-                            "Couldn't change the startup type of {n} to {label}"
+                            "Couldn't change the startup type of {n} to {label}",
+                            "{n} のスタートアップの種類を「{label}」に変更できませんでした"
                         ),
                     ],
                     n,
@@ -782,7 +875,12 @@ impl App {
             ServiceAction::OpenManager => {
                 if let Err(e) = pulse_probe::control::run("services.msc", false) {
                     self.notify_err(
-                        t!("无法打开服务管理器", "Couldn't open the Services app").into(),
+                        t!(
+                            "无法打开服务管理器",
+                            "Couldn't open the Services app",
+                            "サービス管理ツールを開けませんでした"
+                        )
+                        .into(),
                         Some(e),
                     );
                 }
@@ -830,7 +928,11 @@ impl App {
                 let detail = self.denied_hint(error_text(e), e);
                 let (n, total) = (failures.len(), results.len());
                 self.notify_err(
-                    tf!("{failed}（{n} 个失败）", "{failed} ({n} of {total} failed)"),
+                    tf!(
+                        "{failed}（{n} 个失败）",
+                        "{failed} ({n} of {total} failed)",
+                        "{failed} ({total} 件中 {n} 件が失敗)"
+                    ),
                     Some(detail),
                 );
             }
@@ -842,7 +944,8 @@ impl App {
         if e.code().0 == 0x8007_0005_u32 as i32 && !self.snapshot.elevated {
             tf!(
                 "{msg}。以管理员身份重启 Pulse 后再试。",
-                "{msg}. Restart Pulse as administrator and try again."
+                "{msg}. Restart Pulse as administrator and try again.",
+                "{msg}。Pulse を管理者として再起動してから、もう一度お試しください。"
             )
         } else {
             msg
@@ -857,15 +960,28 @@ impl App {
                 let label = &d.label;
                 self.report(
                     vec![r],
-                    tf!("已设置 {label} 的相关性", "Set the affinity of {label}"),
+                    tf!(
+                        "已设置 {label} 的相关性",
+                        "Set the affinity of {label}",
+                        "{label} のプロセッサの関係を設定しました"
+                    ),
                     tf!(
                         "无法设置 {label} 的相关性",
-                        "Couldn't set the affinity of {label}"
+                        "Couldn't set the affinity of {label}",
+                        "{label} のプロセッサの関係を設定できませんでした"
                     ),
                 );
             }
             Modal::Run(d) => match pulse_probe::control::run(&d.command, d.admin) {
-                Ok(()) => self.notify_ok(tf!("已运行 {}", "Started {}", d.command.trim()), None),
+                Ok(()) => self.notify_ok(
+                    tf!(
+                        "已运行 {}",
+                        "Started {}",
+                        "{} を実行しました",
+                        d.command.trim()
+                    ),
+                    None,
+                ),
                 // 出错时保留对话框，让用户改命令。
                 Err(e) => {
                     self.modal = Some(Modal::Run(RunDialog {
@@ -881,12 +997,28 @@ impl App {
                 };
                 let (done, failed) = match a {
                     UserAction::Logoff(..) => (
-                        tf!("已注销会话 {id}", "Signed out session {id}"),
-                        tf!("无法注销会话 {id}", "Couldn't sign out session {id}"),
+                        tf!(
+                            "已注销会话 {id}",
+                            "Signed out session {id}",
+                            "セッション {id} をサインアウトしました"
+                        ),
+                        tf!(
+                            "无法注销会话 {id}",
+                            "Couldn't sign out session {id}",
+                            "セッション {id} をサインアウトできませんでした"
+                        ),
                     ),
                     UserAction::Disconnect(..) => (
-                        tf!("已断开连接会话 {id}", "Disconnected session {id}"),
-                        tf!("无法断开连接会话 {id}", "Couldn't disconnect session {id}"),
+                        tf!(
+                            "已断开连接会话 {id}",
+                            "Disconnected session {id}",
+                            "セッション {id} を切断しました"
+                        ),
+                        tf!(
+                            "无法断开连接会话 {id}",
+                            "Couldn't disconnect session {id}",
+                            "セッション {id} を切断できませんでした"
+                        ),
                     ),
                 };
                 self.sessions_at = None;
@@ -900,8 +1032,12 @@ impl App {
         let label = &req.label;
         self.report(
             results,
-            tf!("已结束 {label}", "Ended {label}"),
-            tf!("无法结束 {label}", "Couldn't end {label}"),
+            tf!("已结束 {label}", "Ended {label}", "{label} を終了しました"),
+            tf!(
+                "无法结束 {label}",
+                "Couldn't end {label}",
+                "{label} を終了できませんでした"
+            ),
         );
     }
 
@@ -1016,7 +1152,7 @@ impl App {
             for (device, resp) in cards {
                 if resp
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(t!("查看详情", "View details"))
+                    .on_hover_text(t!("查看详情", "View details", "詳細を表示"))
                     .clicked()
                 {
                     clicked = Some(device);
@@ -1056,11 +1192,27 @@ impl App {
         ui.add_space(14.0);
 
         for (view, glyph, label) in [
-            (View::Processes, Icon::List, t!("进程", "Processes")),
-            (View::Performance, Icon::Activity, t!("性能", "Performance")),
-            (View::Services, Icon::Settings, t!("服务", "Services")),
-            (View::Startup, Icon::Rocket, t!("启动应用", "Startup apps")),
-            (View::Users, Icon::Users, t!("用户", "Users")),
+            (
+                View::Processes,
+                Icon::List,
+                t!("进程", "Processes", "プロセス"),
+            ),
+            (
+                View::Performance,
+                Icon::Activity,
+                t!("性能", "Performance", "パフォーマンス"),
+            ),
+            (
+                View::Services,
+                Icon::Settings,
+                t!("服务", "Services", "サービス"),
+            ),
+            (
+                View::Startup,
+                Icon::Rocket,
+                t!("启动应用", "Startup apps", "スタートアップ アプリ"),
+            ),
+            (View::Users, Icon::Users, t!("用户", "Users", "ユーザー")),
         ] {
             let resp = tab(ui, self.view == view, glyph, label);
             holes.push(resp.rect);
@@ -1080,7 +1232,7 @@ impl App {
                 ui,
                 self.view == View::Settings,
                 Icon::Settings,
-                t!("设置", "Settings"),
+                t!("设置", "Settings", "設定"),
             );
             holes.push(resp.rect);
             if resp.clicked() {
@@ -1098,46 +1250,13 @@ impl App {
         let elevated = self.snapshot.elevated;
         let target = self.selected_pids();
         ui.horizontal(|ui| {
-            let resp = widgets::search_box(
-                ui,
-                &mut self.filter,
-                320.0,
-                t!(
-                    "模糊搜索名称、描述、命令行，或 :端口",
-                    "Search name, description, command, :port"
-                ),
-            );
-            if resp.changed() {
-                self.dirty = true;
-            }
-            if ui.input(|i| i.modifiers.command && i.key_pressed(Key::F)) {
-                resp.request_focus();
-            }
-            if resp.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
-                self.filter.clear();
-                self.dirty = true;
-            }
-            if widgets::toggle_chip(
-                ui,
-                &mut self.listening_only,
-                Icon::Plug,
-                t!("监听端口", "Listening ports"),
-            )
-            .on_hover_text(t!(
-                "只看正在监听 TCP 端口的进程。也可以直接搜索 :端口号",
-                "Show only processes listening on TCP ports. You can also search for :port"
-            ))
-            .clicked()
-            {
-                self.dirty = true;
-            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if widgets::segmented(
                     ui,
                     &mut self.settings.grouped,
                     [
-                        (Icon::Layers, t!("分组", "Grouped")),
-                        (Icon::List, t!("列表", "List")),
+                        (Icon::Layers, t!("分组", "Grouped", "グループ")),
+                        (Icon::List, t!("列表", "List", "一覧")),
                     ],
                 ) {
                     self.dirty = true;
@@ -1148,17 +1267,17 @@ impl App {
                 let resp = widgets::tool_button(
                     ui,
                     Icon::OctagonX,
-                    t!("结束任务", "End task"),
+                    t!("结束任务", "End task", "タスクを終了する"),
                     enabled,
                     true,
                 );
                 let resp = match &target {
                     Some((_, label)) => {
-                        resp.on_hover_text(tf!("结束 {label}（Delete）", "End {label} (Delete)"))
+                        resp.on_hover_text(tf!("结束 {label}（Delete）", "End {label} (Delete)", "{label} を終了 (Delete)"))
                     }
                     None => resp.on_hover_text(t!(
                         "先在列表中选中一个进程或分组",
-                        "Select a process or group in the list first"
+                        "Select a process or group in the list first", "先に一覧でプロセスまたはグループを選択してください"
                     )),
                 };
                 if enabled
@@ -1171,7 +1290,7 @@ impl App {
                 if widgets::tool_button(
                     ui,
                     Icon::Plus,
-                    t!("运行新任务", "Run new task"),
+                    t!("运行新任务", "Run new task", "新しいタスクを実行する"),
                     true,
                     false,
                 )
@@ -1183,19 +1302,60 @@ impl App {
                     && widgets::tool_button(
                         ui,
                         Icon::Shield,
-                        t!("以管理员身份重启", "Restart as admin"),
+                        t!("以管理员身份重启", "Restart as admin", "管理者として再起動"),
                         true,
                         false,
                     )
                     .on_hover_text(t!(
                         "启用逐进程网络统计，并允许结束更多系统进程",
-                        "Enables per-process network stats and lets you end more system processes"
+                        "Enables per-process network stats and lets you end more system processes", "プロセスごとのネットワーク統計が有効になり、より多くのシステム プロセスを終了できるようになります"
                     ))
                     .clicked()
                     && pulse_probe::relaunch_elevated()
                 {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    // 右侧按钮先排，搜索框用剩下的宽度（日文等长文案下按钮更宽）。
+                    let chip = t!("监听端口", "Listening ports", "リッスン ポート");
+                    let width = (ui.available_width()
+                        - widgets::pill_width(ui, chip)
+                        - ui.spacing().item_spacing.x * 2.0)
+                        .clamp(180.0, 320.0);
+                    let resp = widgets::search_box(
+                        ui,
+                        &mut self.filter,
+                        width,
+                        t!(
+                            "模糊搜索名称、描述、命令行，或 :端口",
+                            "Search name, description, command, :port", "名前、説明、コマンド、:ポートで検索"
+                        ),
+                    );
+                    if resp.changed() {
+                        self.dirty = true;
+                    }
+                    if ui.input(|i| i.modifiers.command && i.key_pressed(Key::F)) {
+                        resp.request_focus();
+                    }
+                    if resp.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+                        self.filter.clear();
+                        self.dirty = true;
+                    }
+                    if widgets::toggle_chip(
+                        ui,
+                        &mut self.listening_only,
+                        Icon::Plug,
+                        chip,
+                    )
+                    .on_hover_text(t!(
+                        "只看正在监听 TCP 端口的进程。也可以直接搜索 :端口号",
+                        "Show only processes listening on TCP ports. You can also search for :port", "TCP ポートをリッスンしているプロセスだけを表示します。「:ポート番号」で直接検索することもできます。"
+                    ))
+                    .clicked()
+                    {
+                        self.dirty = true;
+                    }
+                });
             });
         });
     }
@@ -1235,11 +1395,16 @@ impl App {
             ui.label(faint(tf!(
                 "{} 个进程 · 采集 {:.1} ms",
                 "{} processes · sampled in {:.1} ms",
+                "プロセス {} 個 · 収集 {:.1} ms",
                 self.snapshot.processes.len(),
                 self.snapshot.collect_time.as_secs_f64() * 1e3,
             )));
             if self.settings.speed == Speed::Paused {
-                widgets::status_chip(ui, t!("已暂停更新", "Updates paused"), p.muted);
+                widgets::status_chip(
+                    ui,
+                    t!("已暂停更新", "Updates paused", "更新を一時停止中"),
+                    p.muted,
+                );
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 match &self.snapshot.net_status {
@@ -1248,13 +1413,18 @@ impl App {
                         ui.label(faint(
                             t!(
                                 "逐进程网络统计需要管理员权限",
-                                "Per-process network stats require administrator rights"
+                                "Per-process network stats require administrator rights",
+                                "プロセスごとのネットワーク統計には管理者権限が必要です"
                             )
                             .into(),
                         ));
                     }
                     NetStatus::Failed(e) => {
-                        ui.label(faint(tf!("ETW 启动失败：{e}", "ETW failed to start: {e}")));
+                        ui.label(faint(tf!(
+                            "ETW 启动失败：{e}",
+                            "ETW failed to start: {e}",
+                            "ETW を開始できませんでした：{e}"
+                        )));
                     }
                 }
             });
@@ -1440,17 +1610,23 @@ impl eframe::App for App {
                             let msg = if want {
                                 t!(
                                     "已替换任务管理器：Ctrl+Shift+Esc 将打开 Pulse",
-                                    "Replaced Task Manager: Ctrl+Shift+Esc now opens Pulse"
+                                    "Replaced Task Manager: Ctrl+Shift+Esc now opens Pulse",
+                                    "タスク マネージャーを置き換えました：Ctrl+Shift+Esc で Pulse が開きます"
                                 )
                             } else {
-                                t!("已恢复系统任务管理器", "Restored the Windows Task Manager")
+                                t!(
+                                    "已恢复系统任务管理器",
+                                    "Restored the Windows Task Manager",
+                                    "Windows のタスク マネージャーに戻しました"
+                                )
                             };
                             self.notify_ok(msg.into(), None);
                         }
                         Err(e) => self.notify_err(
                             t!(
                                 "无法修改任务管理器设置",
-                                "Couldn't change the Task Manager setting"
+                                "Couldn't change the Task Manager setting",
+                                "タスク マネージャーの設定を変更できませんでした"
                             )
                             .into(),
                             Some(e),
@@ -1485,8 +1661,12 @@ impl eframe::App for App {
                         ui.add_space(4.0);
                         let Some(items) = &self.startup else {
                             ui.label(
-                                RichText::new(t!("正在读取启动项…", "Loading startup apps…"))
-                                    .color(p.muted),
+                                RichText::new(t!(
+                                    "正在读取启动项…",
+                                    "Loading startup apps…",
+                                    "スタートアップ アプリを読み込んでいます…"
+                                ))
+                                .color(p.muted),
                             );
                             return Vec::new();
                         };
@@ -1540,7 +1720,12 @@ impl eframe::App for App {
                     Some(perf::PerfAction::Copy(text)) => {
                         ui.ctx().copy_text(text);
                         self.notify_ok(
-                            t!("已复制设备摘要", "Copied the device summary").into(),
+                            t!(
+                                "已复制设备摘要",
+                                "Copied the device summary",
+                                "デバイスの概要をコピーしました"
+                            )
+                            .into(),
                             None,
                         );
                     }
@@ -1736,20 +1921,30 @@ fn caption_buttons(ui: &mut Ui, holes: &mut Vec<egui::Rect>) -> egui::Rect {
 fn user_prompt(a: &UserAction) -> (String, &'static str, &'static str) {
     match a {
         UserAction::Disconnect(_, name) => (
-            tf!("断开 {name} 的连接？", "Disconnect {name}?"),
+            tf!(
+                "断开 {name} 的连接？",
+                "Disconnect {name}?",
+                "{name} を切断しますか？"
+            ),
             t!(
                 "会话会保持登录状态，程序继续运行，用户可以稍后重新连接。",
-                "The session stays signed in and its programs keep running. The user can reconnect later."
+                "The session stays signed in and its programs keep running. The user can reconnect later.",
+                "セッションはサインインしたままで、プログラムも実行を続けます。ユーザーは後で再接続できます。"
             ),
-            t!("断开连接", "Disconnect"),
+            t!("断开连接", "Disconnect", "切断"),
         ),
         UserAction::Logoff(_, name) => (
-            tf!("注销 {name}？", "Sign out {name}?"),
+            tf!(
+                "注销 {name}？",
+                "Sign out {name}?",
+                "{name} をサインアウトしますか？"
+            ),
             t!(
                 "该用户所有打开的程序都会被关闭，未保存的数据将会丢失。",
-                "All of this user's open programs will be closed. Unsaved data will be lost."
+                "All of this user's open programs will be closed. Unsaved data will be lost.",
+                "このユーザーが開いているプログラムはすべて閉じられます。保存されていないデータは失われます。"
             ),
-            t!("注销", "Sign out"),
+            t!("注销", "Sign out", "サインアウト"),
         ),
     }
 }
@@ -1809,7 +2004,12 @@ fn initial_filter() -> String {
 fn error_text(e: &pulse_probe::WinError) -> String {
     let msg = e.message().trim().trim_end_matches('。').to_string();
     if msg.is_empty() {
-        tf!("错误 0x{:08X}", "Error 0x{:08X}", e.code().0)
+        tf!(
+            "错误 0x{:08X}",
+            "Error 0x{:08X}",
+            "エラー 0x{:08X}",
+            e.code().0
+        )
     } else {
         msg
     }
@@ -1847,10 +2047,22 @@ fn fmt_uptime(create_time: i64) -> String {
     }
     let secs = (now - create_time) / 10_000_000;
     match secs {
-        s if s < 60 => tf!("{s} 秒", "{s} s"),
-        s if s < 3600 => tf!("{} 分钟", "{} min", s / 60),
-        s if s < 86_400 => tf!("{} 小时 {} 分钟", "{} h {} min", s / 3600, s / 60 % 60),
-        s => tf!("{} 天 {} 小时", "{} d {} h", s / 86_400, s / 3600 % 24),
+        s if s < 60 => tf!("{s} 秒", "{s} s", "{s} 秒"),
+        s if s < 3600 => tf!("{} 分钟", "{} min", "{} 分", s / 60),
+        s if s < 86_400 => tf!(
+            "{} 小时 {} 分钟",
+            "{} h {} min",
+            "{} 時間 {} 分",
+            s / 3600,
+            s / 60 % 60
+        ),
+        s => tf!(
+            "{} 天 {} 小时",
+            "{} d {} h",
+            "{} 日 {} 時間",
+            s / 86_400,
+            s / 3600 % 24
+        ),
     }
 }
 

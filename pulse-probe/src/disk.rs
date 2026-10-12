@@ -164,14 +164,14 @@ impl DiskMonitor {
                 DiskStat {
                     index: d.index,
                     model: if d.model.is_empty() {
-                        crate::tf!("磁盘 {}", "Disk {}", d.index)
+                        crate::tf!("磁盘 {}", "Disk {}", "ディスク {}", d.index)
                     } else {
                         d.model.clone()
                     },
                     // 读不到描述符时为 "?"，不认识的总线为 ""。
                     bus: match d.bus {
-                        "?" => crate::t!("未知", "Unknown"),
-                        "" => crate::t!("其他", "Other"),
+                        "?" => crate::t!("未知", "Unknown", "不明"),
+                        "" => crate::t!("其他", "Other", "その他"),
                         b => b,
                     },
                     ssd: d.ssd,

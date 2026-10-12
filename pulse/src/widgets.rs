@@ -104,6 +104,7 @@ pub fn cpu_card(
     let sub = tf!(
         "{} 线程 · 最忙 {hottest:.0}%",
         "{} threads · peak {hottest:.0}%",
+        "{} スレッド · 最大 {hottest:.0}%",
         cores.len()
     );
     let (resp, c) = card_frame(ui, width, "CPU", Icon::Cpu, &sub, color, active);
@@ -174,9 +175,9 @@ pub fn memory_card(ui: &mut Ui, width: f32, active: bool, snap: &Snapshot) -> Re
     let (resp, c) = card_frame(
         ui,
         width,
-        t!("内存", "Memory"),
+        t!("内存", "Memory", "メモリ"),
         Icon::Memory,
-        &tf!("共 {:.0} GB", "{:.0} GB total", gb(total)),
+        &tf!("共 {:.0} GB", "{:.0} GB total", "合計 {:.0} GB", gb(total)),
         color,
         active,
     );
@@ -193,6 +194,7 @@ pub fn memory_card(ui: &mut Ui, width: f32, active: bool, snap: &Snapshot) -> Re
         tf!(
             "已提交 {:.1} / {:.0} GB",
             "Commit {:.1} / {:.0} GB",
+            "コミット {:.1} / {:.0} GB",
             gb(commit_used),
             gb(commit_limit)
         ),
@@ -229,9 +231,10 @@ pub fn gpu_card(ui: &mut Ui, width: f32, snap: &Snapshot, history: &[f32]) -> Re
     let name = snap
         .gpus
         .first()
-        .map_or(t!("未检测到", "Not detected"), |g| {
-            short_gpu_name(&g.name)
-        })
+        .map_or(
+            t!("未检测到", "Not detected", "検出されません"),
+            |g| short_gpu_name(&g.name),
+        )
         .to_string();
     let (resp, c) = card_frame(ui, width, "GPU", Icon::Gpu, &name, color, false);
     let painter = ui.painter_at(c.expand(1.0));
@@ -262,6 +265,7 @@ pub fn gpu_card(ui: &mut Ui, width: f32, snap: &Snapshot, history: &[f32]) -> Re
         tf!(
             "显存 {:.1} / {:.0} GB",
             "VRAM {:.1} / {:.0} GB",
+            "VRAM {:.1} / {:.0} GB",
             gb(used),
             gb(total)
         ),
@@ -284,13 +288,13 @@ pub fn disk_card(ui: &mut Ui, width: f32, snap: &Snapshot) -> Response {
     let p = Palette::of(ui.ctx());
     let color = metric::DISK;
     let sub = match snap.disks.len() {
-        1 => t!("1 块", "1 disk").to_string(),
-        n => tf!("{n} 块", "{n} disks"),
+        1 => t!("1 块", "1 disk", "1 台").to_string(),
+        n => tf!("{n} 块", "{n} disks", "{n} 台"),
     };
     let (resp, c) = card_frame(
         ui,
         width,
-        t!("磁盘", "Disk"),
+        t!("磁盘", "Disk", "ディスク"),
         Icon::HardDrive,
         &sub,
         color,
@@ -304,26 +308,25 @@ pub fn disk_card(ui: &mut Ui, width: f32, snap: &Snapshot) -> Response {
     let fmt = |b: u64| crate::fmt_bytes(b);
     let busiest = snap.disks.iter().map(|d| d.active).fold(0.0, f32::max);
     big_value(&painter, c.left_top(), &format!("{busiest:.0}%"), p.text);
-    painter.text(
-        pos2(c.left(), c.bottom() - 16.0),
-        Align2::LEFT_BOTTOM,
-        tf!("读 {}/s", "R {}/s", fmt(read)),
-        FontId::proportional(11.5),
-        p.faint,
-    );
-    painter.text(
-        pos2(c.left(), c.bottom()),
-        Align2::LEFT_BOTTOM,
-        tf!("写 {}/s", "W {}/s", fmt(write)),
-        FontId::proportional(11.5),
-        p.faint,
-    );
+    let rates = [
+        tf!("读 {}/s", "R {}/s", "読込 {}/s", fmt(read)),
+        tf!("写 {}/s", "W {}/s", "書込 {}/s", fmt(write)),
+    ];
+    let mut rates_w: f32 = 0.0;
+    for (text, y) in rates.into_iter().zip([c.bottom() - 16.0, c.bottom()]) {
+        let r = painter.text(
+            pos2(c.left(), y),
+            Align2::LEFT_BOTTOM,
+            text,
+            FontId::proportional(11.5),
+            p.faint,
+        );
+        rates_w = rates_w.max(r.width());
+    }
 
-    // 右侧：每块盘的活动时间，最多 4 行。
-    let col = Rect::from_min_max(
-        pos2(c.left() + c.width() * 0.46, c.top() + 2.0),
-        c.right_bottom(),
-    );
+    // 右侧：每块盘的活动时间，最多 4 行。速率文字较长（日文、大数值）时整列右移让开。
+    let col_left = (c.width() * 0.46).max(rates_w + 10.0).min(c.width() * 0.6);
+    let col = Rect::from_min_max(pos2(c.left() + col_left, c.top() + 2.0), c.right_bottom());
     let rows = snap.disks.len().min(4);
     if rows > 0 {
         let row_h = col.height() / 4.0;
@@ -438,9 +441,9 @@ pub fn network_card(
     let (resp, c) = card_frame(
         ui,
         width,
-        t!("网络", "Network"),
+        t!("网络", "Network", "ネットワーク"),
         Icon::Network,
-        t!("近 60 秒", "Last 60 s"),
+        t!("近 60 秒", "Last 60 s", "直近 60 秒"),
         down,
         active,
     );
@@ -754,13 +757,18 @@ pub fn search_box(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> Res
 }
 
 /// 图标 + 文字的按钮底板，供筛选标签、工具按钮共用。
-fn pill(ui: &mut Ui, label: &str, enabled: bool) -> (Response, Rect) {
+/// [`tool_button`] / [`toggle_chip`] 的宽度，排版前预留空间用。
+pub fn pill_width(ui: &Ui, label: &str) -> f32 {
     let galley = ui.painter().layout_no_wrap(
         label.to_string(),
         FontId::proportional(12.5),
         Color32::WHITE,
     );
-    let size = vec2(galley.size().x + 44.0, 32.0);
+    galley.size().x + 44.0
+}
+
+fn pill(ui: &mut Ui, label: &str, enabled: bool) -> (Response, Rect) {
+    let size = vec2(pill_width(ui, label), 32.0);
     let sense = if enabled {
         Sense::click()
     } else {

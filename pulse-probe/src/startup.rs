@@ -43,16 +43,36 @@ pub enum Source {
 impl Source {
     pub fn label(self) -> &'static str {
         match self {
-            Source::UserRegistry => crate::t!("注册表（当前用户）", "Registry (current user)"),
-            Source::MachineRegistry => crate::t!("注册表（所有用户）", "Registry (all users)"),
+            Source::UserRegistry => crate::t!(
+                "注册表（当前用户）",
+                "Registry (current user)",
+                "レジストリ (現在のユーザー)"
+            ),
+            Source::MachineRegistry => crate::t!(
+                "注册表（所有用户）",
+                "Registry (all users)",
+                "レジストリ (全ユーザー)"
+            ),
             Source::MachineRegistry32 => {
-                crate::t!("注册表（所有用户，32 位）", "Registry (all users, 32-bit)")
+                crate::t!(
+                    "注册表（所有用户，32 位）",
+                    "Registry (all users, 32-bit)",
+                    "レジストリ (全ユーザー、32 ビット)"
+                )
             }
             Source::UserFolder => {
-                crate::t!("启动文件夹（当前用户）", "Startup folder (current user)")
+                crate::t!(
+                    "启动文件夹（当前用户）",
+                    "Startup folder (current user)",
+                    "スタートアップ フォルダー (現在のユーザー)"
+                )
             }
             Source::CommonFolder => {
-                crate::t!("启动文件夹（所有用户）", "Startup folder (all users)")
+                crate::t!(
+                    "启动文件夹（所有用户）",
+                    "Startup folder (all users)",
+                    "スタートアップ フォルダー (全ユーザー)"
+                )
             }
         }
     }
