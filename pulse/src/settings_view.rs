@@ -5,9 +5,7 @@ use eframe::egui::{
     Stroke, Ui, pos2, vec2,
 };
 
-use crate::icons_gen::Icon;
-use crate::settings::{Settings, Speed, ThemeChoice};
-use crate::table::Col;
+use crate::settings::{SearchEngine, Settings, Speed, ThemeChoice};
 use crate::theme::{Palette, semibold};
 use crate::widgets;
 
@@ -61,6 +59,22 @@ pub fn show(
                         divider(ui);
                         row(
                             ui,
+                            "搜索引擎",
+                            "右键菜单里的“在线搜索”用它，在默认浏览器中打开。",
+                            |ui| {
+                                let labels = SearchEngine::ALL.map(|e| e.label());
+                                let cur = SearchEngine::ALL
+                                    .iter()
+                                    .position(|&e| e == settings.search)
+                                    .unwrap_or(0);
+                                if let Some(i) = choice(ui, &labels, cur) {
+                                    settings.search = SearchEngine::ALL[i];
+                                }
+                            },
+                        );
+                        divider(ui);
+                        row(
+                            ui,
                             "窗口置顶",
                             "始终显示在其他窗口之上。",
                             |ui| {
@@ -96,28 +110,6 @@ pub fn show(
                                 widgets::switch(ui, &mut settings.grouped, true);
                             },
                         );
-                        divider(ui);
-                        row(
-                            ui,
-                            "显示的列",
-                            "窗口变窄时，不重要的列会先自动隐藏。",
-                            |_| {},
-                        );
-                        ui.add_space(2.0);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                            for c in Col::ALL {
-                                let shown = !settings.hidden_columns.contains(&c);
-                                if chip(ui, c.label(), shown).clicked() {
-                                    if shown {
-                                        settings.hidden_columns.push(c);
-                                    } else {
-                                        settings.hidden_columns.retain(|&x| x != c);
-                                    }
-                                }
-                            }
-                        });
-                        ui.add_space(14.0);
                     });
 
                     group(ui, "系统", |ui| {
@@ -247,36 +239,4 @@ fn choice(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
         }
     }
     picked
-}
-
-/// 可勾选的标签。
-fn chip(ui: &mut Ui, label: &str, on: bool) -> egui::Response {
-    let p = Palette::of(ui.ctx());
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_string(), FontId::proportional(12.5), p.text);
-    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 40.0, 30.0), Sense::click());
-    let fill = if on {
-        p.accent.gamma_multiply(0.18)
-    } else if resp.hovered() {
-        p.hover
-    } else {
-        p.track
-    };
-    ui.painter().rect_filled(rect, CornerRadius::same(15), fill);
-    let fg = if on { p.text } else { p.muted };
-    let glyph = if on { Icon::Check } else { Icon::Plus };
-    widgets::icon(
-        ui,
-        glyph,
-        pos2(rect.left() + 16.0, rect.center().y),
-        13.0,
-        if on { p.accent } else { p.faint },
-    );
-    ui.painter().galley(
-        pos2(rect.left() + 28.0, rect.center().y - galley.size().y / 2.0),
-        galley,
-        fg,
-    );
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

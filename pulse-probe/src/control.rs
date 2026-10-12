@@ -320,8 +320,8 @@ pub fn show_properties(path: &str) {
     }
 }
 
-/// 用默认浏览器搜索进程名。
-pub fn search_online(query: &str) {
+/// 用默认浏览器搜索。`url_prefix` 如 `https://www.google.com/search?q=`，关键词编码后接在后面。
+pub fn search_online(url_prefix: &str, query: &str) {
     let encoded: String = query
         .bytes()
         .map(|b| match b {
@@ -329,7 +329,7 @@ pub fn search_online(query: &str) {
             _ => format!("%{b:02X}"),
         })
         .collect();
-    open_url(&format!("https://www.bing.com/search?q={encoded}"));
+    open_url(&format!("{url_prefix}{encoded}"));
 }
 
 pub fn open_url(url: &str) {

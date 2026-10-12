@@ -873,12 +873,12 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
     ];
     // 点阵：4 行，每个点代表相同份额的内存，按类别依次（逐列从上到下）上色。
     const ROWS: usize = 4;
-    // 点距、点大小取整到物理像素，每个点一样大。
+    // 点的边长取整到物理像素（每个点一样大）；点距微调到正好铺满整行，每个点的位置吸附到像素。
     let ppp = ui.ctx().pixels_per_point();
-    let px = |v: f32| (v * ppp).round().max(1.0) / ppp;
-    let (pitch, dot) = (px(10.0), px(7.0));
+    let dot = (7.0 * ppp).round().max(1.0) / ppp;
     let w = ui.available_width();
-    let cols = ((w + pitch - dot) / pitch).floor().max(1.0) as usize;
+    let cols = ((w + 10.0 - dot) / 10.0).floor().max(2.0) as usize;
+    let pitch = (w - dot) / (cols - 1) as f32;
     let total_dots = cols * ROWS;
     let (grid, _) =
         ui.allocate_exact_size(vec2(w, ROWS as f32 * pitch - (pitch - dot)), Sense::hover());

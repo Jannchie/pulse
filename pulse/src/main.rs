@@ -47,7 +47,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("Pulse")
             .with_inner_size([1200.0, 780.0])
-            .with_min_inner_size([960.0, 480.0]),
+            .with_min_inner_size([1100.0, 640.0]),
         // NVIDIA 等驱动的 OpenGL vsync 在 SwapBuffers 里忙等，鼠标划过表格时能吃满一个核。
         // 窗口由 DWM 合成本就不会撕裂，所以直接关掉。重绘只由输入事件触发（见 theme 里关掉的动画），
         // 不会空转；在 UI 线程里睡眠限帧反而会让驱动线程忙等，实测更耗 CPU。
@@ -551,7 +551,9 @@ impl App {
                 });
             }
             Action::Properties(path) => control::show_properties(&path),
-            Action::SearchOnline(name) => control::search_online(&name),
+            Action::SearchOnline(name) => {
+                control::search_online(self.settings.search.url_prefix(), &name)
+            }
             Action::GotoServices(pid) => self.goto_services(pid),
             Action::Reveal(path) => pulse_probe::reveal_in_explorer(&path),
             Action::Copy(text) => ctx.copy_text(text),
@@ -618,7 +620,9 @@ impl App {
             }
             StartupAction::Reveal(path) => pulse_probe::reveal_in_explorer(&path),
             StartupAction::Properties(path) => control::show_properties(&path),
-            StartupAction::Search(q) => control::search_online(&q),
+            StartupAction::Search(q) => {
+                control::search_online(self.settings.search.url_prefix(), &q)
+            }
             StartupAction::Copy(text) => ctx.copy_text(text),
             StartupAction::OpenFolder => {
                 let _ = control::run("shell:startup", false);
@@ -652,7 +656,9 @@ impl App {
                 return self.show_processes(pid.to_string(), Some(Selection::Process(pid)));
             }
             ServiceAction::Copy(text) => return ctx.copy_text(text),
-            ServiceAction::Search(q) => return pulse_probe::control::search_online(&q),
+            ServiceAction::Search(q) => {
+                return pulse_probe::control::search_online(self.settings.search.url_prefix(), &q);
+            }
             ServiceAction::OpenManager => {
                 if let Err(e) = pulse_probe::control::run("services.msc", false) {
                     self.notify_err("无法打开服务管理器".into(), Some(e));
@@ -1050,7 +1056,6 @@ impl App {
                 icons: &mut self.icons,
                 scroll_to: self.scroll_to.take(),
                 services: &self.services_by_pid,
-                hidden: &self.settings.hidden_columns,
             },
         );
         let ctx = ui.ctx().clone();

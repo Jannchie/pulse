@@ -2,8 +2,6 @@
 
 use std::path::PathBuf;
 
-use crate::table::Col;
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Speed {
     High,
@@ -40,6 +38,52 @@ impl Speed {
             Speed::Normal => "normal",
             Speed::Low => "low",
             Speed::Paused => "paused",
+        }
+    }
+}
+
+/// "在线搜索"使用的搜索引擎。浏览器自己的默认搜索引擎没有系统接口可读，所以在这里选。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SearchEngine {
+    Google,
+    Bing,
+    DuckDuckGo,
+    Baidu,
+}
+
+impl SearchEngine {
+    pub const ALL: [SearchEngine; 4] = [
+        SearchEngine::Google,
+        SearchEngine::Bing,
+        SearchEngine::DuckDuckGo,
+        SearchEngine::Baidu,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SearchEngine::Google => "Google",
+            SearchEngine::Bing => "Bing",
+            SearchEngine::DuckDuckGo => "DuckDuckGo",
+            SearchEngine::Baidu => "百度",
+        }
+    }
+
+    /// 搜索地址前缀，后面直接接 URL 编码后的关键词。
+    pub fn url_prefix(self) -> &'static str {
+        match self {
+            SearchEngine::Google => "https://www.google.com/search?q=",
+            SearchEngine::Bing => "https://www.bing.com/search?q=",
+            SearchEngine::DuckDuckGo => "https://duckduckgo.com/?q=",
+            SearchEngine::Baidu => "https://www.baidu.com/s?wd=",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            SearchEngine::Google => "google",
+            SearchEngine::Bing => "bing",
+            SearchEngine::DuckDuckGo => "duckduckgo",
+            SearchEngine::Baidu => "baidu",
         }
     }
 }
@@ -85,8 +129,7 @@ pub struct Settings {
     pub always_on_top: bool,
     pub theme: ThemeChoice,
     pub grouped: bool,
-    /// 隐藏的列。
-    pub hidden_columns: Vec<Col>,
+    pub search: SearchEngine,
 }
 
 impl Default for Settings {
@@ -96,7 +139,7 @@ impl Default for Settings {
             always_on_top: false,
             theme: ThemeChoice::System,
             grouped: true,
-            hidden_columns: Vec::new(),
+            search: SearchEngine::Google,
         }
     }
 }
@@ -139,11 +182,11 @@ impl Settings {
                         .unwrap_or(s.theme)
                 }
                 "grouped" => s.grouped = v != "false",
-                "hidden_columns" => {
-                    s.hidden_columns = v
-                        .split(',')
-                        .filter_map(|c| Col::from_id(c.trim()))
-                        .collect()
+                "search" => {
+                    s.search = SearchEngine::ALL
+                        .into_iter()
+                        .find(|x| x.key() == v)
+                        .unwrap_or(s.search)
                 }
                 _ => {}
             }
@@ -153,16 +196,12 @@ impl Settings {
 
     fn serialize(&self) -> String {
         format!(
-            "speed={}\nalways_on_top={}\ntheme={}\ngrouped={}\nhidden_columns={}\n",
+            "speed={}\nalways_on_top={}\ntheme={}\ngrouped={}\nsearch={}\n",
             self.speed.key(),
             self.always_on_top,
             self.theme.key(),
             self.grouped,
-            self.hidden_columns
-                .iter()
-                .map(|c| c.id())
-                .collect::<Vec<_>>()
-                .join(",")
+            self.search.key(),
         )
     }
 
@@ -186,7 +225,7 @@ mod tests {
             always_on_top: true,
             theme: ThemeChoice::Dark,
             grouped: false,
-            hidden_columns: vec![Col::Pid, Col::CpuTime],
+            search: SearchEngine::DuckDuckGo,
         };
         assert_eq!(Settings::parse(&s.serialize()), s);
         assert_eq!(Settings::parse("garbage\nspeed=nope"), Settings::default());
