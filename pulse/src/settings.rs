@@ -175,6 +175,10 @@ pub struct Settings {
     pub grouped: bool,
     pub search: SearchEngine,
     pub language: Language,
+    /// 启动后与每 24 小时自动检查更新。
+    pub auto_update: bool,
+    /// 用户选择跳过的版本（不带 v），不再为它提示。
+    pub skipped_version: String,
 }
 
 impl Default for Settings {
@@ -186,6 +190,8 @@ impl Default for Settings {
             grouped: true,
             search: SearchEngine::Google,
             language: Language::System,
+            auto_update: true,
+            skipped_version: String::new(),
         }
     }
 }
@@ -240,6 +246,8 @@ impl Settings {
                         .find(|x| x.key() == v)
                         .unwrap_or(s.language)
                 }
+                "auto_update" => s.auto_update = v != "false",
+                "skip_version" => s.skipped_version = v.to_string(),
                 _ => {}
             }
         }
@@ -248,13 +256,15 @@ impl Settings {
 
     fn serialize(&self) -> String {
         format!(
-            "speed={}\nalways_on_top={}\ntheme={}\ngrouped={}\nsearch={}\nlanguage={}\n",
+            "speed={}\nalways_on_top={}\ntheme={}\ngrouped={}\nsearch={}\nlanguage={}\nauto_update={}\nskip_version={}\n",
             self.speed.key(),
             self.always_on_top,
             self.theme.key(),
             self.grouped,
             self.search.key(),
             self.language.key(),
+            self.auto_update,
+            self.skipped_version,
         )
     }
 
@@ -280,6 +290,8 @@ mod tests {
             grouped: false,
             search: SearchEngine::DuckDuckGo,
             language: Language::Ja,
+            auto_update: false,
+            skipped_version: "0.3.2".into(),
         };
         assert_eq!(Settings::parse(&s.serialize()), s);
         assert_eq!(Settings::parse("garbage\nspeed=nope"), Settings::default());
@@ -293,6 +305,8 @@ mod tests {
         assert_eq!(s.language, Language::System);
         assert_eq!(s.speed, Speed::Low);
         assert_eq!(s.search, SearchEngine::Bing);
+        assert!(s.auto_update);
+        assert_eq!(s.skipped_version, "");
         for lang in Language::ALL {
             let s = Settings {
                 language: lang,
@@ -317,5 +331,26 @@ mod tests {
         }
         // 不认识的取值回到跟随系统。
         assert_eq!(Settings::parse("language=fr\n").language, Language::System);
+    }
+
+    #[test]
+    fn update_keys() {
+        // 加入自动更新之前的文件：默认开启，没有跳过的版本。
+        let old = "speed=high\nalways_on_top=false\ntheme=system\ngrouped=true\nsearch=google\nlanguage=zh\n";
+        let s = Settings::parse(old);
+        assert!(s.auto_update);
+        assert_eq!(s.skipped_version, "");
+        assert_eq!(s.language, Language::Zh);
+        assert_eq!(s.speed, Speed::High);
+        let s = Settings::parse("auto_update=false\nskip_version= 0.4.0 \n");
+        assert!(!s.auto_update);
+        assert_eq!(s.skipped_version, "0.4.0");
+        for auto in [true, false] {
+            let s = Settings {
+                auto_update: auto,
+                ..Settings::default()
+            };
+            assert_eq!(Settings::parse(&s.serialize()), s);
+        }
     }
 }
