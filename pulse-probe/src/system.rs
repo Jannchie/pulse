@@ -383,10 +383,10 @@ pub fn installed_memory() -> Option<u64> {
     Some(kb * 1024)
 }
 
-fn reg_string(key: &str, value: &str) -> Option<String> {
+pub(crate) fn reg_string(key: &str, value: &str) -> Option<String> {
     let key = crate::wide(key);
     let value = crate::wide(value);
-    let mut buf = [0u16; 256];
+    let mut buf = [0u16; 1024];
     let mut len = (buf.len() * 2) as u32;
     let r = unsafe {
         RegGetValueW(

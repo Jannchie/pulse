@@ -1139,6 +1139,24 @@ pub fn right_label(ui: &mut Ui, text: RichText) {
     });
 }
 
+/// 与 `painter.text` 相同，但只画一行，超过 `max_width` 时以省略号截断。返回所占区域。
+pub fn text_truncated(
+    painter: &Painter,
+    pos: Pos2,
+    align: Align2,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_width: f32,
+) -> Rect {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_width.max(0.0));
+    let galley = painter.layout_job(job);
+    let rect = align.anchor_size(pos, galley.size());
+    painter.galley(rect.min, galley, color);
+    rect
+}
+
 /// 右键菜单顶部的标题行。`width` 大于 0 时同时定下菜单宽度（菜单项按可用宽度铺满，
 /// egui 自带的 context_menu 不定宽会被撑开）；浮动菜单自己定宽，传 0。
 pub fn menu_heading(ui: &mut Ui, text: &str, width: f32) {

@@ -303,18 +303,29 @@ fn programs(ui: &mut Ui, list: &[Program], icons: &mut Icons) -> Option<PanelAct
             pos2(row.left() + 32.0, row.top()),
             pos2(col_gpu - 50.0, row.bottom()),
         );
-        let name = painter.with_clip_rect(name_clip).text(
+        // 程序名截断时给 "×N" 留出位置。
+        let count = (prog.count > 1).then(|| format!("×{}", prog.count));
+        let count_w = count.as_ref().map_or(0.0, |c| {
+            painter
+                .layout_no_wrap(c.clone(), FontId::proportional(11.5), p.faint)
+                .size()
+                .x
+                + 6.0
+        });
+        let name = widgets::text_truncated(
+            &painter,
             pos2(name_clip.left(), row.center().y),
             Align2::LEFT_CENTER,
             &prog.name,
             FontId::proportional(12.5),
             p.text,
+            name_clip.width() - count_w,
         );
-        if prog.count > 1 {
-            painter.with_clip_rect(name_clip).text(
+        if let Some(count) = count {
+            painter.text(
                 pos2(name.right() + 6.0, row.center().y),
                 Align2::LEFT_CENTER,
-                format!("×{}", prog.count),
+                count,
                 FontId::proportional(11.5),
                 p.faint,
             );

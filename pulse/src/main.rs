@@ -394,13 +394,7 @@ impl App {
             sessions: Vec::new(),
             sessions_at: None,
             interval,
-            taskmgr_replaced: {
-                // 有管理员权限时顺手把旧格式的注册表值补上 --taskmgr 标记。
-                if pulse_probe::os::is_elevated() {
-                    let _ = pulse_probe::os::migrate_taskmgr_flag();
-                }
-                pulse_probe::os::taskmgr_replaced()
-            },
+            taskmgr_replaced: pulse_probe::os::taskmgr_replaced(),
             settings,
             scroll_to: None,
             passes: VecDeque::new(),
@@ -2011,15 +2005,12 @@ fn initial_filter() -> String {
 }
 
 fn filter_from_args(args: Vec<String>) -> String {
-    // 早期版本写入的注册表值没有 --taskmgr 标记，系统直接把 taskmgr.exe 路径接在后面。
-    if args
-        .first()
-        .is_some_and(|a| a.to_lowercase().ends_with("taskmgr.exe"))
-    {
-        return String::new();
-    }
+    // 系统总会把 taskmgr.exe 的路径接在注册表值后面；早期版本写入的值没有 --taskmgr 标记，
+    // 所以遇到标记或 taskmgr.exe 路径都停止。
     args.into_iter()
-        .take_while(|a| a != pulse_probe::os::TASKMGR_FLAG)
+        .take_while(|a| {
+            a != pulse_probe::os::TASKMGR_FLAG && !a.to_lowercase().ends_with("taskmgr.exe")
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }

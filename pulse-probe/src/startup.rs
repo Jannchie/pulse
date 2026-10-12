@@ -222,7 +222,7 @@ pub fn set_enabled(item: &StartupItem, enabled: bool) -> Result<(), String> {
         )
     };
     if r != ERROR_SUCCESS {
-        return Err(win32_message(r.0));
+        return Err(crate::win32_message(r.0));
     }
     let name = wide(&item.key);
     let r = unsafe { RegSetValueExW(key, PCWSTR(name.as_ptr()), None, REG_BINARY, Some(&data)) };
@@ -232,12 +232,8 @@ pub fn set_enabled(item: &StartupItem, enabled: bool) -> Result<(), String> {
     if r == ERROR_SUCCESS {
         Ok(())
     } else {
-        Err(win32_message(r.0))
+        Err(crate::win32_message(r.0))
     }
-}
-
-fn win32_message(code: u32) -> String {
-    windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(code)).message()
 }
 
 fn open_key(root: HKEY, path: &str) -> Option<HKEY> {

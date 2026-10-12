@@ -33,6 +33,11 @@ use windows::Win32::System::Threading::{
 pub use windows::core::Error as WinError;
 
 /// Rust 字符串 → 以 0 结尾的 UTF-16，供各种 W 版 Win32 API 使用。
+/// Win32 错误码对应的系统错误信息。
+pub(crate) fn win32_message(code: u32) -> String {
+    windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(code)).message()
+}
+
 pub(crate) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }

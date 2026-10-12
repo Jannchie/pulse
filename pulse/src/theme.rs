@@ -35,8 +35,7 @@ pub struct Palette {
     pub chip_alpha: f32,
 }
 
-/// 配色对齐 Windows 11（资源管理器、任务管理器）：暗色背景 #202020、卡片 #2B2B2B，
-/// 浅色背景 #F3F3F3、卡片 #FBFBFB，都是不带色偏的中性灰；次要文字对比度不低于 7:1。
+/// 配色对齐 Windows 11 资源管理器、任务管理器的中性灰（不带色偏）；次要文字对比度不低于 7:1。
 const DARK: Palette = Palette {
     bg: Color32::from_rgb(0x20, 0x20, 0x20),
     surface: Color32::from_rgb(0x2b, 0x2b, 0x2b),

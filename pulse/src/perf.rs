@@ -304,22 +304,14 @@ fn sidebar(ui: &mut Ui, snap: &Snapshot, series: &Series, device: &mut Device) {
             FontId::new(13.0, semibold()),
             p.text,
         );
-        let sub_rect = Rect::from_min_max(
-            pos2(rect.left() + 34.0, rect.top() + 30.0),
-            pos2(thumb.left() - 8.0, rect.bottom() - 6.0),
-        );
-        // 单行显示，放不下时以省略号截断。
-        let mut job = egui::text::LayoutJob::simple_singleline(
-            e.sub.clone(),
+        widgets::text_truncated(
+            &painter,
+            pos2(rect.left() + 34.0, rect.top() + 40.0),
+            Align2::LEFT_CENTER,
+            &e.sub,
             FontId::proportional(11.5),
             p.muted,
-        );
-        job.wrap = egui::text::TextWrapping::truncate_at_width(sub_rect.width());
-        let g = painter.layout_job(job);
-        painter.galley(
-            pos2(sub_rect.left(), rect.top() + 40.0 - g.size().y / 2.0),
-            g,
-            p.muted,
+            thumb.left() - 8.0 - (rect.left() + 34.0),
         );
         if resp
             .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -446,12 +438,14 @@ pub fn hero(ui: &mut Ui, items: &[Kpi]) {
                     bottom = bar.top() - 7.0;
                 }
                 if let Some(caption) = &k.caption {
-                    painter.with_clip_rect(rect.shrink(8.0)).text(
+                    widgets::text_truncated(
+                        &painter,
                         pos2(rect.left() + 14.0, bottom),
                         Align2::LEFT_BOTTOM,
                         caption,
                         FontId::proportional(11.5),
                         p.faint,
+                        rect.width() - 28.0,
                     );
                 }
             }
@@ -509,13 +503,14 @@ fn kv_list(ui: &mut Ui, items: &[(&str, String)]) {
             FontId::proportional(12.5),
             p.muted,
         );
-        let clip = Rect::from_min_max(pos2(label.right() + 12.0, cell.top()), cell.max);
-        painter.with_clip_rect(clip).text(
+        widgets::text_truncated(
+            &painter,
             pos2(cell.right() - 14.0, cell.center().y),
             Align2::RIGHT_CENTER,
             value,
             FontId::proportional(13.0),
             p.text,
+            cell.right() - 14.0 - (label.right() + 12.0),
         );
     }
     if cols == 2 {

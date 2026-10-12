@@ -275,61 +275,12 @@ const IFEO_TASKMGR: &str =
 
 /// 是否已用 IFEO 的 Debugger 值把任务管理器（含 Ctrl+Shift+Esc）重定向到 Pulse。
 pub fn taskmgr_replaced() -> bool {
-    taskmgr_debugger().is_some_and(|v| v.to_lowercase().contains("pulse"))
-}
-
-/// IFEO 里 taskmgr.exe 的 Debugger 值（没有设置时为 None）。
-fn taskmgr_debugger() -> Option<String> {
-    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
-    let key = crate::wide(IFEO_TASKMGR);
-    let mut buf = [0u16; 1024];
-    let mut len = (buf.len() * 2) as u32;
-    unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            PCWSTR(key.as_ptr()),
-            w!("Debugger"),
-            RRF_RT_REG_SZ,
-            None,
-            Some(buf.as_mut_ptr().cast()),
-            Some(&mut len),
-        )
-    }
-    .ok()
-    .ok()?;
-    Some(String::from_utf16_lossy(
-        &buf[..(len as usize / 2).saturating_sub(1)],
-    ))
-}
-
-/// 早期版本写入的 Debugger 值没有 `--taskmgr` 标记，系统附加的 taskmgr.exe 路径会被当成搜索词。
-/// 发现这种旧值时在末尾补上标记，程序路径保持不变（不改成当前运行的 exe）。写 HKLM，需要管理员。
-/// 返回是否做了迁移。
-pub fn migrate_taskmgr_flag() -> Result<bool, String> {
-    let Some(value) = taskmgr_debugger() else {
-        return Ok(false);
-    };
-    if !value.to_lowercase().contains("pulse") || value.contains(TASKMGR_FLAG) {
-        return Ok(false);
-    }
-    write_taskmgr_debugger(Some(&format!("{} {TASKMGR_FLAG}", value.trim_end())))?;
-    Ok(true)
+    crate::system::reg_string(IFEO_TASKMGR, "Debugger")
+        .is_some_and(|v| v.to_lowercase().contains("pulse"))
 }
 
 /// 打开或关闭"替换任务管理器"。写 HKLM，需要管理员。
 pub fn set_taskmgr_replaced(on: bool) -> Result<(), String> {
-    let value = if on {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        // 带上 --taskmgr：系统会把 taskmgr.exe 路径和开关附加在后面，Pulse 见到标记就忽略其后的参数。
-        Some(format!("\"{}\" {TASKMGR_FLAG}", exe.display()))
-    } else {
-        None
-    };
-    write_taskmgr_debugger(value.as_deref())
-}
-
-/// 写入（`Some`）或删除（`None`）IFEO 里 taskmgr.exe 的 Debugger 值。
-fn write_taskmgr_debugger(value: Option<&str>) -> Result<(), String> {
     use windows::Win32::Foundation::ERROR_SUCCESS;
     use windows::Win32::System::Registry::{
         HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE, REG_OPEN_CREATE_OPTIONS, REG_SZ, RegCloseKey,
@@ -351,28 +302,27 @@ fn write_taskmgr_debugger(value: Option<&str>) -> Result<(), String> {
         )
     };
     if r != ERROR_SUCCESS {
-        return Err(
-            windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(r.0)).message(),
-        );
+        return Err(crate::win32_message(r.0));
     }
-    let r = match value {
-        Some(value) => {
-            let data: Vec<u8> = value
-                .encode_utf16()
-                .chain([0])
-                .flat_map(u16::to_le_bytes)
-                .collect();
-            unsafe { RegSetValueExW(key, w!("Debugger"), None, REG_SZ, Some(&data)) }
-        }
-        None => unsafe { RegDeleteValueW(key, w!("Debugger")) },
+    let r = if on {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        // 带上 --taskmgr：系统会把 taskmgr.exe 路径和开关附加在后面，Pulse 见到标记就忽略其后的参数。
+        let value = format!("\"{}\" {TASKMGR_FLAG}", exe.display());
+        let data: Vec<u8> = value
+            .encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        unsafe { RegSetValueExW(key, w!("Debugger"), None, REG_SZ, Some(&data)) }
+    } else {
+        unsafe { RegDeleteValueW(key, w!("Debugger")) }
     };
     unsafe {
         let _ = RegCloseKey(key);
     }
-    // 删除时值本来就不存在（ERROR_FILE_NOT_FOUND）也算成功。
-    if r == ERROR_SUCCESS || (value.is_none() && r.0 == 2) {
+    if r == ERROR_SUCCESS || (!on && r.0 == 2) {
         Ok(())
     } else {
-        Err(windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(r.0)).message())
+        Err(crate::win32_message(r.0))
     }
 }
