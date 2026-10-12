@@ -25,6 +25,33 @@ pub enum StartupAction {
 #[derive(Default)]
 pub struct StartupState {
     pub selected: Option<String>,
+    pub filter: String,
+    pub state: Filter,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum Filter {
+    #[default]
+    All,
+    Enabled,
+    Disabled,
+}
+
+/// 搜索词按空格拆开，每个词都要出现在名称、发布者、描述、命令行或来源之一（不区分大小写）。
+fn matches(it: &StartupItem, words: &[String]) -> bool {
+    let fields = [
+        Some(it.name.as_str()),
+        it.publisher.as_deref(),
+        it.description.as_deref(),
+        Some(it.command.as_str()),
+        Some(it.source.label()),
+    ];
+    words.iter().all(|w| {
+        fields
+            .iter()
+            .flatten()
+            .any(|f| f.to_lowercase().contains(w.as_str()))
+    })
 }
 
 pub fn show(
@@ -37,13 +64,46 @@ pub fn show(
     let p = Palette::of(ui.ctx());
     let mut actions = Vec::new();
     let enabled = items.iter().filter(|i| i.enabled).count();
+    let words: Vec<String> = st
+        .filter
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect();
+    // 保留原始下标：启用 / 禁用操作按下标找回条目。
+    let rows: Vec<usize> = (0..items.len())
+        .filter(|&i| {
+            let it = &items[i];
+            let state_ok = match st.state {
+                Filter::All => true,
+                Filter::Enabled => it.enabled,
+                Filter::Disabled => !it.enabled,
+            };
+            state_ok && matches(it, &words)
+        })
+        .collect();
 
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(format!("{} 个启动项 · {enabled} 个已启用", items.len()))
-                .size(13.0)
-                .color(p.muted),
-        );
+        let resp = widgets::search_box(ui, &mut st.filter, 300.0, "搜索名称、发布者、命令行");
+        if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
+            resp.request_focus();
+        }
+        if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            st.filter.clear();
+        }
+        for (f, glyph, label) in [
+            (Filter::All, Icon::List, format!("全部 {}", items.len())),
+            (Filter::Enabled, Icon::Play, format!("已启用 {enabled}")),
+            (
+                Filter::Disabled,
+                Icon::Pause,
+                format!("已禁用 {}", items.len() - enabled),
+            ),
+        ] {
+            let mut on = st.state == f;
+            if widgets::toggle_chip(ui, &mut on, glyph, &label).clicked() {
+                st.state = f;
+            }
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if widgets::tool_button(ui, Icon::Refresh, "刷新", true, false).clicked() {
                 actions.push(StartupAction::Refresh);
@@ -80,8 +140,8 @@ pub fn show(
             }
         })
         .body(|body| {
-            body.rows(40.0, items.len(), |mut row| {
-                let i = row.index();
+            body.rows(40.0, rows.len(), |mut row| {
+                let i = rows[row.index()];
                 let it = &items[i];
                 row.set_selected(st.selected.as_deref() == Some(&it.key));
                 row.col(|ui| {
@@ -170,6 +230,12 @@ pub fn show(
                 });
             });
         });
+    if rows.is_empty() {
+        ui.add_space(24.0);
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new("没有匹配的启动项").color(p.faint));
+        });
+    }
     actions
 }
 
