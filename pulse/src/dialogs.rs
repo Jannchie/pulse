@@ -218,7 +218,8 @@ pub fn button(ui: &mut Ui, label: &str, kind: Kind, enabled: bool) -> egui::Resp
     let galley = ui.painter().layout_no_wrap(
         label.to_string(),
         egui::FontId::new(13.0, semibold()),
-        Color32::WHITE,
+        // 占位色：绘制时用下面按状态选出的 fg（次要按钮在浅色主题下是深色字）。
+        Color32::PLACEHOLDER,
     );
     let sense = if enabled {
         Sense::click()
