@@ -4,11 +4,11 @@
   <p align="center">
     <a href="https://github.com/Jannchie/pulse/actions/workflows/ci.yml"><img src="https://github.com/Jannchie/pulse/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   </p>
-  <p align="center"><a href="README.md">中文</a> · English</p>
+  <p align="center"><a href="README.md">中文</a> · English · <a href="README.ja.md">日本語</a></p>
   <img src="docs/screenshot.en.png" alt="Pulse performance page">
 </p>
 
-Pulse is a replacement for the Windows Task Manager, written natively in Rust with egui. It ships as a single executable and needs no installation. The interface is available in English and Simplified Chinese; it follows the Windows display language by default and can be changed under Settings → Appearance.
+Pulse is a replacement for the Windows Task Manager, written natively in Rust with egui. It ships as a single executable and needs no installation. The interface is available in English, Simplified Chinese and Japanese; it follows the Windows display language by default and can be changed under Settings → Appearance.
 
 Compared with the built-in Task Manager:
 
