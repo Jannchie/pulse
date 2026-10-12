@@ -672,6 +672,6 @@ mod tests {
         // 测试二进制没有图标资源，用 explorer 代替。
         let icon = icon::extract(r"C:\Windows\explorer.exe", 32).expect("explorer icon");
         assert_eq!(icon.rgba.len(), 32 * 32 * 4);
-        assert!(icon.rgba.chunks_exact(4).any(|p| p[3] > 0));
+        assert!(icon.rgba.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
     }
 }
