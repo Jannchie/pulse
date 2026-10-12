@@ -404,23 +404,29 @@ pub fn short_gpu_name(name: &str) -> &str {
 
 /// 水平进度条：轨道 + 填充，两端圆角。
 pub fn meter(painter: &Painter, rect: Rect, frac: f32, color: Color32, track: Color32) {
-    // 与图表同一套点阵语言：一排方点，边长等于条的高度，点距微调到正好铺满；
-    // 按比例从左往右点亮，最后一个点按余数调透明度，数值变化是连续的。
-    let dot = rect.height();
-    let n = (((rect.width() + dot * 0.5) / (dot * 1.5)).floor() as usize).max(2);
-    let pitch = (rect.width() - dot) / (n - 1) as f32;
+    // 与图表同一套点阵语言：一排方点，边长等于条的高度，按比例从左往右点亮，
+    // 最后一个点按余数调透明度，数值变化是连续的。
+    // 点的边长、间隙都取整数个物理像素，点距处处相同：每个点一样大、边缘清晰、间距均匀。
+    // 用点的个数去适应宽度，多出的不到一个点距的余量留在行尾。
+    let ppp = painter.pixels_per_point();
+    let px = |v: f32| (v * ppp).round();
+    let dot = px(rect.height()).max(1.0);
+    let gap = (dot * 0.5).round().max(1.0);
+    let pitch = dot + gap;
+    let (left, top) = (px(rect.left()), px(rect.top()));
+    let width = px(rect.right()) - left;
+    let n = (((width + gap) / pitch).floor() as usize).max(2);
     let lit = frac.clamp(0.0, 1.0) * n as f32;
-    let feather = 1.0 / painter.pixels_per_point();
     let mut mesh = Mesh::default();
     for i in 0..n {
         let r = Rect::from_min_size(
-            pos2(rect.left() + i as f32 * pitch, rect.top()),
-            vec2(dot, dot),
+            pos2((left + i as f32 * pitch) / ppp, top / ppp),
+            vec2(dot / ppp, dot / ppp),
         );
+        mesh.add_colored_rect(r, track);
         let on = (lit - i as f32).clamp(0.0, 1.0);
-        aa_dot(&mut mesh, r, track, feather);
         if on > 0.0 {
-            aa_dot(&mut mesh, r, color.gamma_multiply(on), feather);
+            mesh.add_colored_rect(r, color.gamma_multiply(on));
         }
     }
     painter.add(Shape::mesh(mesh));
@@ -443,7 +449,10 @@ pub fn network_card(
         width,
         t!("网络", "Network", "ネットワーク"),
         Icon::Network,
-        t!("近 60 秒", "Last 60 s", "直近 60 秒"),
+        &{
+            let span = history_span();
+            tf!("近 {span}", "Last {span}", "直近 {span}")
+        },
         down,
         active,
     );
@@ -505,6 +514,27 @@ static SAMPLE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 
 pub fn set_sample_seq(seq: u64) {
     SAMPLE_SEQ.store(seq, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 当前的采集间隔（毫秒），用来换算历史曲线实际覆盖的时长。暂停（0）时沿用上一次的间隔。
+static SAMPLE_INTERVAL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1000);
+
+pub fn set_sample_interval(ms: u64) {
+    if ms > 0 {
+        SAMPLE_INTERVAL_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// 历史曲线（60 个样本）覆盖的时长：更新速度不同，60 个样本对应 30 秒到 4 分钟。
+pub fn history_span() -> String {
+    let ms = SAMPLE_INTERVAL_MS.load(std::sync::atomic::Ordering::Relaxed);
+    let secs = 60 * ms / 1000;
+    if secs < 120 {
+        tf!("{secs} 秒", "{secs} s", "{secs} 秒")
+    } else {
+        let mins = secs / 60;
+        tf!("{mins} 分钟", "{mins} min", "{mins} 分")
+    }
 }
 
 /// 点阵布局：列数取 60 的约数或倍数（每列合并整数个样本，或每个样本占整数列），
@@ -1240,6 +1270,21 @@ pub fn submenu(
 #[cfg(test)]
 mod tests {
     use crate::icons_gen::Icon;
+
+    #[test]
+    fn history_span_follows_sample_interval() {
+        use super::{history_span, set_sample_interval};
+        pulse_probe::i18n::set_lang(pulse_probe::i18n::Lang::En);
+        set_sample_interval(500);
+        assert_eq!(history_span(), "30 s");
+        set_sample_interval(1000);
+        assert_eq!(history_span(), "60 s");
+        set_sample_interval(4000);
+        assert_eq!(history_span(), "4 min");
+        // 暂停时沿用上一次的间隔。
+        set_sample_interval(0);
+        assert_eq!(history_span(), "4 min");
+    }
 
     #[test]
     /// 生成的 SVG 必须渲染成白色描边（运行时靠 tint 着色）。曾因 `stroke="undefined"` 渲染成黑块。

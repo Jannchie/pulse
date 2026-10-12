@@ -386,6 +386,7 @@ impl App {
             ));
         }
         let interval = Arc::new(AtomicU64::new(settings.speed.millis()));
+        widgets::set_sample_interval(settings.speed.millis());
         update::cleanup_old(&UPDATE_CONFIG);
         let updater = {
             let ctx = ctx.clone();
@@ -1478,6 +1479,7 @@ impl App {
         }
         if s.speed != before.speed {
             self.interval.store(s.speed.millis(), Ordering::Relaxed);
+            widgets::set_sample_interval(s.speed.millis());
         }
         if s.theme != before.theme {
             ctx.set_theme(s.theme.preference());

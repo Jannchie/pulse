@@ -592,7 +592,7 @@ pub fn chart(
     painter.text(
         pos2(inner.left(), rect.bottom() - 8.0),
         Align2::LEFT_BOTTOM,
-        t!("60 秒", "60 s", "60 秒"),
+        widgets::history_span(),
         FontId::proportional(11.0),
         p.faint,
     );
