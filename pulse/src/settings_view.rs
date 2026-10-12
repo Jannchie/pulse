@@ -136,13 +136,13 @@ pub fn show(
                                 ui.spacing_mut().item_spacing.y = 4.0;
                                 ui.add_space(6.0);
                                 ui.label(
-                                    RichText::new(format!("Pulse {}", env!("CARGO_PKG_VERSION")))
+                                    RichText::new("Pulse")
                                         .size(15.0)
                                         .family(semibold())
                                         .color(p.text),
                                 );
                                 ui.label(
-                                    RichText::new("用点阵描绘系统脉搏的 Windows 任务管理器。")
+                                    RichText::new(format!("版本 {}", env!("CARGO_PKG_VERSION")))
                                         .size(12.0)
                                         .color(p.muted),
                                 );
