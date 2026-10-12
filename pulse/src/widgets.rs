@@ -96,6 +96,7 @@ pub fn cpu_card(
     active: bool,
     total: f32,
     cores: &[f32],
+    efficient: &[bool],
     color: Color32,
 ) -> Response {
     let p = Palette::of(ui.ctx());
@@ -109,29 +110,45 @@ pub fn cpu_card(
     if cores.is_empty() {
         return resp;
     }
-    // 点阵：每个核心两列小点、核心之间空一列，按占用率从下往上点亮，越靠上越亮。
-    const PER_CORE: usize = 2;
-    let dot_cols = cores.len() * (PER_CORE + 1) - 1;
-    let pitch = bars.width() / (dot_cols as f32 - 1.0 + 0.67);
-    let dot = pitch * 0.67;
+    // 点阵：每个核心一列小点、核心之间空一列，大小核交界处再多空一列；按占用率从下往上点亮。
+    const PER_CORE: usize = 1;
+    let is_e = |i: usize| efficient.get(i).copied().unwrap_or(false);
+    let boundaries = (1..cores.len()).filter(|&i| is_e(i) != is_e(i - 1)).count();
+    let dot_cols = cores.len() * (PER_CORE + 1) - 1 + boundaries;
+    let ppp = painter.pixels_per_point();
+    let (pitch, dot) = pixel_pitch(bars.width() / (dot_cols as f32 - 1.0 + 0.67), 0.67, ppp);
     let rows = ((bars.height() - dot) / pitch).floor().max(0.0) as usize + 1;
-    let dim = color.gamma_multiply(0.07);
+    let used = (dot_cols - 1) as f32 * pitch + dot;
+    let x0 = snap(bars.left() + (bars.width() - used) / 2.0, ppp);
+    let bottom = snap(bars.bottom(), ppp);
     let mut mesh = Mesh::default();
+    let mut col = 0;
     for (i, &u) in cores.iter().enumerate() {
+        if i > 0 && is_e(i) != is_e(i - 1) {
+            col += 1;
+        }
+        let c = if is_e(i) {
+            metric::CPU_EFFICIENT
+        } else {
+            color
+        };
+        let dim = c.gamma_multiply(0.07);
         let n = ((u / 100.0).clamp(0.0, 1.0) * rows as f32).round() as usize;
         let lit = if u > 0.5 { n.max(1) } else { n };
-        for k in 0..PER_CORE {
-            let x = bars.left() + (i * (PER_CORE + 1) + k) as f32 * pitch;
+        for _ in 0..PER_CORE {
+            let x = x0 + col as f32 * pitch;
             for r in 0..rows {
-                let y = bars.bottom() - r as f32 * pitch - dot;
+                let y = bottom - r as f32 * pitch - dot;
                 let fill = if r < lit {
-                    color.gamma_multiply(0.45 + 0.55 * (r + 1) as f32 / lit as f32)
+                    c.gamma_multiply(0.45 + 0.55 * (r + 1) as f32 / lit as f32)
                 } else {
                     dim
                 };
                 mesh.add_colored_rect(Rect::from_min_size(pos2(x, y), vec2(dot, dot)), fill);
             }
+            col += 1;
         }
+        col += 1;
     }
     painter.add(Shape::mesh(mesh));
     resp
@@ -384,7 +401,11 @@ pub fn network_card(
         .fold(0.0, f32::max)
         .max(1.0);
     // 上下两半之间的间隔与点距一致。
-    let gap = dot_gap(chart.width(), chart.height() / 2.0);
+    let gap = dot_gap(
+        painter.pixels_per_point(),
+        chart.width(),
+        chart.height() / 2.0,
+    );
     let mid = chart.center().y;
     let upper = Rect::from_min_max(chart.left_top(), pos2(chart.right(), mid - gap / 2.0));
     let lower = Rect::from_min_max(pos2(chart.left(), mid + gap / 2.0), chart.right_bottom());
@@ -413,7 +434,7 @@ struct Grid {
     dot: f32,
 }
 
-fn grid(width: f32, height: f32) -> Grid {
+fn grid(width: f32, height: f32, ppp: f32) -> Grid {
     const SLOTS: u64 = 60;
     let (target, ratio) = if height < 40.0 {
         (3.0, 0.67)
@@ -430,19 +451,31 @@ fn grid(width: f32, height: f32) -> Grid {
         })
         .unwrap_or((1, 1, SLOTS));
     // 最后一列只有点、没有点后的空隙，所以宽度 = (cols - 1) 个点距 + 一个点。
-    let pitch = width / (cols as f32 - 1.0 + ratio);
+    let (pitch, dot) = pixel_pitch(width / (cols as f32 - 1.0 + ratio), ratio, ppp);
     Grid {
         per_sample,
         per_col,
         cols: cols as usize,
         pitch,
-        dot: pitch * ratio,
+        dot,
     }
 }
 
+/// 把点距和点的边长取整到物理像素（点距向下取整以免溢出），每个点大小一致、边缘清晰。
+fn pixel_pitch(ideal: f32, ratio: f32, ppp: f32) -> (f32, f32) {
+    let pitch_px = (ideal * ppp).floor().max(2.0);
+    let dot_px = (pitch_px * ratio).round().clamp(1.0, pitch_px - 1.0);
+    (pitch_px / ppp, dot_px / ppp)
+}
+
+/// 对齐到物理像素边界。
+fn snap(v: f32, ppp: f32) -> f32 {
+    (v * ppp).round() / ppp
+}
+
 /// 点阵里相邻两点之间的空隙，镜像图上下两半之间也留这么宽。
-pub fn dot_gap(width: f32, height: f32) -> f32 {
-    let g = grid(width, height);
+pub fn dot_gap(ppp: f32, width: f32, height: f32) -> f32 {
+    let g = grid(width, height, ppp);
     g.pitch - g.dot
 }
 
@@ -455,9 +488,13 @@ pub fn area(painter: &Painter, rect: Rect, data: &[f32], max: f32, color: Color3
         cols,
         pitch,
         dot,
-    } = grid(rect.width(), rect.height());
+    } = grid(rect.width(), rect.height(), painter.pixels_per_point());
+    let ppp = painter.pixels_per_point();
     let rows = ((rect.height() - dot) / pitch).floor().max(0.0) as usize + 1;
-    let x0 = rect.left();
+    // 取整后点阵会比 rect 略窄，居中放；起点和基线都对齐到像素。
+    let used = (cols - 1) as f32 * pitch + dot;
+    let x0 = snap(rect.left() + (rect.width() - used) / 2.0, ppp);
+    let (top, bottom) = (snap(rect.top(), ppp), snap(rect.bottom(), ppp));
     let dim = color.gamma_multiply(0.07);
     let max = max.max(1e-6);
 
@@ -493,9 +530,9 @@ pub fn area(painter: &Painter, rect: Rect, data: &[f32], max: f32, color: Color3
         let x = x0 + c as f32 * pitch;
         for r in 0..rows {
             let y = if downward {
-                rect.top() + r as f32 * pitch
+                top + r as f32 * pitch
             } else {
-                rect.bottom() - r as f32 * pitch - dot
+                bottom - r as f32 * pitch - dot
             };
             let fill = if r < lit {
                 color.gamma_multiply(0.45 + 0.55 * (r + 1) as f32 / lit as f32)

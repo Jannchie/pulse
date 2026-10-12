@@ -832,6 +832,9 @@ impl App {
                         false,
                         snap.cpu_total,
                         &snap.cpu_cores,
+                        &(0..snap.cpu_cores.len())
+                            .map(|i| snap.cpu_info.is_efficient(i))
+                            .collect::<Vec<_>>(),
                         metric::CPU,
                     ),
                 ),

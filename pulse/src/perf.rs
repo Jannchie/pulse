@@ -550,7 +550,11 @@ pub fn chart(
     if mirrored {
         // 上下镜像：上半区正向，下半区反向，共用刻度；中间留出间隔，两组数据不粘在一起。
         // 两半之间的间隔与点阵内部的点距一致，看起来仍是一张网格。
-        let gap = widgets::dot_gap(inner.width(), (inner.height() - 3.0) / 2.0);
+        let gap = widgets::dot_gap(
+            painter.pixels_per_point(),
+            inner.width(),
+            (inner.height() - 3.0) / 2.0,
+        );
         let mid = inner.center().y;
         let upper = Rect::from_min_max(inner.min, pos2(inner.right(), mid - gap / 2.0));
         let lower = Rect::from_min_max(pos2(inner.left(), mid + gap / 2.0), inner.max);
@@ -648,7 +652,6 @@ fn disk_kind(d: &DiskStat) -> String {
 // ---------------------------------------------------------------- CPU
 
 fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
-    let p = Palette::of(ui.ctx());
     let info = &snap.cpu_info;
     page_header(ui, Icon::Cpu, metric::CPU, "CPU", &info.name);
     let threads: u32 = snap.processes.iter().map(|p| p.threads).sum();
@@ -698,11 +701,80 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
     );
 
     section(ui, "逻辑处理器");
-    let n = snap.cpu_cores.len().max(1);
+    let n = snap.cpu_cores.len();
+    if info.hybrid() {
+        // 大小核分两组；各组标出物理核心数与线程数。
+        let (e, p_idx): (Vec<usize>, Vec<usize>) = (0..n).partition(|&i| info.is_efficient(i));
+        core_label(
+            ui,
+            metric::CPU,
+            &format!("性能核 · {} 核 {} 线程", info.p_cores, p_idx.len()),
+        );
+        core_grid(ui, snap, series, &p_idx, metric::CPU);
+        ui.add_space(8.0);
+        core_label(
+            ui,
+            metric::CPU_EFFICIENT,
+            &format!("能效核 · {} 核 {} 线程", info.e_cores, e.len()),
+        );
+        core_grid(ui, snap, series, &e, metric::CPU_EFFICIENT);
+    } else {
+        core_grid(ui, snap, series, &(0..n).collect::<Vec<_>>(), metric::CPU);
+    }
+
+    section(ui, "规格");
+    let ghz = |mhz: u32| format!("{:.2} GHz", mhz as f64 / 1000.0);
+    kv_list(
+        ui,
+        &[
+            (
+                "基准速度",
+                if info.base_mhz > 0 {
+                    ghz(info.base_mhz)
+                } else {
+                    "—".into()
+                },
+            ),
+            ("插槽", info.sockets.to_string()),
+            (
+                "内核",
+                if info.hybrid() {
+                    format!(
+                        "{}（{} 性能核 + {} 能效核）",
+                        info.cores, info.p_cores, info.e_cores
+                    )
+                } else {
+                    info.cores.to_string()
+                },
+            ),
+            ("逻辑处理器", info.logical.to_string()),
+            ("L1 缓存", fmt_bytes(info.l1)),
+            ("L2 缓存", fmt_bytes(info.l2)),
+            ("L3 缓存", fmt_bytes(info.l3)),
+            ("当前频率（驱动报告）", snap.cpu_mhz.map_or("—".into(), ghz)),
+        ],
+    );
+}
+
+/// 大小核分组的小标题：色点 + 文字。
+fn core_label(ui: &mut Ui, color: Color32, text: &str) {
+    let p = Palette::of(ui.ctx());
+    ui.horizontal(|ui| {
+        let (r, _) = ui.allocate_exact_size(vec2(8.0, 14.0), Sense::hover());
+        ui.painter().circle_filled(r.center(), 3.5, color);
+        ui.label(RichText::new(text).size(12.0).color(p.muted));
+    });
+    ui.add_space(4.0);
+}
+
+/// 逻辑处理器小格：编号、当前占用率、近 60 秒点阵。
+fn core_grid(ui: &mut Ui, snap: &Snapshot, series: &Series, indices: &[usize], color: Color32) {
+    let p = Palette::of(ui.ctx());
+    let empty = Vec::new();
     let w = ui.available_width();
     let cols = (w / 110.0).floor().clamp(4.0, 12.0) as usize;
     let cell_w = (w - (cols - 1) as f32 * 6.0) / cols as f32;
-    for row in (0..n).collect::<Vec<_>>().chunks(cols) {
+    for row in indices.chunks(cols) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             for &i in row {
@@ -711,8 +783,8 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
                 painter.rect_filled(rect, CornerRadius::same(8), p.surface);
                 let data = series.get(&format!("cpu.{i}")).unwrap_or(&empty);
                 let chart =
-                    Rect::from_min_max(rect.min + vec2(6.0, 18.0), rect.max - vec2(6.0, 4.0));
-                widgets::area(&painter, chart, data, 1.0, metric::CPU, false);
+                    Rect::from_min_max(rect.min + vec2(8.0, 20.0), rect.max - vec2(8.0, 6.0));
+                widgets::area(&painter, chart, data, 1.0, color, false);
                 painter.text(
                     rect.left_top() + vec2(8.0, 5.0),
                     Align2::LEFT_TOP,
@@ -732,29 +804,6 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         });
         ui.add_space(2.0);
     }
-
-    section(ui, "规格");
-    let ghz = |mhz: u32| format!("{:.2} GHz", mhz as f64 / 1000.0);
-    kv_list(
-        ui,
-        &[
-            (
-                "基准速度",
-                if info.base_mhz > 0 {
-                    ghz(info.base_mhz)
-                } else {
-                    "—".into()
-                },
-            ),
-            ("插槽", info.sockets.to_string()),
-            ("内核", info.cores.to_string()),
-            ("逻辑处理器", info.logical.to_string()),
-            ("L1 缓存", fmt_bytes(info.l1)),
-            ("L2 缓存", fmt_bytes(info.l2)),
-            ("L3 缓存", fmt_bytes(info.l3)),
-            ("当前频率（驱动报告）", snap.cpu_mhz.map_or("—".into(), ghz)),
-        ],
-    );
 }
 
 // ---------------------------------------------------------------- 内存
@@ -824,13 +873,15 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
     ];
     // 点阵：4 行，每个点代表相同份额的内存，按类别依次（逐列从上到下）上色。
     const ROWS: usize = 4;
-    const PITCH: f32 = 10.0;
-    const DOT: f32 = 7.0;
+    // 点距、点大小取整到物理像素，每个点一样大。
+    let ppp = ui.ctx().pixels_per_point();
+    let px = |v: f32| (v * ppp).round().max(1.0) / ppp;
+    let (pitch, dot) = (px(10.0), px(7.0));
     let w = ui.available_width();
-    let cols = ((w + PITCH - DOT) / PITCH).floor().max(1.0) as usize;
+    let cols = ((w + pitch - dot) / pitch).floor().max(1.0) as usize;
     let total_dots = cols * ROWS;
     let (grid, _) =
-        ui.allocate_exact_size(vec2(w, ROWS as f32 * PITCH - (PITCH - DOT)), Sense::hover());
+        ui.allocate_exact_size(vec2(w, ROWS as f32 * pitch - (pitch - dot)), Sense::hover());
     let painter = ui.painter_at(grid);
     let mut colors = Vec::with_capacity(total_dots);
     let mut acc = 0u64;
@@ -846,10 +897,10 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         let (c, r) = (k / ROWS, k % ROWS);
         let dot = Rect::from_min_size(
             pos2(
-                grid.left() + c as f32 * PITCH,
-                grid.top() + r as f32 * PITCH,
+                ((grid.left() + c as f32 * pitch) * ppp).round() / ppp,
+                ((grid.top() + r as f32 * pitch) * ppp).round() / ppp,
             ),
-            vec2(DOT, DOT),
+            vec2(dot, dot),
         );
         painter.rect_filled(dot, CornerRadius::same(2), color);
     }

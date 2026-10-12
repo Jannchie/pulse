@@ -66,6 +66,8 @@ const LIGHT: Palette = Palette {
 pub mod metric {
     use eframe::egui::Color32;
     pub const CPU: Color32 = Color32::from_rgb(0x4f, 0x8c, 0xff);
+    /// 混合架构的能效核（小核）。
+    pub const CPU_EFFICIENT: Color32 = Color32::from_rgb(0x38, 0xbd, 0xf8);
     pub const MEMORY: Color32 = Color32::from_rgb(0xa4, 0x6b, 0xff);
     pub const GPU: Color32 = Color32::from_rgb(0x10, 0xb9, 0x81);
     pub const DISK: Color32 = Color32::from_rgb(0xf5, 0x9e, 0x0b);

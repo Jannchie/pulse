@@ -22,9 +22,25 @@ pub struct CpuInfo {
     pub l1: u64,
     pub l2: u64,
     pub l3: u64,
+    /// 处理器组 0 中每个逻辑处理器所在核心的效率等级。混合架构上数值越大越偏性能。
+    pub efficiency: Vec<u8>,
+    /// 性能核（大核）与能效核（小核）的物理核心数；非混合架构时全部算作性能核。
+    pub p_cores: u32,
+    pub e_cores: u32,
 }
 
 impl CpuInfo {
+    /// 是否为大小核混合架构。
+    pub fn hybrid(&self) -> bool {
+        self.e_cores > 0
+    }
+
+    /// 逻辑处理器 `i` 是否在能效核上。
+    pub fn is_efficient(&self, i: usize) -> bool {
+        let top = self.efficiency.iter().copied().max().unwrap_or(0);
+        self.efficiency.get(i).is_some_and(|&c| c < top)
+    }
+
     pub fn query() -> Self {
         let mut info = CpuInfo {
             name: reg_string(
@@ -50,6 +66,7 @@ impl CpuInfo {
             return info;
         }
         let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), len as usize) };
+        let mut core_classes = Vec::new();
         let mut off = 0;
         // SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX：Relationship(u32)、Size(u32)，之后是联合体。
         while off + 8 <= bytes.len() {
@@ -64,12 +81,23 @@ impl CpuInfo {
                 0 => {
                     info.cores += 1;
                     // PROCESSOR_RELATIONSHIP：Flags, EfficiencyClass, Reserved[20], GroupCount(u16), GroupMask[]
+                    let class = body[1];
+                    core_classes.push(class);
                     let groups = u16::from_le_bytes(body[22..24].try_into().unwrap()) as usize;
                     for g in 0..groups {
                         // GROUP_AFFINITY：Mask(usize)、Group(u16)、Reserved[3]，共 16 字节，从 24 开始。
-                        let m =
-                            u64::from_le_bytes(body[24 + g * 16..32 + g * 16].try_into().unwrap());
+                        let at = 24 + g * 16;
+                        let m = u64::from_le_bytes(body[at..at + 8].try_into().unwrap());
+                        let group = u16::from_le_bytes(body[at + 8..at + 10].try_into().unwrap());
                         info.logical += m.count_ones();
+                        if group == 0 {
+                            for bit in (0..64).filter(|b| m & (1u64 << b) != 0) {
+                                if info.efficiency.len() <= bit {
+                                    info.efficiency.resize(bit + 1, class);
+                                }
+                                info.efficiency[bit] = class;
+                            }
+                        }
                     }
                 }
                 // RelationCache：Level(u8)、Associativity(u8)、LineSize(u16)、CacheSize(u32)
@@ -89,6 +117,9 @@ impl CpuInfo {
             }
             off += size;
         }
+        let top = core_classes.iter().copied().max().unwrap_or(0);
+        info.p_cores = core_classes.iter().filter(|&&c| c == top).count() as u32;
+        info.e_cores = core_classes.len() as u32 - info.p_cores;
         info
     }
 }
