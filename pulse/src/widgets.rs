@@ -115,11 +115,11 @@ pub fn cpu_card(
     let is_e = |i: usize| efficient.get(i).copied().unwrap_or(false);
     let boundaries = (1..cores.len()).filter(|&i| is_e(i) != is_e(i - 1)).count();
     let dot_cols = cores.len() * (PER_CORE + 1) - 1 + boundaries;
-    let ppp = painter.pixels_per_point();
-    let (pitch, dot) = fill_pitch(bars.width(), dot_cols, 0.67, ppp);
+    let feather = 1.0 / painter.pixels_per_point();
+    let (pitch, dot) = fill_pitch(bars.width(), dot_cols, 0.67);
     let rows = ((bars.height() - dot) / pitch).floor().max(0.0) as usize + 1;
     let x0 = bars.left();
-    let bottom = snap(bars.bottom(), ppp);
+    let bottom = bars.bottom();
     let mut mesh = Mesh::default();
     let mut col = 0;
     for (i, &u) in cores.iter().enumerate() {
@@ -135,15 +135,20 @@ pub fn cpu_card(
         let n = ((u / 100.0).clamp(0.0, 1.0) * rows as f32).round() as usize;
         let lit = if u > 0.5 { n.max(1) } else { n };
         for _ in 0..PER_CORE {
-            let x = snap(x0 + col as f32 * pitch, ppp);
+            let x = x0 + col as f32 * pitch;
             for r in 0..rows {
-                let y = snap(bottom - r as f32 * pitch, ppp) - dot;
+                let y = bottom - r as f32 * pitch - dot;
                 let fill = if r < lit {
                     c.gamma_multiply(0.45 + 0.55 * (r + 1) as f32 / lit as f32)
                 } else {
                     dim
                 };
-                mesh.add_colored_rect(Rect::from_min_size(pos2(x, y), vec2(dot, dot)), fill);
+                aa_dot(
+                    &mut mesh,
+                    Rect::from_min_size(pos2(x, y), vec2(dot, dot)),
+                    fill,
+                    feather,
+                );
             }
             col += 1;
         }
@@ -369,13 +374,26 @@ pub fn short_gpu_name(name: &str) -> &str {
 
 /// 水平进度条：轨道 + 填充，两端圆角。
 pub fn meter(painter: &Painter, rect: Rect, frac: f32, color: Color32, track: Color32) {
-    let r = CornerRadius::same((rect.height() / 2.0) as u8);
-    painter.rect_filled(rect, r, track);
-    let w = rect.width() * frac.clamp(0.0, 1.0);
-    if w > 0.5 {
-        let fill = Rect::from_min_size(rect.min, vec2(w.max(rect.height()), rect.height()));
-        painter.rect_filled(fill, r, color);
+    // 与图表同一套点阵语言：一排方点，边长等于条的高度，点距微调到正好铺满；
+    // 按比例从左往右点亮，最后一个点按余数调透明度，数值变化是连续的。
+    let dot = rect.height();
+    let n = (((rect.width() + dot * 0.5) / (dot * 1.5)).floor() as usize).max(2);
+    let pitch = (rect.width() - dot) / (n - 1) as f32;
+    let lit = frac.clamp(0.0, 1.0) * n as f32;
+    let feather = 1.0 / painter.pixels_per_point();
+    let mut mesh = Mesh::default();
+    for i in 0..n {
+        let r = Rect::from_min_size(
+            pos2(rect.left() + i as f32 * pitch, rect.top()),
+            vec2(dot, dot),
+        );
+        let on = (lit - i as f32).clamp(0.0, 1.0);
+        aa_dot(&mut mesh, r, track, feather);
+        if on > 0.0 {
+            aa_dot(&mut mesh, r, color.gamma_multiply(on), feather);
+        }
     }
+    painter.add(Shape::mesh(mesh));
 }
 
 /// 网络：下载画在中轴上方、上传镜像在下方，共用纵轴刻度。
@@ -434,11 +452,7 @@ pub fn network_card(
         .fold(0.0, f32::max)
         .max(1.0);
     // 上下两半之间的间隔与点距一致。
-    let gap = dot_gap(
-        painter.pixels_per_point(),
-        chart.width(),
-        chart.height() / 2.0,
-    );
+    let gap = dot_gap(chart.width(), chart.height() / 2.0);
     let mid = chart.center().y;
     let upper = Rect::from_min_max(chart.left_top(), pos2(chart.right(), mid - gap / 2.0));
     let lower = Rect::from_min_max(pos2(chart.left(), mid + gap / 2.0), chart.right_bottom());
@@ -467,7 +481,7 @@ struct Grid {
     dot: f32,
 }
 
-fn grid(width: f32, height: f32, ppp: f32) -> Grid {
+fn grid(width: f32, height: f32) -> Grid {
     const SLOTS: u64 = 60;
     let (target, ratio) = if height < 40.0 {
         (3.0, 0.67)
@@ -484,7 +498,7 @@ fn grid(width: f32, height: f32, ppp: f32) -> Grid {
         })
         .unwrap_or((1, 1, SLOTS));
     // 最后一列只有点、没有点后的空隙，所以宽度 = (cols - 1) 个点距 + 一个点。
-    let (pitch, dot) = fill_pitch(width, cols as usize, ratio, ppp);
+    let (pitch, dot) = fill_pitch(width, cols as usize, ratio);
     Grid {
         per_sample,
         per_col,
@@ -494,14 +508,11 @@ fn grid(width: f32, height: f32, ppp: f32) -> Grid {
     }
 }
 
-/// 点阵铺满 `width`：点的边长取整到物理像素（每个点一样大），点距不取整、正好铺满，
-/// 绘制时每个点的位置再各自吸附到像素（相邻间隙至多差 1 像素）。返回 (点距, 点的边长)。
-fn fill_pitch(width: f32, cols: usize, ratio: f32, ppp: f32) -> (f32, f32) {
+/// 点阵正好铺满 `width`：点距与点的边长都用精确的小数，靠 [`aa_dot`] 的抗锯齿保证每个点看起来一样大。
+/// 返回 (点距, 点的边长)。
+fn fill_pitch(width: f32, cols: usize, ratio: f32) -> (f32, f32) {
     let ideal = width / (cols as f32 - 1.0 + ratio);
-    let dot_px = (ideal * ratio * ppp)
-        .round()
-        .clamp(1.0, (ideal * ppp - 1.0).max(1.0));
-    let dot = dot_px / ppp;
+    let dot = ideal * ratio;
     let pitch = if cols > 1 {
         (width - dot) / (cols - 1) as f32
     } else {
@@ -510,14 +521,40 @@ fn fill_pitch(width: f32, cols: usize, ratio: f32, ppp: f32) -> (f32, f32) {
     (pitch, dot)
 }
 
-/// 对齐到物理像素边界。
-fn snap(v: f32, ppp: f32) -> f32 {
-    (v * ppp).round() / ppp
+/// 抗锯齿方点：内圈实色，外面一圈 1 物理像素宽、渐变到透明（与 egui 画形状时的 feathering 相同）。
+/// 位置和尺寸是小数也不会被硬切成不同的像素宽度。
+fn aa_dot(mesh: &mut Mesh, rect: Rect, color: Color32, feather: f32) {
+    let inner = rect.shrink(feather / 2.0);
+    let outer = rect.expand(feather / 2.0);
+    let base = mesh.vertices.len() as u32;
+    for p in [
+        inner.left_top(),
+        inner.right_top(),
+        inner.right_bottom(),
+        inner.left_bottom(),
+    ] {
+        mesh.colored_vertex(p, color);
+    }
+    for p in [
+        outer.left_top(),
+        outer.right_top(),
+        outer.right_bottom(),
+        outer.left_bottom(),
+    ] {
+        mesh.colored_vertex(p, Color32::TRANSPARENT);
+    }
+    mesh.add_triangle(base, base + 1, base + 2);
+    mesh.add_triangle(base, base + 2, base + 3);
+    for k in 0..4 {
+        let n = (k + 1) % 4;
+        mesh.add_triangle(base + k, base + 4 + k, base + 4 + n);
+        mesh.add_triangle(base + k, base + 4 + n, base + n);
+    }
 }
 
 /// 点阵里相邻两点之间的空隙，镜像图上下两半之间也留这么宽。
-pub fn dot_gap(ppp: f32, width: f32, height: f32) -> f32 {
-    let g = grid(width, height, ppp);
+pub fn dot_gap(width: f32, height: f32) -> f32 {
+    let g = grid(width, height);
     g.pitch - g.dot
 }
 
@@ -530,12 +567,12 @@ pub fn area(painter: &Painter, rect: Rect, data: &[f32], max: f32, color: Color3
         cols,
         pitch,
         dot,
-    } = grid(rect.width(), rect.height(), painter.pixels_per_point());
-    let ppp = painter.pixels_per_point();
+    } = grid(rect.width(), rect.height());
+    let feather = 1.0 / painter.pixels_per_point();
     let rows = ((rect.height() - dot) / pitch).floor().max(0.0) as usize + 1;
     // 取整后点阵会比 rect 略窄，居中放；起点和基线都对齐到像素。
     let x0 = rect.left();
-    let (top, bottom) = (snap(rect.top(), ppp), snap(rect.bottom(), ppp));
+    let (top, bottom) = (rect.top(), rect.bottom());
     let dim = color.gamma_multiply(0.07);
     let max = max.max(1e-6);
 
@@ -568,19 +605,24 @@ pub fn area(painter: &Painter, rect: Rect, data: &[f32], max: f32, color: Color3
             // 有数据但很小时也点亮一格，和"没有数据"区分开。
             if v > max * 0.004 { n.max(1) } else { n }
         });
-        let x = snap(x0 + c as f32 * pitch, ppp);
+        let x = x0 + c as f32 * pitch;
         for r in 0..rows {
             let y = if downward {
-                snap(top + r as f32 * pitch, ppp)
+                top + r as f32 * pitch
             } else {
-                snap(bottom - r as f32 * pitch, ppp) - dot
+                bottom - r as f32 * pitch - dot
             };
             let fill = if r < lit {
                 color.gamma_multiply(0.45 + 0.55 * (r + 1) as f32 / lit as f32)
             } else {
                 dim
             };
-            mesh.add_colored_rect(Rect::from_min_size(pos2(x, y), vec2(dot, dot)), fill);
+            aa_dot(
+                &mut mesh,
+                Rect::from_min_size(pos2(x, y), vec2(dot, dot)),
+                fill,
+                feather,
+            );
         }
     }
     painter.add(Shape::mesh(mesh));

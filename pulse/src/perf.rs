@@ -550,11 +550,7 @@ pub fn chart(
     if mirrored {
         // 上下镜像：上半区正向，下半区反向，共用刻度；中间留出间隔，两组数据不粘在一起。
         // 两半之间的间隔与点阵内部的点距一致，看起来仍是一张网格。
-        let gap = widgets::dot_gap(
-            painter.pixels_per_point(),
-            inner.width(),
-            (inner.height() - 3.0) / 2.0,
-        );
+        let gap = widgets::dot_gap(inner.width(), (inner.height() - 3.0) / 2.0);
         let mid = inner.center().y;
         let upper = Rect::from_min_max(inner.min, pos2(inner.right(), mid - gap / 2.0));
         let lower = Rect::from_min_max(pos2(inner.left(), mid + gap / 2.0), inner.max);
@@ -873,9 +869,8 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
     ];
     // 点阵：4 行，每个点代表相同份额的内存，按类别依次（逐列从上到下）上色。
     const ROWS: usize = 4;
-    // 点的边长取整到物理像素（每个点一样大）；点距微调到正好铺满整行，每个点的位置吸附到像素。
-    let ppp = ui.ctx().pixels_per_point();
-    let dot = (7.0 * ppp).round().max(1.0) / ppp;
+    // 点距微调到正好铺满整行；点用 egui 的抗锯齿方块绘制，小数位置也一样大。
+    let dot = 7.0;
     let w = ui.available_width();
     let cols = ((w + 10.0 - dot) / 10.0).floor().max(2.0) as usize;
     let pitch = (w - dot) / (cols - 1) as f32;
@@ -897,8 +892,8 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         let (c, r) = (k / ROWS, k % ROWS);
         let dot = Rect::from_min_size(
             pos2(
-                ((grid.left() + c as f32 * pitch) * ppp).round() / ppp,
-                ((grid.top() + r as f32 * pitch) * ppp).round() / ppp,
+                grid.left() + c as f32 * pitch,
+                grid.top() + r as f32 * pitch,
             ),
             vec2(dot, dot),
         );
