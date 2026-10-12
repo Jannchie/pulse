@@ -1212,7 +1212,7 @@ impl App {
             (
                 View::Startup,
                 Icon::Rocket,
-                t!("启动应用", "Startup apps", "スタートアップ アプリ"),
+                t!("启动", "Startup", "スタートアップ"),
             ),
             (View::Users, Icon::Users, t!("用户", "Users", "ユーザー")),
         ] {
