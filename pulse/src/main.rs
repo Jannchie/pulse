@@ -394,7 +394,13 @@ impl App {
             sessions: Vec::new(),
             sessions_at: None,
             interval,
-            taskmgr_replaced: pulse_probe::os::taskmgr_replaced(),
+            taskmgr_replaced: {
+                // 有管理员权限时顺手把旧格式的注册表值补上 --taskmgr 标记。
+                if pulse_probe::os::is_elevated() {
+                    let _ = pulse_probe::os::migrate_taskmgr_flag();
+                }
+                pulse_probe::os::taskmgr_replaced()
+            },
             settings,
             scroll_to: None,
             passes: VecDeque::new(),
@@ -2001,8 +2007,18 @@ fn cmd_summary(cmd: &str) -> Option<String> {
 /// 命令行参数作为初始搜索词，例如 `pulse :5173`。
 /// 通过"替换任务管理器"启动时命令行是 `pulse.exe --taskmgr <taskmgr.exe 路径> /7 …`，标记之后的都忽略。
 fn initial_filter() -> String {
-    std::env::args()
-        .skip(1)
+    filter_from_args(std::env::args().skip(1).collect())
+}
+
+fn filter_from_args(args: Vec<String>) -> String {
+    // 早期版本写入的注册表值没有 --taskmgr 标记，系统直接把 taskmgr.exe 路径接在后面。
+    if args
+        .first()
+        .is_some_and(|a| a.to_lowercase().ends_with("taskmgr.exe"))
+    {
+        return String::new();
+    }
+    args.into_iter()
         .take_while(|a| a != pulse_probe::os::TASKMGR_FLAG)
         .collect::<Vec<_>>()
         .join(" ")
@@ -2090,6 +2106,29 @@ fn fmt_rate(b: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::cmd_summary;
+
+    #[test]
+    fn taskmgr_launch_args_are_ignored() {
+        use super::filter_from_args;
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // 新格式：--taskmgr 之后都是系统附加的参数。
+        assert_eq!(
+            filter_from_args(args(&[
+                "--taskmgr",
+                r"C:\WINDOWS\System32\Taskmgr.exe",
+                "/2"
+            ])),
+            ""
+        );
+        // 旧格式：没有标记，第一个参数就是 taskmgr.exe。
+        assert_eq!(
+            filter_from_args(args(&[r"C:\WINDOWS\System32\Taskmgr.exe", "/2"])),
+            ""
+        );
+        // 普通启动：参数就是搜索词。
+        assert_eq!(filter_from_args(args(&[":5173"])), ":5173");
+        assert_eq!(filter_from_args(args(&["node", ":3000"])), "node :3000");
+    }
 
     #[test]
     fn summarizes_command_lines() {
