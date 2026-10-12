@@ -59,7 +59,9 @@ pub struct InstallerConfig {
     pub asset_pattern: &'static str,
     /// 卸载信息的键名，即 `<AppId>_is1`，如 `"{99CDD8A9-…}_is1"`。
     pub uninstall_key: &'static str,
-    /// 静默更新时传给安装程序的参数。
+    /// 静默更新时传给安装程序的参数。另外会按原来的安装方式追加 `/ALLUSERS` 或 `/CURRENTUSER`
+    /// （安装脚本需要 `PrivilegesRequiredOverridesAllowed=commandline`），否则当前用户安装的
+    /// 副本会被更新成一份新的所有用户安装。
     pub args: &'static str,
 }
 
@@ -612,8 +614,10 @@ fn install_with_setup(inner: &Inner, release: &Release, elevate: bool) -> Result
     let ua = cfg.user_agent();
     let expected = expected_hash(release, asset, &ua)?;
     let path = std::env::temp_dir().join(format!("{}-update-{}", cfg.repo, asset.name));
-    let result = download_verified(inner, asset, &ua, &path, &expected)
-        .and_then(|()| run_installer(&path, installer.args, elevate));
+    let result = download_verified(inner, asset, &ua, &path, &expected).and_then(|()| {
+        let scope = if elevate { "/ALLUSERS" } else { "/CURRENTUSER" };
+        run_installer(&path, &format!("{} {scope}", installer.args), elevate)
+    });
     if result.is_err() {
         let _ = std::fs::remove_file(&path);
     }
@@ -719,7 +723,7 @@ fn old_path(dir: &Path, file: &str) -> PathBuf {
 }
 
 /// 启动时在后台删掉上次更新留下的 `<exe>.old`；旧进程可能还没完全退出，删不掉就隔一会儿再试。
-/// 临时目录里上次运行过的安装程序也一并删掉。
+/// 临时目录里上次运行过的安装程序（一小时以前的）也一并删掉。
 pub fn cleanup_old(cfg: &Config) {
     let Some((dir, file)) = exe_location() else {
         return;
@@ -731,7 +735,9 @@ pub fn cleanup_old(cfg: &Config) {
             if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_lowercase();
-                    if name.starts_with(&setup_prefix) && name.ends_with(".exe") {
+                    // 放过新文件：启动后立刻手动检查并更新时，刚下载的安装程序也在这里。
+                    if name.starts_with(&setup_prefix) && name.ends_with(".exe") && is_stale(&entry)
+                    {
                         let _ = std::fs::remove_file(entry.path());
                     }
                 }
@@ -751,13 +757,7 @@ pub fn cleanup_old(cfg: &Config) {
                         left = true;
                     }
                     // 中途退出留下的下载文件；放过最近的，可能是另一个实例正在下载。
-                    let stale = entry
-                        .metadata()
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.elapsed().ok())
-                        .is_some_and(|age| age > Duration::from_secs(3600));
-                    if name.ends_with(".download") && stale {
+                    if name.ends_with(".download") && is_stale(&entry) {
                         let _ = std::fs::remove_file(entry.path());
                     }
                 }
@@ -767,6 +767,16 @@ pub fn cleanup_old(cfg: &Config) {
                 std::thread::sleep(Duration::from_secs(2));
             }
         });
+}
+
+/// 一小时以前修改的文件。
+fn is_stale(entry: &std::fs::DirEntry) -> bool {
+    entry
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age > Duration::from_secs(3600))
 }
 
 /// 在 `SHA256SUMS.txt`（`<hex>  <文件名>`，文件名前可能有表示二进制模式的 `*`）里找 `name` 的哈希。
