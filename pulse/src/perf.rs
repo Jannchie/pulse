@@ -308,11 +308,17 @@ fn sidebar(ui: &mut Ui, snap: &Snapshot, series: &Series, device: &mut Device) {
             pos2(rect.left() + 34.0, rect.top() + 30.0),
             pos2(thumb.left() - 8.0, rect.bottom() - 6.0),
         );
-        painter.with_clip_rect(sub_rect).text(
-            pos2(sub_rect.left(), rect.top() + 40.0),
-            Align2::LEFT_CENTER,
-            &e.sub,
+        // 单行显示，放不下时以省略号截断。
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            e.sub.clone(),
             FontId::proportional(11.5),
+            p.muted,
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(sub_rect.width());
+        let g = painter.layout_job(job);
+        painter.galley(
+            pos2(sub_rect.left(), rect.top() + 40.0 - g.size().y / 2.0),
+            g,
             p.muted,
         );
         if resp

@@ -1148,7 +1148,8 @@ pub fn menu_heading(ui: &mut Ui, text: &str, width: f32) {
     }
     ui.spacing_mut().item_spacing.y = 2.0;
     ui.add_space(2.0);
-    ui.label(RichText::new(text).size(12.0).color(p.muted));
+    // 单行显示，过长时以省略号截断；悬停可看完整名称。
+    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(p.muted)).truncate());
     ui.add_space(2.0);
 }
 
