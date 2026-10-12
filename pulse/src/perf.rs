@@ -60,23 +60,6 @@ pub fn show(
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 sidebar(ui, snap, series, device);
-                ui.add_space(10.0);
-                if widgets::tool_button(
-                    ui,
-                    Icon::Clipboard,
-                    t!("复制摘要", "Copy summary", "概要をコピー"),
-                    true,
-                    false,
-                )
-                .on_hover_text(t!(
-                    "把当前设备的信息复制为文本",
-                    "Copy this device's details as text",
-                    "このデバイスの情報をテキストとしてコピーします"
-                ))
-                .clicked()
-                {
-                    action = Some(PerfAction::Copy(summary(*device, snap)));
-                }
             });
     });
     ui.scope_builder(egui::UiBuilder::new().max_rect(main), |ui| {
@@ -134,6 +117,13 @@ pub fn show(
                 ui.add_space(16.0);
             });
     });
+    if ui
+        .ctx()
+        .data_mut(|d| d.remove_temp::<bool>(egui::Id::new(COPY_CLICKED)))
+        == Some(true)
+    {
+        action = Some(PerfAction::Copy(summary(*device, snap)));
+    }
     ui.allocate_rect(full, Sense::hover());
     action
 }
@@ -324,6 +314,10 @@ fn sidebar(ui: &mut Ui, snap: &Snapshot, series: &Series, device: &mut Device) {
 
 // ---------------------------------------------------------------- 通用部件
 
+/// 标题行右侧"复制摘要"按钮被点击时写入的临时标志，由 [`show`] 读取并清除。
+const COPY_CLICKED: &str = "perf-copy-summary";
+
+/// 设备页标题：图标、名称与型号，右侧是复制这台设备摘要的按钮。
 fn page_header(ui: &mut Ui, glyph: Icon, color: Color32, title: &str, subtitle: &str) {
     let p = Palette::of(ui.ctx());
     ui.add_space(2.0);
@@ -333,15 +327,40 @@ fn page_header(ui: &mut Ui, glyph: Icon, color: Color32, title: &str, subtitle: 
             .rect_filled(tile, CornerRadius::same(10), color.gamma_multiply(0.16));
         widgets::icon(ui, glyph, tile.center(), 22.0, color);
         ui.add_space(6.0);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.label(
-                RichText::new(title)
-                    .size(20.0)
-                    .family(semibold())
-                    .color(p.text),
-            );
-            ui.add(egui::Label::new(RichText::new(subtitle).size(12.5).color(p.muted)).truncate());
+        // 先从右边放按钮，剩下的宽度给名称和型号（型号过长时截断）。
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if widgets::tool_button(
+                ui,
+                Icon::Clipboard,
+                t!("复制摘要", "Copy summary", "概要をコピー"),
+                true,
+                false,
+            )
+            .on_hover_text(t!(
+                "把这台设备的信息复制为文本",
+                "Copy this device's details as text",
+                "このデバイスの情報をテキストとしてコピーします"
+            ))
+            .clicked()
+            {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(egui::Id::new(COPY_CLICKED), true));
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.label(
+                        RichText::new(title)
+                            .size(20.0)
+                            .family(semibold())
+                            .color(p.text),
+                    );
+                    ui.add(
+                        egui::Label::new(RichText::new(subtitle).size(12.5).color(p.muted))
+                            .truncate(),
+                    );
+                });
+            });
         });
     });
     ui.add_space(14.0);
