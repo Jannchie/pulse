@@ -1914,6 +1914,7 @@ dependencies = [
  "nucleo-matcher",
  "pulse-probe",
  "raw-window-handle",
+ "skrifa",
  "windows",
 ]
 

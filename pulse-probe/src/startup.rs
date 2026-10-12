@@ -248,7 +248,7 @@ fn open_key(root: HKEY, path: &str) -> Option<HKEY> {
 }
 
 /// 键下所有字符串值：(名称, 数据)。
-fn reg_values(root: HKEY, path: &str) -> Vec<(String, String)> {
+pub(crate) fn reg_values(root: HKEY, path: &str) -> Vec<(String, String)> {
     let Some(key) = open_key(root, path) else {
         return Vec::new();
     };

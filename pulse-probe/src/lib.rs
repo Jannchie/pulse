@@ -3,6 +3,7 @@
 
 pub mod control;
 pub mod disk;
+pub mod fonts;
 pub mod gpu;
 pub mod i18n;
 pub mod icon;

@@ -2,6 +2,7 @@
 
 mod brand_art;
 mod dialogs;
+mod fonts;
 mod gpu_panel;
 mod icons;
 mod icons_gen;
@@ -348,10 +349,11 @@ struct App {
 
 impl App {
     fn new(ctx: &egui::Context) -> Self {
-        theme::install(ctx);
-        egui_extras::install_image_loaders(ctx);
         let settings = Settings::load();
-        pulse_probe::i18n::set_lang(settings.language.resolve());
+        let lang = settings.language.resolve();
+        pulse_probe::i18n::set_lang(lang);
+        theme::install(ctx, lang);
+        egui_extras::install_image_loaders(ctx);
         ctx.set_theme(settings.theme.preference());
         if settings.always_on_top {
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
@@ -1373,7 +1375,13 @@ impl App {
         }
         if s.language != before.language {
             // 文字都是每帧按当前语言生成的（表格行只存下标），切换后重画一帧即可。
-            pulse_probe::i18n::set_lang(s.language.resolve());
+            // 汉字字形随语言变（日文要用日文字形），所以字体也要换。
+            let lang = s.language.resolve();
+            let changed = lang != pulse_probe::i18n::lang();
+            pulse_probe::i18n::set_lang(lang);
+            if changed {
+                theme::install_fonts(ctx, lang);
+            }
             self.dirty = true;
             ctx.request_repaint();
         }

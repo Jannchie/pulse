@@ -1,11 +1,16 @@
 //! 配色、字体与全局样式。跟随系统深浅色。
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle, Theme,
     Visuals,
 };
+use eframe::epaint::text::VariationCoords;
+use pulse_probe::i18n::Lang;
+
+use crate::fonts::{self, Face};
 
 /// 文字色均满足 WCAG AAA（≥ 7:1），覆盖它们会出现的全部背景：窗口、卡片、悬停行、
 /// 选中行（`selection` 叠在 `bg` 上）以及端口标签底色。改色后请重新核对对比度。
@@ -92,8 +97,8 @@ pub fn semibold() -> FontFamily {
 /// 进程、服务表格的行高。滚轮一格滚 3 行，与 Windows 默认一致。
 pub const ROW_HEIGHT: f32 = 30.0;
 
-pub fn install(ctx: &egui::Context) {
-    install_fonts(ctx);
+pub fn install(ctx: &egui::Context, lang: Lang) {
+    install_fonts(ctx, lang);
     ctx.options_mut(|o| o.input_options.line_scroll_speed = ROW_HEIGHT * 3.0);
     ctx.set_visuals_of(Theme::Dark, visuals(&DARK, true));
     ctx.set_visuals_of(Theme::Light, visuals(&LIGHT, false));
@@ -198,53 +203,97 @@ fn visuals(p: &Palette, dark: bool) -> Visuals {
     v
 }
 
-/// Segoe UI 负责西文与数字（等宽数字，列对齐好看），微软雅黑兜底中文。
-/// 全部内存映射加载：字体文件页可与其他进程共享，不计入私有内存。
-fn install_fonts(ctx: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::default();
-    let mut add = |key: &str, file: &str| {
-        let Some(bytes) = map_font(file) else {
-            return false;
-        };
-        fonts
-            .font_data
-            .insert(key.into(), Arc::new(egui::FontData::from_static(bytes)));
-        true
-    };
-    let ui = add("segoe", "segoeui.ttf");
-    let ui_sb = add("segoe-sb", "seguisb.ttf");
-    let cjk = add("msyh", "msyh.ttc");
-    let cjk_b = add("msyh-b", "msyhbd.ttc");
+/// 西文字体，所有语言共用。
+const LATIN: &[&str] = &["HarmonyOS Sans", "Noto Sans", "Segoe UI"];
+/// 中文字形的汉字字体。英文界面也用它：进程名、文件名里照样有汉字。
+const CJK_SC: &[&str] = &[
+    "HarmonyOS Sans SC",
+    "Noto Sans SC",
+    "Noto Sans CJK SC",
+    "Microsoft YaHei",
+    "DengXian",
+    "SimSun",
+];
+/// 日文字形的汉字字体。HarmonyOS Sans SC 只有中文字形，不能排在日文前面。
+const CJK_JP: &[&str] = &["Noto Sans JP", "Noto Sans CJK JP", "Yu Gothic UI", "Meiryo"];
 
-    let prop = fonts.families.entry(FontFamily::Proportional).or_default();
-    if ui {
-        prop.insert(0, "segoe".into());
-    }
-    if cjk {
-        prop.push("msyh".into());
-    }
-    let defaults = prop.clone();
-    let sb = fonts.families.entry(semibold()).or_default();
-    if ui_sb {
-        sb.push("segoe-sb".into());
-    }
-    if cjk_b {
-        sb.push("msyh-b".into());
-    }
-    sb.extend(defaults);
-    if cjk {
-        fonts
-            .families
-            .entry(FontFamily::Monospace)
-            .or_default()
-            .push("msyh".into());
-    }
-    ctx.set_fonts(fonts);
+const REGULAR: f32 = 400.0;
+/// 加粗标题的目标字重：HarmonyOS 取 Medium，Segoe UI / Yu Gothic UI 取 Semibold，
+/// 只有常规与粗体的字体（微软雅黑、Meiryo）取粗体。
+const SEMIBOLD: f32 = 550.0;
+
+/// 一种语言的字体链：西文在前，界面语言的汉字字体其次，另一种字形的汉字字体兜底
+/// （日文字体缺简体字，中文字体也可能缺个别日文汉字）。
+struct Chain {
+    latin: Vec<Face>,
+    cjk: Vec<Face>,
 }
 
-fn map_font(file: &str) -> Option<&'static [u8]> {
-    let path = std::path::Path::new(r"C:\Windows\Fonts").join(file);
-    let file = std::fs::File::open(path).ok()?;
-    let map = unsafe { memmap2::Mmap::map(&file) }.ok()?;
-    Some(Box::leak(Box::new(map)))
+fn chain(lang: Lang, weight: f32) -> Chain {
+    let (first, second) = match lang {
+        Lang::Ja => (CJK_JP, CJK_SC),
+        Lang::Zh | Lang::En => (CJK_SC, CJK_JP),
+    };
+    let mut latin: Vec<Face> = fonts::pick(LATIN, weight).into_iter().collect();
+    // 首选西文字体缺的符号由 Segoe UI 补上。
+    if latin.first().is_none_or(|f| f.family != "Segoe UI") {
+        latin.extend(fonts::pick(&["Segoe UI"], weight));
+    }
+    let cjk = [first, second]
+        .into_iter()
+        .filter_map(|list| fonts::pick(list, weight))
+        .collect();
+    Chain { latin, cjk }
+}
+
+/// 按语言装字体。切换语言时再调用一次即可：字体文件只映射一次，之后复用。
+pub fn install_fonts(ctx: &egui::Context, lang: Lang) {
+    static CHAINS: OnceLock<Mutex<HashMap<Lang, (Chain, Chain)>>> = OnceLock::new();
+    let mut chains = CHAINS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let (regular, bold) = chains
+        .entry(lang)
+        .or_insert_with(|| (chain(lang, REGULAR), chain(lang, SEMIBOLD)));
+
+    let mut fonts = egui::FontDefinitions::default();
+    let mut add = |face: &Face| -> Option<String> {
+        let bytes = face.bytes()?;
+        let key = face.key();
+        let mut tweak = egui::FontTweak::default();
+        if let Some(w) = face.wght {
+            tweak.coords = VariationCoords::new([(b"wght", w)]);
+        }
+        fonts.font_data.insert(
+            key.clone(),
+            Arc::new(egui::FontData {
+                font: std::borrow::Cow::Borrowed(bytes),
+                index: face.index,
+                tweak,
+            }),
+        );
+        Some(key)
+    };
+    let latin: Vec<String> = regular.latin.iter().filter_map(&mut add).collect();
+    let cjk: Vec<String> = regular.cjk.iter().filter_map(&mut add).collect();
+    let latin_b: Vec<String> = bold.latin.iter().filter_map(&mut add).collect();
+    let cjk_b: Vec<String> = bold.cjk.iter().filter_map(&mut add).collect();
+
+    // egui 自带的字体（含 emoji）留在最后兜底。
+    let defaults = fonts.families[&FontFamily::Proportional].clone();
+    let prop: Vec<String> = latin.iter().chain(&cjk).cloned().chain(defaults).collect();
+    let sb: Vec<String> = latin_b
+        .into_iter()
+        .chain(cjk_b)
+        .chain(prop.clone())
+        .collect();
+    fonts.families.insert(FontFamily::Proportional, prop);
+    fonts.families.insert(semibold(), sb);
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .extend(cjk);
+    ctx.set_fonts(fonts);
 }
