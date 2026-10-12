@@ -15,6 +15,8 @@ mod startup_view;
 mod table;
 mod theme;
 mod titlebar;
+mod update;
+mod update_view;
 mod users_view;
 mod widgets;
 
@@ -180,6 +182,7 @@ enum Modal {
     Affinity(AffinityDialog),
     Run(RunDialog),
     User(UserAction),
+    Update(Arc<update::Release>),
 }
 
 /// 服务列表由单独的线程采集：首次读取几百个服务的配置要半秒多，放进进程采集线程会拖慢启动。
@@ -345,7 +348,23 @@ struct App {
     scroll_to: Option<usize>,
     /// 最近一秒内的重绘时刻，用来确认空闲时没有空转。
     passes: VecDeque<Instant>,
+    updater: update::Updater,
+    /// 本帧开始时读到的更新状态。
+    update: update::Status,
+    /// 已经弹过通知的新版本。
+    update_announced: Option<String>,
+    /// 新版本已启动，正在关闭本窗口。
+    restarting: bool,
 }
+
+/// 本程序在 GitHub 上的发布信息。
+const UPDATE_CONFIG: update::Config = update::Config {
+    owner: "Jannchie",
+    repo: "pulse",
+    current_version: env!("CARGO_PKG_VERSION"),
+    asset_pattern: "pulse-{tag}-windows-x64.exe",
+    checksums: "SHA256SUMS.txt",
+};
 
 impl App {
     fn new(ctx: &egui::Context) -> Self {
@@ -361,6 +380,12 @@ impl App {
             ));
         }
         let interval = Arc::new(AtomicU64::new(settings.speed.millis()));
+        update::cleanup_old();
+        let updater = {
+            let ctx = ctx.clone();
+            update::Updater::new(UPDATE_CONFIG, move || ctx.request_repaint())
+        };
+        updater.start(settings.auto_update);
         Self {
             shared: spawn_collector(ctx.clone(), interval.clone()),
             snapshot: Arc::default(),
@@ -398,6 +423,10 @@ impl App {
             settings,
             scroll_to: None,
             passes: VecDeque::new(),
+            updater,
+            update: update::Status::default(),
+            update_announced: None,
+            restarting: false,
         }
     }
 
@@ -956,6 +985,8 @@ impl App {
 
     fn confirm_modal(&mut self, modal: Modal) {
         match modal {
+            // 更新对话框有自己的选择，见 `apply_update_choice`。
+            Modal::Update(_) => {}
             Modal::Kill(req) => self.kill_confirmed(req),
             Modal::Affinity(d) => {
                 let r = pulse_probe::control::set_affinity(d.pid, d.mask);
@@ -1240,6 +1271,14 @@ impl App {
             if resp.clicked() {
                 self.view = View::Settings;
             }
+            if let Some(release) = self.pending_update() {
+                ui.add_space(6.0);
+                let resp = update_view::title_pill(ui, &release.version);
+                holes.push(resp.rect);
+                if resp.clicked() {
+                    self.modal = Some(Modal::Update(release));
+                }
+            }
         });
         if custom {
             let caption =
@@ -1362,8 +1401,72 @@ impl App {
         });
     }
 
+    /// 有新版本且用户没有跳过它。
+    fn pending_update(&self) -> Option<Arc<update::Release>> {
+        match &self.update.check {
+            update::Check::Available(r) if r.version != self.settings.skipped_version => {
+                Some(r.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// 读取更新状态：新版本第一次出现时通知一次；新进程已启动时关闭窗口。
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        self.update = self.updater.status();
+        if let Some(r) = self.pending_update()
+            && self.update_announced.as_deref() != Some(r.version.as_str())
+        {
+            self.update_announced = Some(r.version.clone());
+            self.toasts.push(Toast::info(
+                tf!(
+                    "Pulse {} 可用",
+                    "Pulse {} is available",
+                    "Pulse {} を利用できます",
+                    r.version
+                ),
+                Some(
+                    t!(
+                        "点击标题栏中的“新版本”查看更新内容。",
+                        "Click “Update” in the title bar to see what's new.",
+                        "タイトル バーの「新しいバージョン」をクリックすると、更新内容を確認できます。"
+                    )
+                    .into(),
+                ),
+            ));
+        }
+        if matches!(self.update.install, update::Install::Restarting) && !self.restarting {
+            self.restarting = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn apply_update_choice(&mut self, release: Arc<update::Release>, choice: update_view::Choice) {
+        use update_view::Choice;
+        match choice {
+            Choice::Install => self.updater.install(release),
+            Choice::Later => {
+                self.updater.dismiss_install_error();
+                self.modal = None;
+            }
+            Choice::Skip => {
+                self.updater.dismiss_install_error();
+                self.settings.skipped_version = release.version.clone();
+                self.settings.save();
+                self.modal = None;
+            }
+            Choice::OpenPage => {
+                pulse_probe::control::open_url(&release.page_url);
+                self.modal = None;
+            }
+        }
+    }
+
     fn apply_settings(&mut self, ctx: &egui::Context, before: &Settings) {
         let s = &self.settings;
+        if s.auto_update != before.auto_update {
+            self.updater.set_auto(s.auto_update);
+        }
         if s.grouped != before.grouped {
             self.dirty = true;
         }
@@ -1541,6 +1644,7 @@ impl eframe::App for App {
         }
         self.pull();
         self.icons.poll(ui.ctx());
+        self.poll_update(ui.ctx());
         if self.dirty {
             self.table = model::build(
                 &self.snapshot,
@@ -1605,11 +1709,26 @@ impl eframe::App for App {
                 let replaced = self.taskmgr_replaced;
                 let action = central
                     .show(ui, |ui| {
-                        settings_view::show(ui, &mut self.settings, replaced, elevated)
+                        settings_view::show(
+                            ui,
+                            &mut self.settings,
+                            replaced,
+                            elevated,
+                            &self.update.check,
+                        )
                     })
                     .inner;
                 if self.settings != before {
                     self.apply_settings(ui.ctx(), &before);
+                }
+                match action {
+                    Some(settings_view::SettingsAction::CheckUpdate) => self.updater.check_now(),
+                    Some(settings_view::SettingsAction::ShowUpdate) => {
+                        if let update::Check::Available(r) = &self.update.check {
+                            self.modal = Some(Modal::Update(r.clone()));
+                        }
+                    }
+                    _ => {}
                 }
                 if let Some(settings_view::SettingsAction::SetTaskmgrReplaced(want)) = action {
                     match pulse_probe::os::set_taskmgr_replaced(want) {
@@ -1743,8 +1862,20 @@ impl eframe::App for App {
         }
 
         let ctx = ui.ctx().clone();
+        let mut update_choice = None;
         if let Some(modal) = &mut self.modal {
             let decision = match modal {
+                Modal::Update(r) => {
+                    update_choice = update_view::dialog(
+                        &ctx,
+                        "Pulse",
+                        env!("CARGO_PKG_VERSION"),
+                        r,
+                        &self.update.install,
+                    )
+                    .map(|c| (r.clone(), c));
+                    None
+                }
                 Modal::Kill(req) => dialogs::confirm_kill(&ctx, req, &self.snapshot),
                 Modal::Affinity(d) => dialogs::affinity(&ctx, d),
                 Modal::Run(d) => dialogs::run_task(&ctx, d, self.snapshot.elevated),
@@ -1761,6 +1892,9 @@ impl eframe::App for App {
                 Some(Decision::Cancel) => self.modal = None,
                 None => {}
             }
+        }
+        if let Some((release, choice)) = update_choice {
+            self.apply_update_choice(release, choice);
         }
         if let Some(rx) = &self.startup_rx
             && let Ok(items) = rx.try_recv()

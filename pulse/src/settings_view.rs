@@ -9,11 +9,16 @@ use pulse_probe::{t, tf};
 
 use crate::settings::{Language, SearchEngine, Settings, Speed, ThemeChoice};
 use crate::theme::{Palette, semibold};
-use crate::widgets;
+use crate::update::Check;
+use crate::{dialogs, update_view, widgets};
 
 pub enum SettingsAction {
     /// 切换"替换任务管理器"（写 IFEO 注册表，需要管理员权限）。
     SetTaskmgrReplaced(bool),
+    /// 立即检查更新。
+    CheckUpdate,
+    /// 打开更新对话框。
+    ShowUpdate,
 }
 
 pub fn show(
@@ -21,6 +26,7 @@ pub fn show(
     settings: &mut Settings,
     taskmgr_replaced: bool,
     elevated: bool,
+    update: &Check,
 ) -> Option<SettingsAction> {
     let mut action = None;
     egui::ScrollArea::vertical()
@@ -87,6 +93,18 @@ pub fn show(
                             t!("始终显示在其他窗口之上。", "Keep Pulse above other windows.", "Pulse を常にほかのウィンドウより手前に表示します。"),
                             |ui| {
                                 widgets::switch(ui, &mut settings.always_on_top, true);
+                            },
+                        );
+                        divider(ui);
+                        row(
+                            ui,
+                            t!("自动检查更新", "Check for updates automatically", "更新を自動的に確認する"),
+                            t!(
+                                "启动时和每天检查一次 GitHub 上的新版本。只有在你确认后才会安装。",
+                                "Checks GitHub for a new version at startup and once a day. Updates are installed only when you confirm.", "起動時と 1 日 1 回、GitHub で新しいバージョンを確認します。更新は確認した後にのみインストールされます。"
+                            ),
+                            |ui| {
+                                widgets::switch(ui, &mut settings.auto_update, true);
                             },
                         );
                     });
@@ -189,6 +207,34 @@ pub fn show(
                                         .size(12.0)
                                         .color(p.muted),
                                 );
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.spacing_mut().item_spacing.x = 12.0;
+                                let available = matches!(update, Check::Available(_));
+                                let label = if available {
+                                    t!("查看更新", "View update", "更新を表示")
+                                } else {
+                                    t!("检查更新", "Check for updates", "更新を確認")
+                                };
+                                let kind = if available {
+                                    dialogs::Kind::Primary
+                                } else {
+                                    dialogs::Kind::Secondary
+                                };
+                                let enabled = !matches!(update, Check::Checking);
+                                if dialogs::button(ui, label, kind, enabled).clicked() {
+                                    action = Some(if available {
+                                        SettingsAction::ShowUpdate
+                                    } else {
+                                        SettingsAction::CheckUpdate
+                                    });
+                                }
+                                if let Some((text, color)) = update_view::check_status(ui, update) {
+                                    ui.add(
+                                        egui::Label::new(RichText::new(text).size(12.0).color(color))
+                                            .wrap(),
+                                    );
+                                }
                             });
                         });
                         ui.add_space(16.0);

@@ -210,8 +210,8 @@ pub enum Kind {
 }
 
 /// 白字在其上 ≥ 7:1（AAA）。
-const PRIMARY_FILL: Color32 = Color32::from_rgb(0x1e, 0x40, 0xaf);
-const PRIMARY_FILL_HOVER: Color32 = Color32::from_rgb(0x1e, 0x3a, 0x8a);
+pub const PRIMARY_FILL: Color32 = Color32::from_rgb(0x1e, 0x40, 0xaf);
+pub const PRIMARY_FILL_HOVER: Color32 = Color32::from_rgb(0x1e, 0x3a, 0x8a);
 
 pub fn button(ui: &mut Ui, label: &str, kind: Kind, enabled: bool) -> egui::Response {
     let p = Palette::of(ui.ctx());
@@ -248,6 +248,7 @@ pub fn button(ui: &mut Ui, label: &str, kind: Kind, enabled: bool) -> egui::Resp
 #[derive(Clone, Copy, PartialEq)]
 pub enum ToastKind {
     Success,
+    Info,
     Error,
 }
 
@@ -271,6 +272,15 @@ impl Toast {
         }
     }
 
+    pub fn info(title: String, detail: Option<String>) -> Self {
+        Self {
+            kind: ToastKind::Info,
+            title,
+            detail,
+            at: Instant::now(),
+        }
+    }
+
     pub fn err(title: String, detail: Option<String>) -> Self {
         Self {
             kind: ToastKind::Error,
@@ -281,7 +291,7 @@ impl Toast {
     }
 
     fn ttl(&self) -> Duration {
-        if self.kind == ToastKind::Error {
+        if self.kind != ToastKind::Success {
             TOAST_ERROR_TTL
         } else {
             TOAST_TTL
@@ -301,6 +311,7 @@ pub fn toasts(ctx: &egui::Context, toasts: &mut Vec<Toast>) {
     for (i, t) in toasts.iter().enumerate().rev().take(3) {
         let (glyph, accent) = match t.kind {
             ToastKind::Success => (Icon::CheckCircle, crate::theme::metric::GPU),
+            ToastKind::Info => (Icon::Info, p.accent),
             ToastKind::Error => (Icon::XCircle, p.danger),
         };
         let resp = egui::Area::new(Id::new(("toast", i)))
@@ -374,6 +385,17 @@ fn modal(
     width: f32,
     body: impl FnOnce(&mut Ui) -> Option<Decision>,
 ) -> Option<Decision> {
+    let (decision, closed) = modal_with(ctx, id, width, body);
+    decision.or(closed.then_some(Decision::Cancel))
+}
+
+/// [`modal`] 的通用版本：返回 `body` 的结果，以及用户是否点了遮罩或按了 Esc。
+pub fn modal_with<T>(
+    ctx: &egui::Context,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    width: f32,
+    body: impl FnOnce(&mut Ui) -> Option<T>,
+) -> (Option<T>, bool) {
     let p = Palette::of(ctx);
     let resp = egui::Modal::new(Id::new(id))
         .frame(dialog_frame(&p))
@@ -390,7 +412,7 @@ fn modal(
             body(ui)
         });
     let closed = resp.should_close();
-    resp.inner.or(closed.then_some(Decision::Cancel))
+    (resp.inner, closed)
 }
 
 /// 警告图标 + 标题。
