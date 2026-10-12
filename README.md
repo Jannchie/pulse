@@ -5,10 +5,10 @@
     <a href="https://github.com/Jannchie/pulse/actions/workflows/ci.yml"><img src="https://github.com/Jannchie/pulse/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   </p>
   <p align="center">中文 · <a href="README.en.md">English</a></p>
-  <img src="docs/screenshot.png" alt="Pulse 性能页">
+  <img src="docs/screenshot.zh.png" alt="Pulse 性能页">
 </p>
 
-Pulse 是 Windows 任务管理器的替代品，使用 Rust 与 egui 原生实现，单个 exe，无需安装。
+Pulse 是 Windows 任务管理器的替代品，使用 Rust 与 egui 原生实现，单个 exe，无需安装。界面支持简体中文与英文，默认跟随 Windows 显示语言，可在「设置 → 外观」中切换。
 
 与系统任务管理器相比：
 

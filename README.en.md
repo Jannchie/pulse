@@ -5,10 +5,10 @@
     <a href="https://github.com/Jannchie/pulse/actions/workflows/ci.yml"><img src="https://github.com/Jannchie/pulse/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   </p>
   <p align="center"><a href="README.md">中文</a> · English</p>
-  <img src="docs/screenshot.png" alt="Pulse performance page">
+  <img src="docs/screenshot.en.png" alt="Pulse performance page">
 </p>
 
-Pulse is a replacement for the Windows Task Manager, written natively in Rust with egui. It ships as a single executable and needs no installation. The interface is in Chinese.
+Pulse is a replacement for the Windows Task Manager, written natively in Rust with egui. It ships as a single executable and needs no installation. The interface is available in English and Simplified Chinese; it follows the Windows display language by default and can be changed under Settings → Appearance.
 
 Compared with the built-in Task Manager:
 
@@ -31,12 +31,12 @@ Command-line arguments become the initial search. Right-click a process to end, 
 
 ## Common tasks
 
-- **Find what holds a port**: search `:8080`, or enable "监听端口" (listening ports) in the toolbar.
+- **Find what holds a port**: search `:8080`, or enable "Listening ports" in the toolbar.
 - **Combine terms**: space-separated terms must all match; `!chrome` excludes, `^node` matches a prefix, `'vite` matches exactly.
-- **End a process tree**: right-click a process and choose "结束进程树"; children are ended before the parent.
-- **Replace Ctrl+Shift+Esc**: enable "替换任务管理器" under Settings → System; Windows then launches Pulse whenever Task Manager is requested.
+- **End a process tree**: right-click a process and choose "End process tree"; children are ended before the parent.
+- **Replace Ctrl+Shift+Esc**: enable "Replace Task Manager" under Settings → System; Windows then launches Pulse whenever Task Manager is requested.
 
-These features require running as administrator (the toolbar offers a restart as administrator): per-process network statistics, modified/standby memory, ending system processes, starting and stopping services, editing startup items for all users, and replacing Task Manager.
+These features require running as administrator (the toolbar offers "Restart as admin"): per-process network statistics, modified/standby memory, ending system processes, starting and stopping services, editing startup items for all users, and replacing Task Manager.
 
 ## Build from source
 
