@@ -287,17 +287,15 @@ fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
         }
     }
     if s.start_type != StartType::Boot {
-        widgets::menu_section(ui, "启动类型");
-        let items = StartType::EDITABLE.map(|t| (t.label(), s.start_type == t));
-        if let Some(i) = widgets::menu_chips(ui, &items)
-            && s.start_type != StartType::EDITABLE[i]
-        {
-            actions.push(ServiceAction::SetStartType(
-                name.clone(),
-                StartType::EDITABLE[i],
-            ));
-        }
-        ui.add_space(4.0);
+        widgets::submenu(ui, Icon::Settings, "启动类型", 170.0, |ui| {
+            for t in StartType::EDITABLE {
+                if widgets::menu_check(ui, Icon::Check, t.label(), s.start_type == t).clicked()
+                    && s.start_type != t
+                {
+                    actions.push(ServiceAction::SetStartType(name.clone(), t));
+                }
+            }
+        });
     }
     ui.separator();
     if s.pid > 0 && widgets::menu_item(ui, Icon::Window, "转到进程", false).clicked() {
@@ -312,20 +310,17 @@ fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
     if widgets::menu_item(ui, Icon::ExternalLink, "打开服务管理器", false).clicked() {
         actions.push(ServiceAction::OpenManager);
     }
-    widgets::menu_section(ui, "复制");
-    let copies: Vec<(&str, String)> = [
-        ("服务名", s.name.to_string()),
-        ("显示名称", s.display_name.to_string()),
-        ("可执行路径", s.binary.to_string()),
-    ]
-    .into_iter()
-    .filter(|(_, v)| !v.is_empty())
-    .collect();
-    let items: Vec<(&str, bool)> = copies.iter().map(|(l, _)| (*l, false)).collect();
-    if let Some(i) = widgets::menu_chips(ui, &items) {
-        actions.push(ServiceAction::Copy(copies[i].1.clone()));
-    }
-    ui.add_space(2.0);
+    widgets::submenu(ui, Icon::Copy, "复制", 160.0, |ui| {
+        for (label, value) in [
+            ("服务名", s.name.to_string()),
+            ("显示名称", s.display_name.to_string()),
+            ("可执行路径", s.binary.to_string()),
+        ] {
+            if !value.is_empty() && widgets::menu_item(ui, Icon::Copy, label, false).clicked() {
+                actions.push(ServiceAction::Copy(value));
+            }
+        }
+    });
 }
 
 fn tooltip(ui: &mut Ui, s: &Service) {

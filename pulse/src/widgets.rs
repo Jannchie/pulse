@@ -1005,9 +1005,10 @@ pub fn menu_heading(ui: &mut Ui, text: &str, min_width: f32) {
     ui.add_space(2.0);
 }
 
-/// 固定在 `pos` 的右键菜单。与 egui 自带的 context_menu 不同，它不挂在某一行上，
+/// 固定在 `pos` 的右键菜单。与 `Response::context_menu` 不同，它不挂在某一行上，
 /// 列表重排时不会跟着跳，内容也由调用方按记下的对象生成。
-/// `add` 返回是否执行了某个操作（执行后关闭）；按 Esc 或点击菜单外也关闭。返回菜单是否继续显示。
+/// 底层是 egui 的菜单弹窗（`PopupKind::Menu`），所以里面可以直接用 [`submenu`] 做多级菜单；
+/// 点击菜单项、点击菜单外或按 Esc 时由 egui 关闭。`add` 返回是否执行了某个操作。返回菜单是否继续显示。
 pub fn floating_menu(
     ctx: &egui::Context,
     id: &str,
@@ -1015,77 +1016,59 @@ pub fn floating_menu(
     width: f32,
     add: impl FnOnce(&mut Ui) -> bool,
 ) -> bool {
+    let mut open = true;
     let mut acted = false;
-    let area = egui::Area::new(egui::Id::new(id))
-        .order(egui::Order::Foreground)
-        .fixed_pos(pos)
-        .constrain(true)
-        .show(ctx, |ui| {
-            egui::Frame::menu(ui.style()).show(ui, |ui| {
-                ui.set_width(width);
-                ui.spacing_mut().item_spacing.y = 2.0;
-                acted = add(ui);
-            });
-        });
-    let rect = area.response.rect;
-    let dismissed = ctx.input(|i| {
-        i.key_pressed(egui::Key::Escape)
-            || (i.pointer.any_pressed()
-                && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p)))
+    // id 带上位置：在别处再次右键时是一个新菜单，不会被"点击了菜单外"立即关掉。
+    egui::Popup::new(
+        egui::Id::new((id, pos.x.to_bits(), pos.y.to_bits())),
+        ctx.clone(),
+        egui::PopupAnchor::Position(pos),
+        egui::LayerId::background(),
+    )
+    .kind(egui::PopupKind::Menu)
+    .layout(egui::Layout::top_down_justified(egui::Align::Min))
+    .style(egui::containers::menu::menu_style)
+    .width(width)
+    .open_bool(&mut open)
+    .show(|ui| {
+        // 菜单项按可用宽度铺满，这里必须定死宽度，否则弹窗会被撑到很宽。
+        ui.set_width(width);
+        ui.spacing_mut().item_spacing.y = 2.0;
+        acted = add(ui);
     });
-    !acted && !dismissed
+    open && !acted
 }
 
-/// 菜单内的小节标题。
-pub fn menu_section(ui: &mut Ui, title: &str) {
+/// 二级菜单：入口与普通菜单项同样式，右侧有箭头，悬停时展开（egui 原生 `SubMenu`）。
+pub fn submenu(
+    ui: &mut Ui,
+    glyph: Icon,
+    label: &str,
+    min_width: f32,
+    add_contents: impl FnOnce(&mut Ui),
+) {
     let p = Palette::of(ui.ctx());
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.add_space(8.0);
-        ui.label(RichText::new(title).size(11.5).color(p.faint));
-    });
-    ui.add_space(2.0);
-}
-
-/// 菜单内的一组小标签按钮（代替子菜单），`items` 为 (文字, 是否为当前值)。返回点击的下标。
-pub fn menu_chips(ui: &mut Ui, items: &[(&str, bool)]) -> Option<usize> {
-    let p = Palette::of(ui.ctx());
-    let mut picked = None;
-    ui.horizontal_wrapped(|ui| {
-        ui.add_space(6.0);
-        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-        for (i, (label, on)) in items.iter().enumerate() {
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(label.to_string(), FontId::proportional(12.5), p.text);
-            let (rect, resp) =
-                ui.allocate_exact_size(vec2(galley.size().x + 20.0, 26.0), Sense::click());
-            let fill = if *on {
-                p.accent.gamma_multiply(0.2)
-            } else if resp.hovered() {
-                p.hover
-            } else {
-                p.track
-            };
-            ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
-            ui.painter().galley(
-                pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0),
-                galley,
-                if *on || resp.hovered() {
-                    p.text
-                } else {
-                    p.muted
-                },
-            );
-            if resp
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
-                picked = Some(i);
-            }
-        }
-    });
-    picked
+    let (resp, bg) = menu_row(ui, glyph, label, false);
+    icon(
+        ui,
+        Icon::ChevronRight,
+        pos2(resp.rect.right() - 12.0, resp.rect.center().y),
+        14.0,
+        p.muted,
+    );
+    let open = egui::containers::menu::SubMenu::new()
+        .show(ui, &resp, |ui| {
+            ui.set_width(min_width);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            add_contents(ui);
+        })
+        .is_some();
+    if open || resp.hovered() {
+        ui.painter().set(
+            bg,
+            Shape::rect_filled(resp.rect, CornerRadius::same(6), p.hover),
+        );
+    }
 }
 
 #[cfg(test)]

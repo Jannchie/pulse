@@ -584,16 +584,19 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
     }
     if let Selection::Process(pid) = sel {
         let current = members.first().map(|pr| pr.priority);
-        widgets::menu_section(ui, "优先级");
-        let items = Priority::ALL.map(|prio| (prio.label(), current == Some(prio)));
-        if let Some(i) = widgets::menu_chips(ui, &items) {
-            actions.push(Action::Priority {
-                pid: *pid,
-                label: label.clone(),
-                priority: Priority::ALL[i],
-            });
-        }
-        ui.add_space(4.0);
+        widgets::submenu(ui, Icon::Gauge, "设置优先级", 160.0, |ui| {
+            for prio in Priority::ALL {
+                if widgets::menu_check(ui, Icon::Check, prio.label(), current == Some(prio))
+                    .clicked()
+                {
+                    actions.push(Action::Priority {
+                        pid: *pid,
+                        label: label.clone(),
+                        priority: prio,
+                    });
+                }
+            }
+        });
         if widgets::menu_item(ui, Icon::Cpu, "设置相关性…", false).clicked() {
             actions.push(Action::Affinity {
                 pid: *pid,
@@ -632,30 +635,31 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         actions.push(Action::SearchOnline(name.to_string()));
     }
 
-    widgets::menu_section(ui, "复制");
-    let mut copies: Vec<(&str, String)> = vec![("名称", name.to_string())];
-    if let Selection::Process(pid) = sel {
-        copies.push(("PID", pid.to_string()));
-        if let Some(cmd) = members.first().and_then(|pr| pr.command_line.clone()) {
-            copies.push(("命令行", cmd.to_string()));
+    widgets::submenu(ui, Icon::Copy, "复制", 170.0, |ui| {
+        let mut copies: Vec<(Icon, &str, String)> = vec![(Icon::Copy, "名称", name.to_string())];
+        if let Selection::Process(pid) = sel {
+            copies.push((Icon::Hash, "PID", pid.to_string()));
+            if let Some(cmd) = members.first().and_then(|pr| pr.command_line.clone()) {
+                copies.push((Icon::Terminal, "命令行", cmd.to_string()));
+            }
         }
-    }
-    if let Some(path) = path {
-        copies.push(("路径", path.to_string()));
-    }
-    if !tcp.is_empty() {
-        let ports = tcp
-            .iter()
-            .map(u16::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        copies.push(("端口", ports));
-    }
-    let items: Vec<(&str, bool)> = copies.iter().map(|(l, _)| (*l, false)).collect();
-    if let Some(i) = widgets::menu_chips(ui, &items) {
-        actions.push(Action::Copy(copies.swap_remove(i).1));
-    }
-    ui.add_space(2.0);
+        if let Some(path) = path {
+            copies.push((Icon::FolderOpen, "路径", path.to_string()));
+        }
+        if !tcp.is_empty() {
+            let ports = tcp
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            copies.push((Icon::Plug, "监听端口", ports));
+        }
+        for (glyph, label, value) in copies {
+            if widgets::menu_item(ui, glyph, label, false).clicked() {
+                actions.push(Action::Copy(value));
+            }
+        }
+    });
 }
 
 fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String>>) {
