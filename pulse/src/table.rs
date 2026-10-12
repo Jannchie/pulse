@@ -504,7 +504,7 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
             )
         }
     };
-    widgets::menu_heading(ui, &heading, 230.0);
+    widgets::menu_heading(ui, &heading, 0.0);
 
     // 窗口相关
     if let Some(w) = window {
@@ -572,7 +572,7 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         });
     }
     let eff = members.iter().all(|pr| pr.efficiency);
-    if widgets::menu_check(ui, Icon::Leaf, "效率模式", eff)
+    if widgets::menu_check(ui, Some(Icon::Leaf), "效率模式", eff)
         .on_hover_text("降低优先级并启用 EcoQoS，让进程省电、少抢前台资源")
         .clicked()
     {
@@ -586,9 +586,7 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         let current = members.first().map(|pr| pr.priority);
         widgets::submenu(ui, Icon::Gauge, "设置优先级", 160.0, |ui| {
             for prio in Priority::ALL {
-                if widgets::menu_check(ui, Icon::Check, prio.label(), current == Some(prio))
-                    .clicked()
-                {
+                if widgets::menu_check(ui, None, prio.label(), current == Some(prio)).clicked() {
                     actions.push(Action::Priority {
                         pid: *pid,
                         label: label.clone(),

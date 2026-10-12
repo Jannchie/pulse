@@ -289,7 +289,7 @@ fn menu(ui: &mut Ui, s: &Service, actions: &mut Vec<ServiceAction>) {
     if s.start_type != StartType::Boot {
         widgets::submenu(ui, Icon::Settings, "启动类型", 170.0, |ui| {
             for t in StartType::EDITABLE {
-                if widgets::menu_check(ui, Icon::Check, t.label(), s.start_type == t).clicked()
+                if widgets::menu_check(ui, None, t.label(), s.start_type == t).clicked()
                     && s.start_type != t
                 {
                     actions.push(ServiceAction::SetStartType(name.clone(), t));

@@ -755,6 +755,10 @@ pub fn segmented(ui: &mut Ui, value: &mut bool, items: [(Icon, &str); 2]) -> boo
 
 /// 右键菜单项：图标 + 文字，整行可点。
 pub fn menu_item(ui: &mut Ui, glyph: Icon, label: &str, danger: bool) -> Response {
+    menu_entry(ui, Some(glyph), label, danger)
+}
+
+fn menu_entry(ui: &mut Ui, glyph: Option<Icon>, label: &str, danger: bool) -> Response {
     let (resp, bg) = menu_row(ui, glyph, label, danger);
     if resp.hovered() {
         let p = Palette::of(ui.ctx());
@@ -769,26 +773,29 @@ pub fn menu_item(ui: &mut Ui, glyph: Icon, label: &str, danger: bool) -> Respons
     resp
 }
 
-/// 菜单行的公共部分：图标 + 文字，背景留一个占位，由调用方按悬停 / 展开状态填充。
+/// 菜单行的公共部分：（可选的）图标 + 文字，背景留一个占位，由调用方按悬停 / 展开状态填充。
+/// 宽度跟随菜单（菜单本身定宽）。
 fn menu_row(
     ui: &mut Ui,
-    glyph: Icon,
+    glyph: Option<Icon>,
     label: &str,
     danger: bool,
 ) -> (Response, egui::layers::ShapeIdx) {
     let p = Palette::of(ui.ctx());
-    let width = ui.available_width().max(200.0);
     let bg = ui.painter().add(Shape::Noop);
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
-    icon(
-        ui,
-        glyph,
-        pos2(rect.left() + 14.0, rect.center().y),
-        15.0,
-        if danger { p.danger } else { p.muted },
-    );
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+    if let Some(glyph) = glyph {
+        icon(
+            ui,
+            glyph,
+            pos2(rect.left() + 14.0, rect.center().y),
+            15.0,
+            if danger { p.danger } else { p.muted },
+        );
+    }
+    let text_x = if glyph.is_some() { 30.0 } else { 12.0 };
     ui.painter().text(
-        pos2(rect.left() + 30.0, rect.center().y),
+        pos2(rect.left() + text_x, rect.center().y),
         Align2::LEFT_CENTER,
         label,
         FontId::proportional(13.0),
@@ -839,10 +846,10 @@ pub fn switch(ui: &mut Ui, on: &mut bool, enabled: bool) -> Response {
     resp
 }
 
-/// 带勾选标记的菜单项（勾在右侧）。
-pub fn menu_check(ui: &mut Ui, glyph: Icon, label: &str, checked: bool) -> Response {
+/// 带勾选标记的菜单项（勾在右侧）。单选列表里的选项不需要图标，传 `None`。
+pub fn menu_check(ui: &mut Ui, glyph: Option<Icon>, label: &str, checked: bool) -> Response {
     let p = Palette::of(ui.ctx());
-    let resp = menu_item(ui, glyph, label, false);
+    let resp = menu_entry(ui, glyph, label, false);
     if checked {
         icon(
             ui,
@@ -995,10 +1002,13 @@ pub fn right_label(ui: &mut Ui, text: RichText) {
     });
 }
 
-/// 右键菜单顶部的标题行。
-pub fn menu_heading(ui: &mut Ui, text: &str, min_width: f32) {
+/// 右键菜单顶部的标题行。`width` 大于 0 时同时定下菜单宽度（菜单项按可用宽度铺满，
+/// egui 自带的 context_menu 不定宽会被撑开）；浮动菜单自己定宽，传 0。
+pub fn menu_heading(ui: &mut Ui, text: &str, width: f32) {
     let p = Palette::of(ui.ctx());
-    ui.set_min_width(min_width);
+    if width > 0.0 {
+        ui.set_width(width);
+    }
     ui.spacing_mut().item_spacing.y = 2.0;
     ui.add_space(2.0);
     ui.label(RichText::new(text).size(12.0).color(p.muted));
@@ -1048,7 +1058,7 @@ pub fn submenu(
     add_contents: impl FnOnce(&mut Ui),
 ) {
     let p = Palette::of(ui.ctx());
-    let (resp, bg) = menu_row(ui, glyph, label, false);
+    let (resp, bg) = menu_row(ui, Some(glyph), label, false);
     icon(
         ui,
         Icon::ChevronRight,
