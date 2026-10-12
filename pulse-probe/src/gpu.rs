@@ -8,8 +8,8 @@ use windows::Wdk::Graphics::Direct3D::{
     D3DKMT_QUERYADAPTERINFO, D3DKMT_QUERYSTATISTICS, D3DKMT_QUERYSTATISTICS_ADAPTER,
     D3DKMT_QUERYSTATISTICS_NODE, D3DKMT_QUERYSTATISTICS_PROCESS_NODE,
     D3DKMT_QUERYSTATISTICS_PROCESS_SEGMENT, D3DKMT_QUERYSTATISTICS_SEGMENT, D3DKMTCloseAdapter,
-    D3DKMTOpenAdapterFromLuid, D3DKMTQueryAdapterInfo, D3DKMTQueryStatistics, DXGK_ENGINE_TYPE_3D,
-    DXGK_ENGINE_TYPE_COPY, DXGK_ENGINE_TYPE_CRYPTO, DXGK_ENGINE_TYPE_OVERLAY,
+    D3DKMTOpenAdapterFromLuid, D3DKMTQueryAdapterInfo, D3DKMTQueryStatistics, DXGK_ENGINE_TYPE,
+    DXGK_ENGINE_TYPE_3D, DXGK_ENGINE_TYPE_COPY, DXGK_ENGINE_TYPE_CRYPTO, DXGK_ENGINE_TYPE_OVERLAY,
     DXGK_ENGINE_TYPE_SCENE_ASSEMBLY, DXGK_ENGINE_TYPE_VIDEO_DECODE, DXGK_ENGINE_TYPE_VIDEO_ENCODE,
     DXGK_ENGINE_TYPE_VIDEO_PROCESSING, KMTQAITYPE_ADAPTERADDRESS, KMTQAITYPE_NODEMETADATA,
 };
@@ -20,8 +20,37 @@ use windows::Win32::Graphics::Dxgi::{
 
 /// 一类引擎：名称与它包含的节点（在本适配器内的序号）。
 pub struct Engine {
-    pub name: String,
+    name: EngineName,
     nodes: Vec<usize>,
+}
+
+/// 引擎名称的来源；已知类型的名称随界面语言变化，所以不在枚举时就定成字符串。
+#[derive(PartialEq)]
+enum EngineName {
+    Kind(DXGK_ENGINE_TYPE),
+    Friendly(String),
+    Node(usize),
+}
+
+impl Engine {
+    pub fn name(&self) -> String {
+        use crate::{t, tf};
+        match &self.name {
+            EngineName::Kind(kind) => match *kind {
+                DXGK_ENGINE_TYPE_3D => "3D",
+                DXGK_ENGINE_TYPE_VIDEO_DECODE => t!("视频解码", "Video Decode"),
+                DXGK_ENGINE_TYPE_VIDEO_ENCODE => t!("视频编码", "Video Encode"),
+                DXGK_ENGINE_TYPE_VIDEO_PROCESSING => t!("视频处理", "Video Processing"),
+                DXGK_ENGINE_TYPE_SCENE_ASSEMBLY => t!("场景组装", "Scene Assembly"),
+                DXGK_ENGINE_TYPE_COPY => t!("复制", "Copy"),
+                DXGK_ENGINE_TYPE_OVERLAY => t!("叠加", "Overlay"),
+                _ => t!("加密", "Crypto"),
+            }
+            .to_string(),
+            EngineName::Friendly(s) => s.clone(),
+            EngineName::Node(n) => tf!("引擎 {n}", "Engine {n}"),
+        }
+    }
 }
 
 pub struct Adapter {
@@ -276,16 +305,16 @@ fn engines(luid: LUID, node_count: usize) -> Vec<Engine> {
             .unwrap_or(raw_name.len());
         let friendly = String::from_utf16_lossy(&raw_name[..len]);
         let name = match kind {
-            DXGK_ENGINE_TYPE_3D => "3D".to_string(),
-            DXGK_ENGINE_TYPE_VIDEO_DECODE => "视频解码".to_string(),
-            DXGK_ENGINE_TYPE_VIDEO_ENCODE => "视频编码".to_string(),
-            DXGK_ENGINE_TYPE_VIDEO_PROCESSING => "视频处理".to_string(),
-            DXGK_ENGINE_TYPE_SCENE_ASSEMBLY => "场景组装".to_string(),
-            DXGK_ENGINE_TYPE_COPY => "复制".to_string(),
-            DXGK_ENGINE_TYPE_OVERLAY => "叠加".to_string(),
-            DXGK_ENGINE_TYPE_CRYPTO => "加密".to_string(),
-            _ if !friendly.is_empty() => friendly,
-            _ => format!("引擎 {n}"),
+            DXGK_ENGINE_TYPE_3D
+            | DXGK_ENGINE_TYPE_VIDEO_DECODE
+            | DXGK_ENGINE_TYPE_VIDEO_ENCODE
+            | DXGK_ENGINE_TYPE_VIDEO_PROCESSING
+            | DXGK_ENGINE_TYPE_SCENE_ASSEMBLY
+            | DXGK_ENGINE_TYPE_COPY
+            | DXGK_ENGINE_TYPE_OVERLAY
+            | DXGK_ENGINE_TYPE_CRYPTO => EngineName::Kind(kind),
+            _ if !friendly.is_empty() => EngineName::Friendly(friendly),
+            _ => EngineName::Node(n),
         };
         match out.iter_mut().find(|e| e.name == name) {
             Some(e) => e.nodes.push(n),

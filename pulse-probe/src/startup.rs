@@ -43,11 +43,17 @@ pub enum Source {
 impl Source {
     pub fn label(self) -> &'static str {
         match self {
-            Source::UserRegistry => "注册表（当前用户）",
-            Source::MachineRegistry => "注册表（所有用户）",
-            Source::MachineRegistry32 => "注册表（所有用户，32 位）",
-            Source::UserFolder => "启动文件夹（当前用户）",
-            Source::CommonFolder => "启动文件夹（所有用户）",
+            Source::UserRegistry => crate::t!("注册表（当前用户）", "Registry (current user)"),
+            Source::MachineRegistry => crate::t!("注册表（所有用户）", "Registry (all users)"),
+            Source::MachineRegistry32 => {
+                crate::t!("注册表（所有用户，32 位）", "Registry (all users, 32-bit)")
+            }
+            Source::UserFolder => {
+                crate::t!("启动文件夹（当前用户）", "Startup folder (current user)")
+            }
+            Source::CommonFolder => {
+                crate::t!("启动文件夹（所有用户）", "Startup folder (all users)")
+            }
         }
     }
 

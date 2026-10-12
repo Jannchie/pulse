@@ -5,7 +5,9 @@ use eframe::egui::{
     Stroke, Ui, pos2, vec2,
 };
 
-use crate::settings::{SearchEngine, Settings, Speed, ThemeChoice};
+use pulse_probe::{t, tf};
+
+use crate::settings::{Language, SearchEngine, Settings, Speed, ThemeChoice};
 use crate::theme::{Palette, semibold};
 use crate::widgets;
 
@@ -33,18 +35,21 @@ pub fn show(
                     ui.set_width(w);
                     ui.add_space(8.0);
                     ui.label(
-                        RichText::new("设置")
+                        RichText::new(t!("设置", "Settings"))
                             .size(22.0)
                             .family(semibold())
                             .color(Palette::of(ui.ctx()).text),
                     );
                     ui.add_space(4.0);
 
-                    group(ui, "常规", |ui| {
+                    group(ui, t!("常规", "General"), |ui| {
                         row(
                             ui,
-                            "更新速度",
-                            "数据刷新的间隔。暂停后画面停在当前数值。",
+                            t!("更新速度", "Update speed"),
+                            t!(
+                                "数据刷新的间隔。暂停后画面停在当前数值。",
+                                "How often data refreshes. Paused freezes the current values."
+                            ),
                             |ui| {
                                 let labels = Speed::ALL.map(|s| s.label());
                                 let cur = Speed::ALL
@@ -59,8 +64,11 @@ pub fn show(
                         divider(ui);
                         row(
                             ui,
-                            "搜索引擎",
-                            "右键菜单里的“在线搜索”用它，在默认浏览器中打开。",
+                            t!("搜索引擎", "Search engine"),
+                            t!(
+                                "右键菜单里的“在线搜索”用它，在默认浏览器中打开。",
+                                "Used by “Search online”. Opens in your default browser."
+                            ),
                             |ui| {
                                 let labels = SearchEngine::ALL.map(|e| e.label());
                                 let cur = SearchEngine::ALL
@@ -75,19 +83,22 @@ pub fn show(
                         divider(ui);
                         row(
                             ui,
-                            "窗口置顶",
-                            "始终显示在其他窗口之上。",
+                            t!("窗口置顶", "Always on top"),
+                            t!("始终显示在其他窗口之上。", "Keep Pulse above other windows."),
                             |ui| {
                                 widgets::switch(ui, &mut settings.always_on_top, true);
                             },
                         );
                     });
 
-                    group(ui, "外观", |ui| {
+                    group(ui, t!("外观", "Appearance"), |ui| {
                         row(
                             ui,
-                            "主题",
-                            "跟随系统会随 Windows 的深浅色设置自动切换。",
+                            t!("主题", "Theme"),
+                            t!(
+                                "跟随系统会随 Windows 的深浅色设置自动切换。",
+                                "System follows your Windows light or dark mode."
+                            ),
                             |ui| {
                                 let labels = ThemeChoice::ALL.map(|t| t.label());
                                 let cur = ThemeChoice::ALL
@@ -99,26 +110,54 @@ pub fn show(
                                 }
                             },
                         );
-                    });
-
-                    group(ui, "进程列表", |ui| {
+                        divider(ui);
                         row(
                             ui,
-                            "按程序分组",
-                            "同名进程合并为一行，可展开查看。",
+                            t!("语言", "Language"),
+                            t!(
+                                "跟随系统时，Windows 显示语言为中文则用中文，否则用英文。",
+                                "System uses Chinese if Windows is in Chinese, otherwise English."
+                            ),
+                            |ui| {
+                                let labels = Language::ALL.map(|l| l.label());
+                                let cur = Language::ALL
+                                    .iter()
+                                    .position(|&l| l == settings.language)
+                                    .unwrap_or(0);
+                                if let Some(i) = choice(ui, &labels, cur) {
+                                    settings.language = Language::ALL[i];
+                                }
+                            },
+                        );
+                    });
+
+                    group(ui, t!("进程列表", "Process list"), |ui| {
+                        row(
+                            ui,
+                            t!("按程序分组", "Group by program"),
+                            t!(
+                                "同名进程合并为一行，可展开查看。",
+                                "Combine processes with the same name into one expandable row."
+                            ),
                             |ui| {
                                 widgets::switch(ui, &mut settings.grouped, true);
                             },
                         );
                     });
 
-                    group(ui, "系统", |ui| {
+                    group(ui, t!("系统", "System"), |ui| {
                         let desc = if elevated {
-                            "按 Ctrl+Shift+Esc 或从任务栏打开任务管理器时，改为启动 Pulse。"
+                            t!(
+                                "按 Ctrl+Shift+Esc 或从任务栏打开任务管理器时，改为启动 Pulse。",
+                                "Open Pulse instead when you press Ctrl+Shift+Esc or open Task Manager from the taskbar."
+                            )
                         } else {
-                            "按 Ctrl+Shift+Esc 时启动 Pulse。需要以管理员身份运行 Pulse 才能修改。"
+                            t!(
+                                "按 Ctrl+Shift+Esc 时启动 Pulse。需要以管理员身份运行 Pulse 才能修改。",
+                                "Open Pulse with Ctrl+Shift+Esc. Run Pulse as administrator to change this."
+                            )
                         };
-                        row(ui, "替换任务管理器", desc, |ui| {
+                        row(ui, t!("替换任务管理器", "Replace Task Manager"), desc, |ui| {
                             let mut on = taskmgr_replaced;
                             if widgets::switch(ui, &mut on, elevated).changed() {
                                 action = Some(SettingsAction::SetTaskmgrReplaced(on));
@@ -126,7 +165,7 @@ pub fn show(
                         });
                     });
 
-                    group(ui, "关于", |ui| {
+                    group(ui, t!("关于", "About"), |ui| {
                         ui.add_space(16.0);
                         ui.horizontal(|ui| {
                             widgets::brand_mark(ui, 56.0);
@@ -142,7 +181,11 @@ pub fn show(
                                         .color(p.text),
                                 );
                                 ui.label(
-                                    RichText::new(format!("版本 {}", env!("CARGO_PKG_VERSION")))
+                                    RichText::new(tf!(
+                                        "版本 {}",
+                                        "Version {}",
+                                        env!("CARGO_PKG_VERSION")
+                                    ))
                                         .size(12.0)
                                         .color(p.muted),
                                 );
@@ -179,28 +222,33 @@ fn group(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
 }
 
 /// 一行设置：左边名称 + 说明，右边控件，两者都在行内垂直居中。
+/// 说明在控件左侧换行，不会压到控件上（英文说明往往更长）。
 fn row(ui: &mut Ui, title: &str, desc: &str, control: impl FnOnce(&mut Ui)) {
     const H: f32 = 64.0;
     let p = Palette::of(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), H), Sense::hover());
-    let title = ui
-        .painter()
-        .layout_no_wrap(title.to_string(), FontId::proportional(13.5), p.text);
-    let desc = ui
-        .painter()
-        .layout_no_wrap(desc.to_string(), FontId::proportional(12.0), p.muted);
-    let gap = 3.0;
-    let top = rect.center().y - (title.size().y + gap + desc.size().y) / 2.0;
-    let desc_top = top + title.size().y + gap;
-    ui.painter().galley(pos2(rect.left(), top), title, p.text);
-    ui.painter()
-        .galley(pos2(rect.left(), desc_top), desc, p.muted);
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
             .layout(Layout::right_to_left(Align::Center)),
     );
     control(&mut child);
+    let control_w = child.min_rect().width();
+    let title = ui
+        .painter()
+        .layout_no_wrap(title.to_string(), FontId::proportional(13.5), p.text);
+    let desc = ui.painter().layout(
+        desc.to_string(),
+        FontId::proportional(12.0),
+        p.muted,
+        (rect.width() - control_w - 24.0).max(120.0),
+    );
+    let gap = 3.0;
+    let top = rect.center().y - (title.size().y + gap + desc.size().y) / 2.0;
+    let desc_top = top + title.size().y + gap;
+    ui.painter().galley(pos2(rect.left(), top), title, p.text);
+    ui.painter()
+        .galley(pos2(rect.left(), desc_top), desc, p.muted);
 }
 
 fn divider(ui: &mut Ui) {

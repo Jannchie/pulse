@@ -5,6 +5,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Align, Color32, Layout, Rect, RichText, Sense, Ui, pos2, vec2};
 use egui_extras::{Column, TableBuilder};
 use pulse_probe::startup::StartupItem;
+use pulse_probe::{t, tf};
 
 use crate::icons::Icons;
 use crate::icons_gen::Icon;
@@ -83,7 +84,15 @@ pub fn show(
         .collect();
 
     ui.horizontal(|ui| {
-        let resp = widgets::search_box(ui, &mut st.filter, 300.0, "搜索名称、发布者、命令行");
+        let resp = widgets::search_box(
+            ui,
+            &mut st.filter,
+            300.0,
+            t!(
+                "搜索名称、发布者、命令行",
+                "Search name, publisher, command line"
+            ),
+        );
         if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
             resp.request_focus();
         }
@@ -91,12 +100,20 @@ pub fn show(
             st.filter.clear();
         }
         for (f, glyph, label) in [
-            (Filter::All, Icon::List, format!("全部 {}", items.len())),
-            (Filter::Enabled, Icon::Play, format!("已启用 {enabled}")),
+            (
+                Filter::All,
+                Icon::List,
+                tf!("全部 {}", "All {}", items.len()),
+            ),
+            (
+                Filter::Enabled,
+                Icon::Play,
+                tf!("已启用 {enabled}", "Enabled {enabled}"),
+            ),
             (
                 Filter::Disabled,
                 Icon::Pause,
-                format!("已禁用 {}", items.len() - enabled),
+                tf!("已禁用 {}", "Disabled {}", items.len() - enabled),
             ),
         ] {
             let mut on = st.state == f;
@@ -105,20 +122,33 @@ pub fn show(
             }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if widgets::tool_button(ui, Icon::Refresh, "刷新", true, false).clicked() {
+            if widgets::tool_button(ui, Icon::Refresh, t!("刷新", "Refresh"), true, false).clicked()
+            {
                 actions.push(StartupAction::Refresh);
             }
-            if widgets::tool_button(ui, Icon::FolderOpen, "启动文件夹", true, false)
-                .on_hover_text("打开当前用户的启动文件夹，放进去的快捷方式会在登录时运行")
-                .clicked()
+            if widgets::tool_button(
+                ui,
+                Icon::FolderOpen,
+                t!("启动文件夹", "Startup folder"),
+                true,
+                false,
+            )
+            .on_hover_text(t!(
+                "打开当前用户的启动文件夹，放进去的快捷方式会在登录时运行",
+                "Open your Startup folder. Shortcuts placed there run when you sign in"
+            ))
+            .clicked()
             {
                 actions.push(StartupAction::OpenFolder);
             }
             if !elevated {
                 ui.label(
-                    RichText::new("修改\"所有用户\"的启动项需要管理员权限")
-                        .size(12.0)
-                        .color(p.faint),
+                    RichText::new(t!(
+                        "修改\"所有用户\"的启动项需要管理员权限",
+                        "Changing all-users items requires admin rights"
+                    ))
+                    .size(12.0)
+                    .color(p.faint),
                 );
             }
         });
@@ -135,7 +165,12 @@ pub fn show(
         .column(Column::exact(120.0))
         .column(Column::exact(200.0).clip(true))
         .header(34.0, |mut h| {
-            for label in ["名称", "发布者", "状态", "来源"] {
+            for label in [
+                t!("名称", "Name"),
+                t!("发布者", "Publisher"),
+                t!("状态", "Status"),
+                t!("来源", "Source"),
+            ] {
                 h.col(|ui| widgets::header_label(ui, label, false));
             }
         })
@@ -194,9 +229,9 @@ pub fn show(
                         actions.push(StartupAction::SetEnabled(i, on));
                     }
                     let label = if it.enabled {
-                        "已启用".to_string()
+                        t!("已启用", "Enabled")
                     } else {
-                        "已禁用".to_string()
+                        t!("已禁用", "Disabled")
                     };
                     let resp = ui.label(RichText::new(label).size(12.5).color(if it.enabled {
                         p.text
@@ -204,9 +239,12 @@ pub fn show(
                         p.faint
                     }));
                     if locked {
-                        resp.on_hover_text("需要以管理员身份运行 Pulse");
+                        resp.on_hover_text(t!(
+                            "需要以管理员身份运行 Pulse",
+                            "Requires running Pulse as administrator"
+                        ));
                     } else if let Some(t) = it.disabled_at {
-                        resp.on_hover_text(format!("禁用于 {}", fmt_filetime(t)));
+                        resp.on_hover_text(tf!("禁用于 {}", "Disabled on {}", fmt_filetime(t)));
                     }
                 });
                 row.col(|ui| {
@@ -233,7 +271,9 @@ pub fn show(
     if rows.is_empty() {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
-            ui.label(RichText::new("没有匹配的启动项").color(p.faint));
+            ui.label(
+                RichText::new(t!("没有匹配的启动项", "No matching startup apps")).color(p.faint),
+            );
         });
     }
     actions
@@ -244,9 +284,9 @@ fn menu(ui: &mut Ui, i: usize, it: &StartupItem, elevated: bool, actions: &mut V
     widgets::menu_heading(ui, &it.name, 210.0);
     let locked = it.source.needs_admin() && !elevated;
     let (glyph, label) = if it.enabled {
-        (Icon::Pause, "禁用")
+        (Icon::Pause, t!("禁用", "Disable"))
     } else {
-        (Icon::Play, "启用")
+        (Icon::Play, t!("启用", "Enable"))
     };
     let resp = ui
         .add_enabled_ui(!locked, |ui| widgets::menu_item(ui, glyph, label, false))
@@ -256,17 +296,31 @@ fn menu(ui: &mut Ui, i: usize, it: &StartupItem, elevated: bool, actions: &mut V
     }
     ui.separator();
     if let Some(path) = &it.path {
-        if widgets::menu_item(ui, Icon::FolderOpen, "打开文件位置", false).clicked() {
+        if widgets::menu_item(
+            ui,
+            Icon::FolderOpen,
+            t!("打开文件位置", "Open file location"),
+            false,
+        )
+        .clicked()
+        {
             actions.push(StartupAction::Reveal(path.clone()));
         }
-        if widgets::menu_item(ui, Icon::Info, "属性", false).clicked() {
+        if widgets::menu_item(ui, Icon::Info, t!("属性", "Properties"), false).clicked() {
             actions.push(StartupAction::Properties(path.clone()));
         }
     }
-    if widgets::menu_item(ui, Icon::Globe, "在线搜索", false).clicked() {
+    if widgets::menu_item(ui, Icon::Globe, t!("在线搜索", "Search online"), false).clicked() {
         actions.push(StartupAction::Search(it.name.clone()));
     }
-    if widgets::menu_item(ui, Icon::Terminal, "复制命令行", false).clicked() {
+    if widgets::menu_item(
+        ui,
+        Icon::Terminal,
+        t!("复制命令行", "Copy command line"),
+        false,
+    )
+    .clicked()
+    {
         actions.push(StartupAction::Copy(it.command.clone()));
     }
 }

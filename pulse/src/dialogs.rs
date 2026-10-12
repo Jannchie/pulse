@@ -6,7 +6,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, Frame, Id, Key, Layout, Margin, Order, RichText,
     Sense, Shadow, Stroke, Ui, vec2,
 };
-use pulse_probe::Snapshot;
+use pulse_probe::{Snapshot, t, tf};
 
 use crate::icons_gen::Icon;
 use crate::theme::{Palette, semibold};
@@ -60,15 +60,22 @@ pub fn confirm_kill(ctx: &egui::Context, req: &KillRequest, snap: &Snapshot) -> 
     modal(ctx, "kill-confirm", 400.0, |ui| {
         let mut decision = None;
         ui.spacing_mut().item_spacing.y = 6.0;
-        danger_title(ui, &format!("结束 {}？", req.label));
+        danger_title(ui, &tf!("结束 {}？", "End {}?", req.label));
         ui.add_space(6.0);
 
         let n = targets.len();
         ui.label(
             RichText::new(if n == 1 {
-                "将立即结束以下进程：".to_string()
+                t!(
+                    "将立即结束以下进程：",
+                    "This process will be ended immediately:"
+                )
+                .to_string()
             } else {
-                format!("将立即结束以下 {n} 个进程：")
+                tf!(
+                    "将立即结束以下 {n} 个进程：",
+                    "These {n} processes will be ended immediately:"
+                )
             })
             .color(p.muted),
         );
@@ -93,50 +100,67 @@ pub fn confirm_kill(ctx: &egui::Context, req: &KillRequest, snap: &Snapshot) -> 
                 }
                 if n > SHOWN {
                     ui.label(
-                        RichText::new(format!("等 {} 个", n - SHOWN))
+                        RichText::new(tf!("等 {} 个", "and {} more", n - SHOWN))
                             .size(12.0)
                             .color(p.faint),
                     );
                 }
                 if n == 0 {
-                    ui.label(RichText::new("进程已经退出").size(12.0).color(p.faint));
+                    ui.label(
+                        RichText::new(t!("进程已经退出", "The process has already exited"))
+                            .size(12.0)
+                            .color(p.faint),
+                    );
                 }
             });
 
         ui.add_space(2.0);
         ui.label(
-            RichText::new("进程不会收到正常退出的机会，未保存的数据将会丢失。")
-                .size(12.5)
-                .color(p.muted),
+            RichText::new(t!(
+                "进程不会收到正常退出的机会，未保存的数据将会丢失。",
+                "The process won't get a chance to exit normally. Unsaved data will be lost."
+            ))
+            .size(12.5)
+            .color(p.muted),
         );
         if !critical.is_empty() {
             warning(
                 ui,
-                &format!(
+                &tf!(
                     "{} 是系统关键进程，结束它可能导致蓝屏或注销。",
-                    critical.join("、")
+                    "{} is a critical system process. Ending it may crash Windows or sign you out.",
+                    critical.join(t!("、", ", "))
                 ),
             );
         }
         if includes_self {
-            warning(ui, "其中包含 Pulse 自己，结束后本窗口会关闭。");
+            warning(
+                ui,
+                t!(
+                    "其中包含 Pulse 自己，结束后本窗口会关闭。",
+                    "This includes Pulse itself. This window will close."
+                ),
+            );
         }
 
         ui.add_space(12.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            if button(ui, "结束进程", Kind::Danger, true).clicked()
+            if button(ui, t!("结束进程", "End process"), Kind::Danger, true).clicked()
                 || ui.input(|i| i.key_pressed(Key::Enter))
             {
                 decision = Some(Decision::Confirm);
             }
-            if button(ui, "取消", Kind::Secondary, true).clicked() {
+            if button(ui, t!("取消", "Cancel"), Kind::Secondary, true).clicked() {
                 decision = Some(Decision::Cancel);
             }
             ui.label(
-                RichText::new("Enter 确认 · Esc 取消")
-                    .size(11.5)
-                    .color(p.faint),
+                RichText::new(t!(
+                    "Enter 确认 · Esc 取消",
+                    "Enter to confirm · Esc to cancel"
+                ))
+                .size(11.5)
+                .color(p.faint),
             );
         });
         decision
@@ -287,7 +311,7 @@ pub fn toasts(ctx: &egui::Context, toasts: &mut Vec<Toast>) {
             .response;
         if resp
             .interact(Sense::click())
-            .on_hover_text("点击关闭")
+            .on_hover_text(t!("点击关闭", "Click to dismiss"))
             .clicked()
         {
             dismissed = Some(i);
@@ -377,15 +401,19 @@ pub fn affinity(ctx: &egui::Context, d: &mut AffinityDialog) -> Option<Decision>
     modal(ctx, "affinity", 440.0, |ui| {
         let mut decision = None;
         ui.label(
-            RichText::new("处理器相关性")
+            RichText::new(t!("处理器相关性", "Processor affinity"))
                 .size(16.0)
                 .family(semibold())
                 .color(p.text),
         );
         ui.label(
-            RichText::new(format!("允许 {} 在哪些处理器上运行", d.label))
-                .size(12.5)
-                .color(p.muted),
+            RichText::new(tf!(
+                "允许 {} 在哪些处理器上运行",
+                "Choose which processors {} can run on",
+                d.label
+            ))
+            .size(12.5)
+            .color(p.muted),
         );
         ui.add_space(10.0);
         let cpus: Vec<u32> = (0..64).filter(|i| d.system & (1u64 << i) != 0).collect();
@@ -405,12 +433,13 @@ pub fn affinity(ctx: &egui::Context, d: &mut AffinityDialog) -> Option<Decision>
             });
         ui.add_space(12.0);
         ui.horizontal(|ui| {
-            if ui.link("全选").clicked() {
+            if ui.link(t!("全选", "Select all")).clicked() {
                 d.mask = d.system;
             }
             ui.label(
-                RichText::new(format!(
+                RichText::new(tf!(
                     "已选 {} / {}",
+                    "{} of {} selected",
                     (d.mask & d.system).count_ones(),
                     cpus.len()
                 ))
@@ -420,12 +449,12 @@ pub fn affinity(ctx: &egui::Context, d: &mut AffinityDialog) -> Option<Decision>
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let valid = d.mask & d.system != 0;
-                if button(ui, "确定", Kind::Primary, valid).clicked()
+                if button(ui, t!("确定", "OK"), Kind::Primary, valid).clicked()
                     || (valid && ui.input(|i| i.key_pressed(Key::Enter)))
                 {
                     decision = Some(Decision::Confirm);
                 }
-                if button(ui, "取消", Kind::Secondary, true).clicked() {
+                if button(ui, t!("取消", "Cancel"), Kind::Secondary, true).clicked() {
                     decision = Some(Decision::Cancel);
                 }
             });
@@ -453,21 +482,27 @@ pub fn run_task(ctx: &egui::Context, d: &mut RunDialog, elevated: bool) -> Optio
             let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
             widgets::icon(ui, Icon::Plus, r.center(), 20.0, p.accent);
             ui.label(
-                RichText::new("运行新任务")
+                RichText::new(t!("运行新任务", "Run new task"))
                     .size(16.0)
                     .family(semibold())
                     .color(p.text),
             );
         });
         ui.label(
-            RichText::new("输入程序、文件夹、文档或网址，Windows 会用对应的程序打开。")
-                .size(12.5)
-                .color(p.muted),
+            RichText::new(t!(
+                "输入程序、文件夹、文档或网址，Windows 会用对应的程序打开。",
+                "Type the name of a program, folder, document or website, and Windows will open it."
+            ))
+            .size(12.5)
+            .color(p.muted),
         );
         ui.add_space(8.0);
         let edit = ui.add(
             egui::TextEdit::singleline(&mut d.command)
-                .hint_text(r"例如 notepad、cmd、C:\Windows、https://…")
+                .hint_text(t!(
+                    r"例如 notepad、cmd、C:\Windows、https://…",
+                    r"e.g. notepad, cmd, C:\Windows, https://…"
+                ))
                 .desired_width(f32::INFINITY)
                 .margin(Margin::symmetric(10, 8)),
         );
@@ -478,12 +513,21 @@ pub fn run_task(ctx: &egui::Context, d: &mut RunDialog, elevated: bool) -> Optio
         ui.add_space(6.0);
         if elevated {
             ui.label(
-                RichText::new("Pulse 正以管理员身份运行，新任务也会继承管理员权限。")
-                    .size(12.0)
-                    .color(p.faint),
+                RichText::new(t!(
+                    "Pulse 正以管理员身份运行，新任务也会继承管理员权限。",
+                    "Pulse is running as administrator, so the new task will be too."
+                ))
+                .size(12.0)
+                .color(p.faint),
             );
         } else {
-            ui.checkbox(&mut d.admin, "以管理员身份运行");
+            ui.checkbox(
+                &mut d.admin,
+                t!(
+                    "以管理员身份运行",
+                    "Create this task with administrative privileges"
+                ),
+            );
         }
         if let Some(e) = &d.error {
             ui.label(RichText::new(e).size(12.5).color(p.danger));
@@ -492,12 +536,12 @@ pub fn run_task(ctx: &egui::Context, d: &mut RunDialog, elevated: bool) -> Optio
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let ready = !d.command.trim().is_empty();
-            if button(ui, "运行", Kind::Primary, ready).clicked()
+            if button(ui, t!("运行", "Run"), Kind::Primary, ready).clicked()
                 || (ready && ui.input(|i| i.key_pressed(Key::Enter)))
             {
                 decision = Some(Decision::Confirm);
             }
-            if button(ui, "取消", Kind::Secondary, true).clicked() {
+            if button(ui, t!("取消", "Cancel"), Kind::Secondary, true).clicked() {
                 decision = Some(Decision::Cancel);
             }
         });
@@ -527,7 +571,7 @@ pub fn confirm(
             if button(ui, button_label, Kind::Danger, true).clicked() {
                 decision = Some(Decision::Confirm);
             }
-            if button(ui, "取消", Kind::Secondary, true).clicked() {
+            if button(ui, t!("取消", "Cancel"), Kind::Secondary, true).clicked() {
                 decision = Some(Decision::Cancel);
             }
         });

@@ -4,6 +4,7 @@
 pub mod control;
 pub mod disk;
 pub mod gpu;
+pub mod i18n;
 pub mod icon;
 pub mod net;
 pub mod nic;
@@ -248,7 +249,7 @@ impl Collector {
         } else {
             match net::NetMonitor::start() {
                 Ok(m) => (Some(m), NetStatus::Running),
-                Err(e) => (None, NetStatus::Failed(format!("ETW 启动失败：{}", e.0))),
+                Err(e) => (None, NetStatus::Failed(e.0.to_string())),
             }
         };
         Self {
@@ -304,7 +305,7 @@ impl Collector {
                         engines: a
                             .engines
                             .iter()
-                            .map(|e| e.name.clone())
+                            .map(gpu::Engine::name)
                             .zip(s.engines)
                             .collect(),
                         dedicated_used: s.dedicated_used,

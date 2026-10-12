@@ -259,7 +259,20 @@ pub struct MemoryModule {
     /// MT/s；配置速度优先，没有时取额定速度。
     pub speed: u32,
     pub kind: &'static str,
-    pub form_factor: &'static str,
+    /// SMBIOS 的 Form Factor 字段，用 [`MemoryModule::form_factor`] 取名称。
+    form_factor_code: u8,
+}
+
+impl MemoryModule {
+    pub fn form_factor(&self) -> &'static str {
+        match self.form_factor_code {
+            0x09 => "DIMM",
+            0x0D => "SODIMM",
+            0x0F => "FB-DIMM",
+            0x0B => crate::t!("板载", "Onboard"),
+            _ => "",
+        }
+    }
 }
 
 /// 从 SMBIOS 类型 17（Memory Device）读取已插入的内存条，以及插槽总数（含空插槽）。
@@ -348,13 +361,7 @@ pub fn memory_modules() -> (Vec<MemoryModule>, u32) {
                         0x23 => "LPDDR5",
                         _ => "",
                     },
-                    form_factor: match formatted[0x0E] {
-                        0x09 => "DIMM",
-                        0x0D => "SODIMM",
-                        0x0F => "FB-DIMM",
-                        0x0B => "板载",
-                        _ => "",
-                    },
+                    form_factor_code: formatted[0x0E],
                 });
             }
         }

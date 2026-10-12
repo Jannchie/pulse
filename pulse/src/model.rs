@@ -99,8 +99,8 @@ pub enum Section {
 impl Section {
     pub fn label(self) -> &'static str {
         match self {
-            Section::Apps => "应用",
-            Section::Background => "后台进程",
+            Section::Apps => pulse_probe::t!("应用", "Apps"),
+            Section::Background => pulse_probe::t!("后台进程", "Background processes"),
         }
     }
 }

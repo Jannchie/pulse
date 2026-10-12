@@ -52,7 +52,7 @@ fn main() {
             gb(mm.size),
             mm.kind,
             mm.speed,
-            mm.form_factor
+            mm.form_factor()
         );
     }
     for n in &s.nics {

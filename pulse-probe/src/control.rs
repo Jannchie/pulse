@@ -177,12 +177,12 @@ impl Priority {
 
     pub fn label(self) -> &'static str {
         match self {
-            Priority::Idle => "低",
-            Priority::BelowNormal => "低于正常",
-            Priority::Normal => "正常",
-            Priority::AboveNormal => "高于正常",
-            Priority::High => "高",
-            Priority::Realtime => "实时",
+            Priority::Idle => crate::t!("低", "Low"),
+            Priority::BelowNormal => crate::t!("低于正常", "Below normal"),
+            Priority::Normal => crate::t!("正常", "Normal"),
+            Priority::AboveNormal => crate::t!("高于正常", "Above normal"),
+            Priority::High => crate::t!("高", "High"),
+            Priority::Realtime => crate::t!("实时", "Realtime"),
         }
     }
 
@@ -351,7 +351,7 @@ pub fn open_url(url: &str) {
 pub fn run(command: &str, admin: bool) -> std::result::Result<(), String> {
     let command = command.trim();
     if command.is_empty() {
-        return Err("命令为空".into());
+        return Err(crate::t!("命令为空", "The command is empty").into());
     }
     let (file, args) = split_command(command);
     let file_w = crate::wide(&file);
@@ -374,9 +374,12 @@ pub fn run(command: &str, admin: bool) -> std::result::Result<(), String> {
     // ShellExecute 返回值 ≤ 32 表示失败。
     match r.0 as usize {
         n if n > 32 => Ok(()),
-        2 | 3 => Err(format!("找不到 \"{file}\"")),
-        5 => Err("拒绝访问".into()),
-        _ => Err(format!("无法运行（错误 {}）", r.0 as usize)),
+        2 | 3 => Err(crate::tf!("找不到 \"{file}\"", "Couldn't find \"{file}\"")),
+        5 => Err(crate::t!("拒绝访问", "Access is denied").into()),
+        n => Err(crate::tf!(
+            "无法运行（错误 {n}）",
+            "Couldn't run it (error {n})"
+        )),
     }
 }
 

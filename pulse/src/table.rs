@@ -8,7 +8,7 @@ use eframe::egui::{
 use egui_extras::{Column, TableBuilder};
 use pulse_probe::control::Priority;
 use pulse_probe::ports::Proto;
-use pulse_probe::{NetStatus, Process, Snapshot};
+use pulse_probe::{NetStatus, Process, Snapshot, t, tf};
 
 use crate::icons::Icons;
 use crate::icons_gen::Icon;
@@ -72,7 +72,7 @@ pub fn show(ui: &mut Ui, v: View) -> Vec<Action> {
     }
     builder
         .header(34.0, |mut h| {
-            let header = std::iter::once(("名称", SortKey::Name, false))
+            let header = std::iter::once((t!("名称", "Name"), SortKey::Name, false))
                 .chain(cols.iter().map(|c| (c.label(), c.key(), true)));
             for (label, key, right_aligned) in header {
                 h.col(|ui| {
@@ -239,7 +239,10 @@ fn header_cell(
     };
     let mut resp = widgets::table_header(ui, text, right_aligned, arrow);
     if key == SortKey::Network && !net_ok {
-        resp = resp.on_hover_text("逐进程网络统计需要管理员权限");
+        resp = resp.on_hover_text(t!(
+            "逐进程网络统计需要管理员权限",
+            "Per-process network stats require administrator rights"
+        ));
     }
     if resp
         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -335,10 +338,10 @@ fn name_cell(ui: &mut Ui, c: NameCell) {
                     widgets::icon(ui, Icon::Leaf, r.center(), 13.0, metric::GPU);
                 }
                 if c.status.hung {
-                    widgets::status_chip(ui, "无响应", p.danger);
+                    widgets::status_chip(ui, t!("无响应", "Not responding"), p.danger);
                 }
                 if c.status.suspended {
-                    widgets::status_chip(ui, "已挂起", p.muted);
+                    widgets::status_chip(ui, t!("已挂起", "Suspended"), p.muted);
                 }
                 if let Some(d) = c.secondary {
                     ui.add(egui::Label::new(RichText::new(d).size(12.0).color(p.faint)).truncate());
@@ -490,14 +493,14 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         Selection::Process(pid) => (
             format!("{name} ({pid})"),
             format!("{name} · {pid}"),
-            "结束进程".to_string(),
+            t!("结束进程", "End task").to_string(),
         ),
         Selection::Group(_) => {
             let n = pids.len();
             (
-                format!("{name} 的 {n} 个进程"),
-                format!("{name} · {n} 个进程"),
-                format!("结束全部 {n} 个进程"),
+                tf!("{name} 的 {n} 个进程", "{name} ({n} processes)"),
+                tf!("{name} · {n} 个进程", "{name} · {n} processes"),
+                tf!("结束全部 {n} 个进程", "End all {n} processes"),
             )
         }
     };
@@ -505,7 +508,7 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
 
     // 窗口相关
     if let Some(w) = window {
-        if widgets::menu_item(ui, Icon::Window, "切换到", false).clicked() {
+        if widgets::menu_item(ui, Icon::Window, t!("切换到", "Switch to"), false).clicked() {
             actions.push(Action::SwitchTo(w.hwnd));
         }
         let with_windows: Vec<u32> = members
@@ -513,9 +516,17 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
             .filter(|pr| pr.window.is_some())
             .map(|pr| pr.pid)
             .collect();
-        if widgets::menu_item(ui, Icon::WindowClose, "关闭窗口（正常退出）", false)
-            .on_hover_text("像点关闭按钮一样请求程序退出，程序可以先保存或询问")
-            .clicked()
+        if widgets::menu_item(
+            ui,
+            Icon::WindowClose,
+            t!("关闭窗口（正常退出）", "Close window"),
+            false,
+        )
+        .on_hover_text(t!(
+            "像点关闭按钮一样请求程序退出，程序可以先保存或询问",
+            "Asks the program to exit, like clicking its close button. It can save or ask first"
+        ))
+        .clicked()
         {
             actions.push(Action::Close {
                 pids: with_windows,
@@ -536,7 +547,7 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
             && widgets::menu_item(
                 ui,
                 Icon::GitBranch,
-                &format!("结束进程树（{} 个）", tree.len()),
+                &tf!("结束进程树（{} 个）", "End process tree ({})", tree.len()),
                 true,
             )
             .clicked()
@@ -545,7 +556,7 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
             let pids = tree.into_iter().rev().collect();
             actions.push(Action::Kill {
                 pids,
-                label: format!("{name} 及其子进程"),
+                label: tf!("{name} 及其子进程", "{name} and its child processes"),
             });
         }
     }
@@ -554,12 +565,15 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
     // 调度
     let all_suspended = members.iter().all(|pr| pr.suspended);
     let (glyph, text) = if all_suspended {
-        (Icon::Play, "恢复")
+        (Icon::Play, t!("恢复", "Resume"))
     } else {
-        (Icon::Pause, "挂起")
+        (Icon::Pause, t!("挂起", "Suspend"))
     };
     if widgets::menu_item(ui, glyph, text, false)
-        .on_hover_text("挂起会冻结进程的所有线程，恢复前它不会响应")
+        .on_hover_text(t!(
+            "挂起会冻结进程的所有线程，恢复前它不会响应",
+            "Suspending freezes all of the process's threads. It won't respond until resumed"
+        ))
         .clicked()
     {
         actions.push(Action::Suspend {
@@ -569,8 +583,11 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         });
     }
     let eff = members.iter().all(|pr| pr.efficiency);
-    if widgets::menu_check(ui, Some(Icon::Leaf), "效率模式", eff)
-        .on_hover_text("降低优先级并启用 EcoQoS，让进程省电、少抢前台资源")
+    if widgets::menu_check(ui, Some(Icon::Leaf), t!("效率模式", "Efficiency mode"), eff)
+        .on_hover_text(t!(
+            "降低优先级并启用 EcoQoS，让进程省电、少抢前台资源",
+            "Lowers priority and enables EcoQoS to save power and leave more resources for foreground apps"
+        ))
         .clicked()
     {
         actions.push(Action::Efficiency {
@@ -581,18 +598,26 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
     }
     if let Selection::Process(pid) = sel {
         let current = members.first().map(|pr| pr.priority);
-        widgets::submenu(ui, Icon::Gauge, "设置优先级", 160.0, |ui| {
-            for prio in Priority::ALL {
-                if widgets::menu_check(ui, None, prio.label(), current == Some(prio)).clicked() {
-                    actions.push(Action::Priority {
-                        pid: *pid,
-                        label: label.clone(),
-                        priority: prio,
-                    });
+        widgets::submenu(
+            ui,
+            Icon::Gauge,
+            t!("设置优先级", "Set priority"),
+            160.0,
+            |ui| {
+                for prio in Priority::ALL {
+                    if widgets::menu_check(ui, None, prio.label(), current == Some(prio)).clicked()
+                    {
+                        actions.push(Action::Priority {
+                            pid: *pid,
+                            label: label.clone(),
+                            priority: prio,
+                        });
+                    }
                 }
-            }
-        });
-        if widgets::menu_item(ui, Icon::Cpu, "设置相关性…", false).clicked() {
+            },
+        );
+        if widgets::menu_item(ui, Icon::Cpu, t!("设置相关性…", "Set affinity…"), false).clicked()
+        {
             actions.push(Action::Affinity {
                 pid: *pid,
                 label: label.clone(),
@@ -603,9 +628,17 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
 
     // 文件与诊断
     if let Selection::Process(pid) = sel {
-        if widgets::menu_item(ui, Icon::Download, "创建转储文件", false)
-            .on_hover_text("写完整内存转储到临时目录，供调试器分析")
-            .clicked()
+        if widgets::menu_item(
+            ui,
+            Icon::Download,
+            t!("创建转储文件", "Create dump file"),
+            false,
+        )
+        .on_hover_text(t!(
+            "写完整内存转储到临时目录，供调试器分析",
+            "Writes a full memory dump to the temp folder for debugging"
+        ))
+        .clicked()
         {
             actions.push(Action::Dump {
                 pid: *pid,
@@ -613,33 +646,46 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
             });
         }
         if services.contains_key(pid)
-            && widgets::menu_item(ui, Icon::Settings, "转到服务", false).clicked()
+            && widgets::menu_item(ui, Icon::Settings, t!("转到服务", "Go to services"), false)
+                .clicked()
         {
             actions.push(Action::GotoServices(*pid));
         }
     }
     if let Some(path) = path {
-        if widgets::menu_item(ui, Icon::FolderOpen, "打开文件位置", false).clicked() {
+        if widgets::menu_item(
+            ui,
+            Icon::FolderOpen,
+            t!("打开文件位置", "Open file location"),
+            false,
+        )
+        .clicked()
+        {
             actions.push(Action::Reveal(path.clone()));
         }
-        if widgets::menu_item(ui, Icon::Info, "属性", false).clicked() {
+        if widgets::menu_item(ui, Icon::Info, t!("属性", "Properties"), false).clicked() {
             actions.push(Action::Properties(path.clone()));
         }
     }
-    if widgets::menu_item(ui, Icon::Globe, "在线搜索", false).clicked() {
+    if widgets::menu_item(ui, Icon::Globe, t!("在线搜索", "Search online"), false).clicked() {
         actions.push(Action::SearchOnline(name.to_string()));
     }
 
-    widgets::submenu(ui, Icon::Copy, "复制", 170.0, |ui| {
-        let mut copies: Vec<(Icon, &str, String)> = vec![(Icon::Copy, "名称", name.to_string())];
+    widgets::submenu(ui, Icon::Copy, t!("复制", "Copy"), 170.0, |ui| {
+        let mut copies: Vec<(Icon, &str, String)> =
+            vec![(Icon::Copy, t!("名称", "Name"), name.to_string())];
         if let Selection::Process(pid) = sel {
             copies.push((Icon::Hash, "PID", pid.to_string()));
             if let Some(cmd) = members.first().and_then(|pr| pr.command_line.clone()) {
-                copies.push((Icon::Terminal, "命令行", cmd.to_string()));
+                copies.push((
+                    Icon::Terminal,
+                    t!("命令行", "Command line"),
+                    cmd.to_string(),
+                ));
             }
         }
         if let Some(path) = path {
-            copies.push((Icon::FolderOpen, "路径", path.to_string()));
+            copies.push((Icon::FolderOpen, t!("路径", "Path"), path.to_string()));
         }
         if !tcp.is_empty() {
             let ports = tcp
@@ -647,7 +693,7 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
                 .map(u16::to_string)
                 .collect::<Vec<_>>()
                 .join(", ");
-            copies.push((Icon::Plug, "监听端口", ports));
+            copies.push((Icon::Plug, t!("监听端口", "Listening ports"), ports));
         }
         for (glyph, label, value) in copies {
             if widgets::menu_item(ui, glyph, label, false).clicked() {
@@ -663,38 +709,41 @@ fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String
     let small = |t: String| RichText::new(t).size(11.5).color(p.muted);
     ui.label(RichText::new(&pr.name).strong());
     if let Some(w) = &pr.window {
-        ui.label(small(format!("窗口：{}", w.title)));
+        ui.label(small(tf!("窗口：{}", "Window: {}", w.title)));
     }
     if let Some(d) = &pr.description {
         ui.label(small(d.to_string()));
     }
-    let mut state = vec![format!("优先级 {}", pr.priority.label())];
+    let mut state = vec![tf!("优先级 {}", "Priority {}", pr.priority.label())];
     if pr.suspended {
-        state.push("已挂起".into());
+        state.push(t!("已挂起", "Suspended").into());
     }
     if pr.efficiency {
-        state.push("效率模式".into());
+        state.push(t!("效率模式", "Efficiency mode").into());
     }
     if pr.window.as_ref().is_some_and(|w| w.hung) {
-        state.push("无响应".into());
+        state.push(t!("无响应", "Not responding").into());
     }
-    ui.label(small(format!(
+    ui.label(small(tf!(
         "PID {} · 线程 {} · 句柄 {} · {}",
+        "PID {} · {} threads · {} handles · {}",
         pr.pid,
         pr.threads,
         pr.handles,
         state.join(" · ")
     )));
-    ui.label(small(format!(
+    ui.label(small(tf!(
         "已运行 {} · CPU 时间 {}（用户 {} · 内核 {}）",
+        "Running for {} · CPU time {} (user {} · kernel {})",
         fmt_uptime(pr.create_time),
         fmt_cpu_time(pr.user_time + pr.kernel_time),
         fmt_cpu_time(pr.user_time),
         fmt_cpu_time(pr.kernel_time),
     )));
     if pr.gpu_dedicated + pr.gpu_shared > 0 {
-        ui.label(small(format!(
+        ui.label(small(tf!(
             "显存 {} · 共享 GPU 内存 {}",
+            "Dedicated GPU memory {} · shared {}",
             fmt_bytes(pr.gpu_dedicated),
             fmt_bytes(pr.gpu_shared)
         )));
@@ -709,7 +758,7 @@ fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String
     };
     let (t, u) = (fmt_ports(Proto::Tcp), fmt_ports(Proto::Udp));
     if !t.is_empty() {
-        ui.label(small(format!("监听 TCP {t}")));
+        ui.label(small(tf!("监听 TCP {t}", "Listening on TCP {t}")));
     }
     if !u.is_empty() {
         ui.label(small(format!("UDP {u}")));
@@ -724,11 +773,15 @@ fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String
     if let Some(svcs) = services {
         let shown: Vec<&str> = svcs.iter().take(8).map(String::as_str).collect();
         let more = if svcs.len() > 8 {
-            format!(" 等 {} 个", svcs.len())
+            tf!(" 等 {} 个", " ({} total)", svcs.len())
         } else {
             String::new()
         };
-        ui.label(small(format!("服务：{}{more}", shown.join("、"))));
+        ui.label(small(tf!(
+            "服务：{}{more}",
+            "Services: {}{more}",
+            shown.join(t!("、", ", "))
+        )));
     }
     if let Some(cmd) = &pr.command_line {
         ui.add_space(4.0);
@@ -788,12 +841,12 @@ impl Col {
         match self {
             Col::Pid => "PID",
             Col::Cpu => "CPU",
-            Col::CpuTime => "CPU 时间",
-            Col::Memory => "内存",
+            Col::CpuTime => t!("CPU 时间", "CPU time"),
+            Col::Memory => t!("内存", "Memory"),
             Col::Gpu => "GPU",
-            Col::Vram => "显存",
-            Col::Disk => "磁盘",
-            Col::Network => "网络",
+            Col::Vram => t!("显存", "VRAM"),
+            Col::Disk => t!("磁盘", "Disk"),
+            Col::Network => t!("网络", "Network"),
         }
     }
 

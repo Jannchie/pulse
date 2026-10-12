@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Frame, Key, Layout, Margin, RichText, Sense, Ui, pos2, vec2};
 use pulse_probe::control::Priority;
-use pulse_probe::{Collector, NetStatus, Snapshot};
+use pulse_probe::{Collector, NetStatus, Snapshot, t, tf};
 
 use dialogs::{AffinityDialog, Decision, KillRequest, RunDialog, Toast};
 use gpu_panel::GpuHistory;
@@ -351,6 +351,7 @@ impl App {
         theme::install(ctx);
         egui_extras::install_image_loaders(ctx);
         let settings = Settings::load();
+        pulse_probe::i18n::set_lang(settings.language.resolve());
         ctx.set_theme(settings.theme.preference());
         if settings.always_on_top {
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
@@ -458,7 +459,8 @@ impl App {
                     .filter(|p| p.name.to_lowercase() == *key)
                     .collect();
                 let name = &members.first()?.name;
-                let label = format!("{name} 的 {} 个进程", members.len());
+                let n = members.len();
+                let label = tf!("{name} 的 {n} 个进程", "{name} ({n} processes)");
                 Some((members.iter().map(|p| p.pid).collect(), label))
             }
         }
@@ -482,13 +484,25 @@ impl App {
                 let sent: usize = pids.iter().map(|&pid| control::close_windows(pid)).sum();
                 if sent == 0 {
                     self.notify_err(
-                        format!("无法关闭 {label}"),
-                        Some("它没有可以关闭的窗口，可以改用结束进程".into()),
+                        tf!("无法关闭 {label}", "Couldn't close {label}"),
+                        Some(
+                            t!(
+                                "它没有可以关闭的窗口，可以改用结束进程",
+                                "It has no window to close. Try End task instead."
+                            )
+                            .into(),
+                        ),
                     );
                 } else {
                     self.notify_ok(
-                        format!("已请求 {label} 关闭"),
-                        Some("程序可能会先询问是否保存".into()),
+                        tf!("已请求 {label} 关闭", "Asked {label} to close"),
+                        Some(
+                            t!(
+                                "程序可能会先询问是否保存",
+                                "It may ask whether to save first."
+                            )
+                            .into(),
+                        ),
                     );
                 }
             }
@@ -503,19 +517,48 @@ impl App {
                 } else {
                     control::suspend
                 };
-                let verb = if resume { "恢复" } else { "挂起" };
-                self.report(
-                    pids.iter().map(|&pid| op(pid)).collect(),
-                    &format!("{verb} {label}"),
-                );
+                let (done, failed) = if resume {
+                    (
+                        tf!("已恢复 {label}", "Resumed {label}"),
+                        tf!("无法恢复 {label}", "Couldn't resume {label}"),
+                    )
+                } else {
+                    (
+                        tf!("已挂起 {label}", "Suspended {label}"),
+                        tf!("无法挂起 {label}", "Couldn't suspend {label}"),
+                    )
+                };
+                self.report(pids.iter().map(|&pid| op(pid)).collect(), done, failed);
             }
             Action::Efficiency { pids, label, on } => {
                 let results = pids
                     .iter()
                     .map(|&pid| control::set_efficiency_mode(pid, on))
                     .collect();
-                let verb = if on { "开启" } else { "关闭" };
-                self.report(results, &format!("为 {label} {verb}效率模式"));
+                let (done, failed) = if on {
+                    (
+                        tf!(
+                            "已为 {label} 开启效率模式",
+                            "Turned on efficiency mode for {label}"
+                        ),
+                        tf!(
+                            "无法为 {label} 开启效率模式",
+                            "Couldn't turn on efficiency mode for {label}"
+                        ),
+                    )
+                } else {
+                    (
+                        tf!(
+                            "已为 {label} 关闭效率模式",
+                            "Turned off efficiency mode for {label}"
+                        ),
+                        tf!(
+                            "无法为 {label} 关闭效率模式",
+                            "Couldn't turn off efficiency mode for {label}"
+                        ),
+                    )
+                };
+                self.report(results, done, failed);
             }
             Action::Priority {
                 pid,
@@ -523,9 +566,17 @@ impl App {
                 priority,
             } => {
                 let r = control::set_priority(pid, priority);
+                let prio = priority.label();
                 self.report(
                     vec![r],
-                    &format!("将 {label} 的优先级设为{}", priority.label()),
+                    tf!(
+                        "已将 {label} 的优先级设为{prio}",
+                        "Set the priority of {label} to {prio}"
+                    ),
+                    tf!(
+                        "无法将 {label} 的优先级设为{prio}",
+                        "Couldn't set the priority of {label} to {prio}"
+                    ),
                 );
             }
             Action::Affinity { pid, label } => match control::affinity(pid) {
@@ -537,24 +588,44 @@ impl App {
                         system,
                     }))
                 }
-                Err(e) => {
-                    self.notify_err(format!("无法读取 {label} 的相关性"), Some(error_text(&e)))
-                }
+                Err(e) => self.notify_err(
+                    tf!(
+                        "无法读取 {label} 的相关性",
+                        "Couldn't read the affinity of {label}"
+                    ),
+                    Some(error_text(&e)),
+                ),
             },
             Action::Dump { pid, name } => {
                 self.notify_ok(
-                    format!("正在为 {name} 创建转储文件…"),
-                    Some("完整内存转储可能需要几秒到几十秒".into()),
+                    tf!(
+                        "正在为 {name} 创建转储文件…",
+                        "Creating a dump file for {name}…"
+                    ),
+                    Some(
+                        t!(
+                            "完整内存转储可能需要几秒到几十秒",
+                            "A full memory dump can take from a few seconds to a minute."
+                        )
+                        .into(),
+                    ),
                 );
                 self.spawn_job(ctx, move || match control::create_dump(pid, &name) {
                     Ok(path) => {
                         let path = path.to_string_lossy().to_string();
                         pulse_probe::reveal_in_explorer(&path);
-                        Toast::ok(format!("已为 {name} 创建转储文件"), Some(path))
+                        Toast::ok(
+                            tf!("已为 {name} 创建转储文件", "Created a dump file for {name}"),
+                            Some(path),
+                        )
                     }
-                    Err(e) => {
-                        Toast::err(format!("无法为 {name} 创建转储文件"), Some(error_text(&e)))
-                    }
+                    Err(e) => Toast::err(
+                        tf!(
+                            "无法为 {name} 创建转储文件",
+                            "Couldn't create a dump file for {name}"
+                        ),
+                        Some(error_text(&e)),
+                    ),
                 });
             }
             Action::Properties(path) => control::show_properties(&path),
@@ -612,16 +683,25 @@ impl App {
                 let Some(item) = self.startup.as_mut().and_then(|v| v.get_mut(i)) else {
                     return;
                 };
-                let verb = if on { "启用" } else { "禁用" };
                 match pulse_probe::startup::set_enabled(item, on) {
                     Ok(()) => {
                         item.enabled = on;
                         let name = item.name.clone();
-                        self.notify_ok(format!("已{verb} {name} 的开机启动"), None);
+                        let msg = if on {
+                            tf!("已启用 {name} 的开机启动", "Enabled {name} at startup")
+                        } else {
+                            tf!("已禁用 {name} 的开机启动", "Disabled {name} at startup")
+                        };
+                        self.notify_ok(msg, None);
                     }
                     Err(e) => {
                         let name = item.name.clone();
-                        self.notify_err(format!("无法{verb} {name}"), Some(e));
+                        let msg = if on {
+                            tf!("无法启用 {name}", "Couldn't enable {name}")
+                        } else {
+                            tf!("无法禁用 {name}", "Couldn't disable {name}")
+                        };
+                        self.notify_err(msg, Some(e));
                     }
                 }
             }
@@ -641,24 +721,57 @@ impl App {
     fn apply_service(&mut self, ctx: &egui::Context, action: ServiceAction) {
         use pulse_probe::services;
         type Job = Box<dyn FnOnce(&str) -> Result<(), String> + Send>;
-        // (描述, 服务名, 执行, 是否要先提示"正在…"——启停服务可能要等好几秒)
-        let (label, name, run, slow): (String, String, Job, bool) = match action {
-            ServiceAction::Start(n) => {
-                (format!("启动服务 {n}"), n, Box::new(services::start), true)
-            }
-            ServiceAction::Stop(n) => (format!("停止服务 {n}"), n, Box::new(services::stop), true),
+        // ([进行中, 成功, 失败] 的通知, 服务名, 执行, 是否要先提示"正在…"——启停服务可能要等好几秒)
+        let (msgs, name, run, slow): ([String; 3], String, Job, bool) = match action {
+            ServiceAction::Start(n) => (
+                [
+                    tf!("正在启动服务 {n}…", "Starting service {n}…"),
+                    tf!("已启动服务 {n}", "Started service {n}"),
+                    tf!("无法启动服务 {n}", "Couldn't start service {n}"),
+                ],
+                n,
+                Box::new(services::start),
+                true,
+            ),
+            ServiceAction::Stop(n) => (
+                [
+                    tf!("正在停止服务 {n}…", "Stopping service {n}…"),
+                    tf!("已停止服务 {n}", "Stopped service {n}"),
+                    tf!("无法停止服务 {n}", "Couldn't stop service {n}"),
+                ],
+                n,
+                Box::new(services::stop),
+                true,
+            ),
             ServiceAction::Restart(n) => (
-                format!("重新启动服务 {n}"),
+                [
+                    tf!("正在重新启动服务 {n}…", "Restarting service {n}…"),
+                    tf!("已重新启动服务 {n}", "Restarted service {n}"),
+                    tf!("无法重新启动服务 {n}", "Couldn't restart service {n}"),
+                ],
                 n,
                 Box::new(services::restart),
                 true,
             ),
-            ServiceAction::SetStartType(n, t) => (
-                format!("将 {n} 的启动类型改为{}", t.label()),
-                n,
-                Box::new(move |n: &str| services::set_start_type(n, t)),
-                false,
-            ),
+            ServiceAction::SetStartType(n, st) => {
+                let label = st.label();
+                (
+                    [
+                        String::new(),
+                        tf!(
+                            "已将 {n} 的启动类型改为{label}",
+                            "Changed the startup type of {n} to {label}"
+                        ),
+                        tf!(
+                            "无法将 {n} 的启动类型改为{label}",
+                            "Couldn't change the startup type of {n} to {label}"
+                        ),
+                    ],
+                    n,
+                    Box::new(move |n: &str| services::set_start_type(n, st)),
+                    false,
+                )
+            }
             ServiceAction::GotoProcess(pid) => {
                 return self.show_processes(pid.to_string(), Some(Selection::Process(pid)));
             }
@@ -668,21 +781,25 @@ impl App {
             }
             ServiceAction::OpenManager => {
                 if let Err(e) = pulse_probe::control::run("services.msc", false) {
-                    self.notify_err("无法打开服务管理器".into(), Some(e));
+                    self.notify_err(
+                        t!("无法打开服务管理器", "Couldn't open the Services app").into(),
+                        Some(e),
+                    );
                 }
                 return;
             }
         };
+        let [progress, done, failed] = msgs;
         if slow {
-            self.notify_ok(format!("正在{label}…"), None);
+            self.notify_ok(progress, None);
         }
         let shared = self.services_shared.clone();
         self.spawn_job(ctx, move || {
             let result = run(&name);
             shared.lock().unwrap().refresh = Some(Some(name));
             match result {
-                Ok(()) => Toast::ok(format!("已{label}"), None),
-                Err(e) => Toast::err(format!("无法{label}"), Some(e)),
+                Ok(()) => Toast::ok(done, None),
+                Err(e) => Toast::err(failed, Some(e)),
             }
         });
     }
@@ -695,18 +812,27 @@ impl App {
         self.toasts.push(Toast::err(title, detail));
     }
 
-    /// 把一批操作结果汇总成一条通知。
-    fn report(&mut self, results: Vec<pulse_probe::control::Result<()>>, what: &str) {
+    /// 把一批操作结果汇总成一条通知。`done` / `failed` 是全部成功、失败时的标题。
+    fn report(
+        &mut self,
+        results: Vec<pulse_probe::control::Result<()>>,
+        done: String,
+        failed: String,
+    ) {
         let failures: Vec<_> = results.iter().filter_map(|r| r.as_ref().err()).collect();
         match failures.first() {
-            None => self.notify_ok(format!("已{what}"), None),
+            None => self.notify_ok(done, None),
             Some(e) if failures.len() == results.len() => {
                 let detail = self.denied_hint(error_text(e), e);
-                self.notify_err(format!("无法{what}"), Some(detail));
+                self.notify_err(failed, Some(detail));
             }
             Some(e) => {
                 let detail = self.denied_hint(error_text(e), e);
-                self.notify_err(format!("{what}：{} 个失败", failures.len()), Some(detail));
+                let (n, total) = (failures.len(), results.len());
+                self.notify_err(
+                    tf!("{failed}（{n} 个失败）", "{failed} ({n} of {total} failed)"),
+                    Some(detail),
+                );
             }
         }
     }
@@ -714,7 +840,10 @@ impl App {
     fn denied_hint(&self, msg: String, e: &pulse_probe::WinError) -> String {
         // E_ACCESSDENIED
         if e.code().0 == 0x8007_0005_u32 as i32 && !self.snapshot.elevated {
-            format!("{msg}。以管理员身份重启 Pulse 后再试。")
+            tf!(
+                "{msg}。以管理员身份重启 Pulse 后再试。",
+                "{msg}. Restart Pulse as administrator and try again."
+            )
         } else {
             msg
         }
@@ -725,10 +854,18 @@ impl App {
             Modal::Kill(req) => self.kill_confirmed(req),
             Modal::Affinity(d) => {
                 let r = pulse_probe::control::set_affinity(d.pid, d.mask);
-                self.report(vec![r], &format!("设置 {} 的相关性", d.label));
+                let label = &d.label;
+                self.report(
+                    vec![r],
+                    tf!("已设置 {label} 的相关性", "Set the affinity of {label}"),
+                    tf!(
+                        "无法设置 {label} 的相关性",
+                        "Couldn't set the affinity of {label}"
+                    ),
+                );
             }
             Modal::Run(d) => match pulse_probe::control::run(&d.command, d.admin) {
-                Ok(()) => self.notify_ok(format!("已运行 {}", d.command.trim()), None),
+                Ok(()) => self.notify_ok(tf!("已运行 {}", "Started {}", d.command.trim()), None),
                 // 出错时保留对话框，让用户改命令。
                 Err(e) => {
                     self.modal = Some(Modal::Run(RunDialog {
@@ -742,16 +879,30 @@ impl App {
                     UserAction::Logoff(id, _) => (pulse_probe::sessions::logoff(id), id),
                     UserAction::Disconnect(id, _) => (pulse_probe::sessions::disconnect(id), id),
                 };
-                let (_, _, button) = user_prompt(&a);
+                let (done, failed) = match a {
+                    UserAction::Logoff(..) => (
+                        tf!("已注销会话 {id}", "Signed out session {id}"),
+                        tf!("无法注销会话 {id}", "Couldn't sign out session {id}"),
+                    ),
+                    UserAction::Disconnect(..) => (
+                        tf!("已断开连接会话 {id}", "Disconnected session {id}"),
+                        tf!("无法断开连接会话 {id}", "Couldn't disconnect session {id}"),
+                    ),
+                };
                 self.sessions_at = None;
-                self.report(vec![r], &format!("{button}会话 {id}"));
+                self.report(vec![r], done, failed);
             }
         }
     }
 
     fn kill_confirmed(&mut self, req: KillRequest) {
         let results = req.pids.iter().map(|&pid| pulse_probe::kill(pid)).collect();
-        self.report(results, &format!("结束 {}", req.label));
+        let label = &req.label;
+        self.report(
+            results,
+            tf!("已结束 {label}", "Ended {label}"),
+            tf!("无法结束 {label}", "Couldn't end {label}"),
+        );
     }
 
     /// ↑/↓ 移动选中行，Home/End 跳到首尾，Enter 展开分组或切换到应用窗口，Delete 结束选中项。
@@ -865,7 +1016,7 @@ impl App {
             for (device, resp) in cards {
                 if resp
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("查看详情")
+                    .on_hover_text(t!("查看详情", "View details"))
                     .clicked()
                 {
                     clicked = Some(device);
@@ -905,11 +1056,11 @@ impl App {
         ui.add_space(14.0);
 
         for (view, glyph, label) in [
-            (View::Processes, Icon::List, "进程"),
-            (View::Performance, Icon::Activity, "性能"),
-            (View::Services, Icon::Settings, "服务"),
-            (View::Startup, Icon::Rocket, "启动应用"),
-            (View::Users, Icon::Users, "用户"),
+            (View::Processes, Icon::List, t!("进程", "Processes")),
+            (View::Performance, Icon::Activity, t!("性能", "Performance")),
+            (View::Services, Icon::Settings, t!("服务", "Services")),
+            (View::Startup, Icon::Rocket, t!("启动应用", "Startup apps")),
+            (View::Users, Icon::Users, t!("用户", "Users")),
         ] {
             let resp = tab(ui, self.view == view, glyph, label);
             holes.push(resp.rect);
@@ -925,7 +1076,12 @@ impl App {
             } else {
                 ui.add_space(20.0);
             }
-            let resp = tab(ui, self.view == View::Settings, Icon::Settings, "设置");
+            let resp = tab(
+                ui,
+                self.view == View::Settings,
+                Icon::Settings,
+                t!("设置", "Settings"),
+            );
             holes.push(resp.rect);
             if resp.clicked() {
                 self.view = View::Settings;
@@ -946,7 +1102,10 @@ impl App {
                 ui,
                 &mut self.filter,
                 320.0,
-                "模糊搜索名称、描述、命令行，或 :端口",
+                t!(
+                    "模糊搜索名称、描述、命令行，或 :端口",
+                    "Search name, description, command, :port"
+                ),
             );
             if resp.changed() {
                 self.dirty = true;
@@ -958,9 +1117,17 @@ impl App {
                 self.filter.clear();
                 self.dirty = true;
             }
-            if widgets::toggle_chip(ui, &mut self.listening_only, Icon::Plug, "监听端口")
-                .on_hover_text("只看正在监听 TCP 端口的进程。也可以直接搜索 :端口号")
-                .clicked()
+            if widgets::toggle_chip(
+                ui,
+                &mut self.listening_only,
+                Icon::Plug,
+                t!("监听端口", "Listening ports"),
+            )
+            .on_hover_text(t!(
+                "只看正在监听 TCP 端口的进程。也可以直接搜索 :端口号",
+                "Show only processes listening on TCP ports. You can also search for :port"
+            ))
+            .clicked()
             {
                 self.dirty = true;
             }
@@ -968,17 +1135,31 @@ impl App {
                 if widgets::segmented(
                     ui,
                     &mut self.settings.grouped,
-                    [(Icon::Layers, "分组"), (Icon::List, "列表")],
+                    [
+                        (Icon::Layers, t!("分组", "Grouped")),
+                        (Icon::List, t!("列表", "List")),
+                    ],
                 ) {
                     self.dirty = true;
                     self.settings.save();
                 }
                 ui.add_space(4.0);
                 let enabled = target.is_some();
-                let resp = widgets::tool_button(ui, Icon::OctagonX, "结束任务", enabled, true);
+                let resp = widgets::tool_button(
+                    ui,
+                    Icon::OctagonX,
+                    t!("结束任务", "End task"),
+                    enabled,
+                    true,
+                );
                 let resp = match &target {
-                    Some((_, label)) => resp.on_hover_text(format!("结束 {label}（Delete）")),
-                    None => resp.on_hover_text("先在列表中选中一个进程或分组"),
+                    Some((_, label)) => {
+                        resp.on_hover_text(tf!("结束 {label}（Delete）", "End {label} (Delete)"))
+                    }
+                    None => resp.on_hover_text(t!(
+                        "先在列表中选中一个进程或分组",
+                        "Select a process or group in the list first"
+                    )),
                 };
                 if enabled
                     && resp.clicked()
@@ -987,13 +1168,30 @@ impl App {
                     let ctx = ui.ctx().clone();
                     self.apply(&ctx, Action::Kill { pids, label });
                 }
-                if widgets::tool_button(ui, Icon::Plus, "运行新任务", true, false).clicked() {
+                if widgets::tool_button(
+                    ui,
+                    Icon::Plus,
+                    t!("运行新任务", "Run new task"),
+                    true,
+                    false,
+                )
+                .clicked()
+                {
                     self.modal = Some(Modal::Run(RunDialog::default()));
                 }
                 if !elevated
-                    && widgets::tool_button(ui, Icon::Shield, "以管理员身份重启", true, false)
-                        .on_hover_text("启用逐进程网络统计，并允许结束更多系统进程")
-                        .clicked()
+                    && widgets::tool_button(
+                        ui,
+                        Icon::Shield,
+                        t!("以管理员身份重启", "Restart as admin"),
+                        true,
+                        false,
+                    )
+                    .on_hover_text(t!(
+                        "启用逐进程网络统计，并允许结束更多系统进程",
+                        "Enables per-process network stats and lets you end more system processes"
+                    ))
+                    .clicked()
                     && pulse_probe::relaunch_elevated()
                 {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1013,6 +1211,12 @@ impl App {
         if s.theme != before.theme {
             ctx.set_theme(s.theme.preference());
         }
+        if s.language != before.language {
+            // 文字都是每帧按当前语言生成的（表格行只存下标），切换后重画一帧即可。
+            pulse_probe::i18n::set_lang(s.language.resolve());
+            self.dirty = true;
+            ctx.request_repaint();
+        }
         if s.always_on_top != before.always_on_top {
             let level = if s.always_on_top {
                 egui::WindowLevel::AlwaysOnTop
@@ -1028,22 +1232,29 @@ impl App {
         let p = Palette::of(ui.ctx());
         let faint = |t: String| RichText::new(t).size(11.5).color(p.faint);
         ui.horizontal(|ui| {
-            ui.label(faint(format!(
+            ui.label(faint(tf!(
                 "{} 个进程 · 采集 {:.1} ms",
+                "{} processes · sampled in {:.1} ms",
                 self.snapshot.processes.len(),
                 self.snapshot.collect_time.as_secs_f64() * 1e3,
             )));
             if self.settings.speed == Speed::Paused {
-                widgets::status_chip(ui, "已暂停更新", p.muted);
+                widgets::status_chip(ui, t!("已暂停更新", "Updates paused"), p.muted);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 match &self.snapshot.net_status {
                     NetStatus::Running => {}
                     NetStatus::NeedsAdmin => {
-                        ui.label(faint("逐进程网络统计需要管理员权限".into()));
+                        ui.label(faint(
+                            t!(
+                                "逐进程网络统计需要管理员权限",
+                                "Per-process network stats require administrator rights"
+                            )
+                            .into(),
+                        ));
                     }
                     NetStatus::Failed(e) => {
-                        ui.label(faint(e.clone()));
+                        ui.label(faint(tf!("ETW 启动失败：{e}", "ETW failed to start: {e}")));
                     }
                 }
             });
@@ -1227,13 +1438,23 @@ impl eframe::App for App {
                         Ok(()) => {
                             self.taskmgr_replaced = want;
                             let msg = if want {
-                                "已替换任务管理器：Ctrl+Shift+Esc 将打开 Pulse"
+                                t!(
+                                    "已替换任务管理器：Ctrl+Shift+Esc 将打开 Pulse",
+                                    "Replaced Task Manager: Ctrl+Shift+Esc now opens Pulse"
+                                )
                             } else {
-                                "已恢复系统任务管理器"
+                                t!("已恢复系统任务管理器", "Restored the Windows Task Manager")
                             };
                             self.notify_ok(msg.into(), None);
                         }
-                        Err(e) => self.notify_err("无法修改任务管理器设置".into(), Some(e)),
+                        Err(e) => self.notify_err(
+                            t!(
+                                "无法修改任务管理器设置",
+                                "Couldn't change the Task Manager setting"
+                            )
+                            .into(),
+                            Some(e),
+                        ),
                     }
                 }
             }
@@ -1263,7 +1484,10 @@ impl eframe::App for App {
                     .show(ui, |ui| {
                         ui.add_space(4.0);
                         let Some(items) = &self.startup else {
-                            ui.label(RichText::new("正在读取启动项…").color(p.muted));
+                            ui.label(
+                                RichText::new(t!("正在读取启动项…", "Loading startup apps…"))
+                                    .color(p.muted),
+                            );
                             return Vec::new();
                         };
                         startup_view::show(
@@ -1315,7 +1539,10 @@ impl eframe::App for App {
                     Some(perf::PerfAction::Search(name)) => self.show_processes(name, None),
                     Some(perf::PerfAction::Copy(text)) => {
                         ui.ctx().copy_text(text);
-                        self.notify_ok("已复制设备摘要".into(), None);
+                        self.notify_ok(
+                            t!("已复制设备摘要", "Copied the device summary").into(),
+                            None,
+                        );
                     }
                     None => {}
                 }
@@ -1509,14 +1736,20 @@ fn caption_buttons(ui: &mut Ui, holes: &mut Vec<egui::Rect>) -> egui::Rect {
 fn user_prompt(a: &UserAction) -> (String, &'static str, &'static str) {
     match a {
         UserAction::Disconnect(_, name) => (
-            format!("断开 {name} 的连接？"),
-            "会话会保持登录状态，程序继续运行，用户可以稍后重新连接。",
-            "断开连接",
+            tf!("断开 {name} 的连接？", "Disconnect {name}?"),
+            t!(
+                "会话会保持登录状态，程序继续运行，用户可以稍后重新连接。",
+                "The session stays signed in and its programs keep running. The user can reconnect later."
+            ),
+            t!("断开连接", "Disconnect"),
         ),
         UserAction::Logoff(_, name) => (
-            format!("注销 {name}？"),
-            "该用户所有打开的程序都会被关闭，未保存的数据将会丢失。",
-            "注销",
+            tf!("注销 {name}？", "Sign out {name}?"),
+            t!(
+                "该用户所有打开的程序都会被关闭，未保存的数据将会丢失。",
+                "All of this user's open programs will be closed. Unsaved data will be lost."
+            ),
+            t!("注销", "Sign out"),
         ),
     }
 }
@@ -1576,7 +1809,7 @@ fn initial_filter() -> String {
 fn error_text(e: &pulse_probe::WinError) -> String {
     let msg = e.message().trim().trim_end_matches('。').to_string();
     if msg.is_empty() {
-        format!("错误 0x{:08X}", e.code().0)
+        tf!("错误 0x{:08X}", "Error 0x{:08X}", e.code().0)
     } else {
         msg
     }
@@ -1614,10 +1847,10 @@ fn fmt_uptime(create_time: i64) -> String {
     }
     let secs = (now - create_time) / 10_000_000;
     match secs {
-        s if s < 60 => format!("{s} 秒"),
-        s if s < 3600 => format!("{} 分钟", s / 60),
-        s if s < 86_400 => format!("{} 小时 {} 分钟", s / 3600, s / 60 % 60),
-        s => format!("{} 天 {} 小时", s / 86_400, s / 3600 % 24),
+        s if s < 60 => tf!("{s} 秒", "{s} s"),
+        s if s < 3600 => tf!("{} 分钟", "{} min", s / 60),
+        s if s < 86_400 => tf!("{} 小时 {} 分钟", "{} h {} min", s / 3600, s / 60 % 60),
+        s => tf!("{} 天 {} 小时", "{} d {} h", s / 86_400, s / 3600 % 24),
     }
 }
 

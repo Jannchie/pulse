@@ -2,8 +2,8 @@
 
 use eframe::egui::{Align, Layout, RichText, Sense, Ui, vec2};
 use egui_extras::{Column, TableBuilder};
-use pulse_probe::Snapshot;
 use pulse_probe::sessions::{Session, SessionState};
+use pulse_probe::{Snapshot, t, tf};
 
 use crate::icons_gen::Icon;
 use crate::theme::{Palette, metric, semibold};
@@ -42,9 +42,12 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Option<UserAc
         .collect();
 
     ui.label(
-        RichText::new(format!("{} 个已登录的用户会话", sessions.len()))
-            .size(13.0)
-            .color(p.muted),
+        RichText::new(match sessions.len() {
+            1 => t!("1 个已登录的用户会话", "1 signed-in user session").to_string(),
+            n => tf!("{n} 个已登录的用户会话", "{n} signed-in user sessions"),
+        })
+        .size(13.0)
+        .color(p.muted),
     );
     ui.add_space(12.0);
     ui.spacing_mut().item_spacing = vec2(12.0, 0.0);
@@ -62,14 +65,14 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Option<UserAc
         .column(Column::exact(90.0))
         .header(34.0, |mut h| {
             for (label, right) in [
-                ("用户", false),
-                ("会话", false),
-                ("状态", false),
-                ("进程", true),
+                (t!("用户", "User"), false),
+                (t!("会话", "Session"), false),
+                (t!("状态", "Status"), false),
+                (t!("进程", "Processes"), true),
                 ("CPU", true),
-                ("内存", true),
-                ("磁盘", true),
-                ("网络", true),
+                (t!("内存", "Memory"), true),
+                (t!("磁盘", "Disk"), true),
+                (t!("网络", "Network"), true),
             ] {
                 h.col(|ui| widgets::header_label(ui, label, right));
             }
@@ -89,7 +92,7 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Option<UserAc
                     widgets::icon(ui, Icon::User, r.center(), 18.0, p.accent);
                     ui.label(RichText::new(&name).family(semibold()).color(p.text));
                     if s.current {
-                        widgets::status_chip(ui, "当前", p.muted);
+                        widgets::status_chip(ui, t!("当前", "You"), p.muted);
                     }
                 });
                 row.col(|ui| {
@@ -119,11 +122,13 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Option<UserAc
                 row.response().context_menu(|ui| {
                     widgets::menu_heading(ui, &name, 200.0);
                     if s.state == SessionState::Active
-                        && widgets::menu_item(ui, Icon::Unlink, "断开连接", false).clicked()
+                        && widgets::menu_item(ui, Icon::Unlink, t!("断开连接", "Disconnect"), false)
+                            .clicked()
                     {
                         action = Some(UserAction::Disconnect(s.id, name.clone()));
                     }
-                    if widgets::menu_item(ui, Icon::Logout, "注销", true).clicked() {
+                    if widgets::menu_item(ui, Icon::Logout, t!("注销", "Sign out"), true).clicked()
+                    {
                         action = Some(UserAction::Logoff(s.id, name.clone()));
                     }
                 });

@@ -117,7 +117,7 @@ impl NicMonitor {
                     index: a.index,
                     name: a.name.clone(),
                     description: a.description.clone(),
-                    kind: a.kind,
+                    kind: kind_label(a.kind),
                     connected: a.connected,
                     link_speed: a.link_speed,
                     ipv4: a.ipv4.clone(),
@@ -138,6 +138,15 @@ impl NicMonitor {
 }
 
 /// 物理网卡（硬件接口且非过滤驱动）的 (接口索引, 收, 发) 累计字节。
+/// 内部的网卡类型键 → 当前语言的名称。
+fn kind_label(kind: &'static str) -> &'static str {
+    match kind {
+        "Ethernet" => crate::t!("以太网", "Ethernet"),
+        "Cellular" => crate::t!("蜂窝", "Cellular"),
+        k => k,
+    }
+}
+
 fn counters() -> Vec<(u32, u64, u64)> {
     let mut table: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
     if unsafe { GetIfTable2(&mut table) } != ERROR_SUCCESS {
@@ -187,9 +196,9 @@ fn adapters() -> Vec<Adapter> {
         let a = unsafe { &*cur };
         cur = a.Next;
         let kind = match a.IfType {
-            6 => "以太网",
+            6 => "Ethernet",
             71 => "Wi-Fi",
-            243 | 244 => "蜂窝",
+            243 | 244 => "Cellular",
             _ => continue, // 回环、隧道等不展示
         };
         let index = unsafe { a.Anonymous1.Anonymous.IfIndex };

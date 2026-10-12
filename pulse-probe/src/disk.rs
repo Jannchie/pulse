@@ -163,8 +163,17 @@ impl DiskMonitor {
                 }
                 DiskStat {
                     index: d.index,
-                    model: d.model.clone(),
-                    bus: d.bus,
+                    model: if d.model.is_empty() {
+                        crate::tf!("磁盘 {}", "Disk {}", d.index)
+                    } else {
+                        d.model.clone()
+                    },
+                    // 读不到描述符时为 "?"，不认识的总线为 ""。
+                    bus: match d.bus {
+                        "?" => crate::t!("未知", "Unknown"),
+                        "" => crate::t!("其他", "Other"),
+                        b => b,
+                    },
                     ssd: d.ssd,
                     removable: d.removable,
                     size: d.size,
@@ -218,7 +227,7 @@ fn open_disk(index: u32) -> Option<Disk> {
     let handle = open(&path, GENERIC_READ.0 | GENERIC_WRITE.0).or_else(|| open(&path, 0))?;
     let h = raw(&handle);
     let (model, bus, removable) =
-        device_descriptor(h).unwrap_or_else(|| (format!("磁盘 {index}"), "未知", false));
+        device_descriptor(h).unwrap_or_else(|| (String::new(), "?", false));
     let ssd = query_property::<DEVICE_SEEK_PENALTY_DESCRIPTOR>(h, StorageDeviceSeekPenaltyProperty)
         .map(|d| !d.IncursSeekPenalty);
     let size = ioctl_out::<GET_LENGTH_INFORMATION>(h, IOCTL_DISK_GET_LENGTH_INFO)
@@ -334,7 +343,7 @@ fn device_descriptor(h: HANDLE) -> Option<(String, &'static str, bool)> {
         BusTypeScsi => "SCSI",
         BusTypeRAID => "RAID",
         BusTypeSd => "SD",
-        _ => "其他",
+        _ => "",
     };
     Some((model, bus, d.RemovableMedia))
 }

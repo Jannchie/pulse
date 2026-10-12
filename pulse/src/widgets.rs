@@ -9,7 +9,7 @@ use eframe::egui::{
 
 use crate::icons_gen::{Icon, PX_MAX, PX_MIN};
 use crate::theme::{Palette, metric, semibold};
-use pulse_probe::Snapshot;
+use pulse_probe::{Snapshot, t, tf};
 
 /// 画一个 jannchie-icons 图标。尺寸换算成设备像素后取对应的像素对齐版本，
 /// 并把左上角对齐到像素网格，否则对齐就白做了。
@@ -101,7 +101,11 @@ pub fn cpu_card(
 ) -> Response {
     let p = Palette::of(ui.ctx());
     let hottest = cores.iter().copied().fold(0.0, f32::max);
-    let sub = format!("{} 线程 · 最忙 {hottest:.0}%", cores.len());
+    let sub = tf!(
+        "{} 线程 · 最忙 {hottest:.0}%",
+        "{} threads · peak {hottest:.0}%",
+        cores.len()
+    );
     let (resp, c) = card_frame(ui, width, "CPU", Icon::Cpu, &sub, color, active);
     let painter = ui.painter_at(c.expand(1.0));
     big_value(&painter, c.left_top(), &format!("{total:.0}%"), p.text);
@@ -170,9 +174,9 @@ pub fn memory_card(ui: &mut Ui, width: f32, active: bool, snap: &Snapshot) -> Re
     let (resp, c) = card_frame(
         ui,
         width,
-        "内存",
+        t!("内存", "Memory"),
         Icon::Memory,
-        &format!("共 {:.0} GB", gb(total)),
+        &tf!("共 {:.0} GB", "{:.0} GB total", gb(total)),
         color,
         active,
     );
@@ -186,7 +190,12 @@ pub fn memory_card(ui: &mut Ui, width: f32, active: bool, snap: &Snapshot) -> Re
     painter.text(
         pos2(c.left(), c.bottom()),
         Align2::LEFT_BOTTOM,
-        format!("已提交 {:.1} / {:.0} GB", gb(commit_used), gb(commit_limit)),
+        tf!(
+            "已提交 {:.1} / {:.0} GB",
+            "Commit {:.1} / {:.0} GB",
+            gb(commit_used),
+            gb(commit_limit)
+        ),
         FontId::proportional(11.5),
         p.faint,
     );
@@ -220,7 +229,9 @@ pub fn gpu_card(ui: &mut Ui, width: f32, snap: &Snapshot, history: &[f32]) -> Re
     let name = snap
         .gpus
         .first()
-        .map_or("未检测到", |g| short_gpu_name(&g.name))
+        .map_or(t!("未检测到", "Not detected"), |g| {
+            short_gpu_name(&g.name)
+        })
         .to_string();
     let (resp, c) = card_frame(ui, width, "GPU", Icon::Gpu, &name, color, false);
     let painter = ui.painter_at(c.expand(1.0));
@@ -248,7 +259,12 @@ pub fn gpu_card(ui: &mut Ui, width: f32, snap: &Snapshot, history: &[f32]) -> Re
     painter.text(
         pos2(c.left(), bar.top() - 5.0),
         Align2::LEFT_BOTTOM,
-        format!("显存 {:.1} / {:.0} GB", gb(used), gb(total)),
+        tf!(
+            "显存 {:.1} / {:.0} GB",
+            "VRAM {:.1} / {:.0} GB",
+            gb(used),
+            gb(total)
+        ),
         FontId::proportional(11.5),
         p.faint,
     );
@@ -267,8 +283,19 @@ pub fn gpu_card(ui: &mut Ui, width: f32, snap: &Snapshot, history: &[f32]) -> Re
 pub fn disk_card(ui: &mut Ui, width: f32, snap: &Snapshot) -> Response {
     let p = Palette::of(ui.ctx());
     let color = metric::DISK;
-    let sub = format!("{} 块", snap.disks.len());
-    let (resp, c) = card_frame(ui, width, "磁盘", Icon::HardDrive, &sub, color, false);
+    let sub = match snap.disks.len() {
+        1 => t!("1 块", "1 disk").to_string(),
+        n => tf!("{n} 块", "{n} disks"),
+    };
+    let (resp, c) = card_frame(
+        ui,
+        width,
+        t!("磁盘", "Disk"),
+        Icon::HardDrive,
+        &sub,
+        color,
+        false,
+    );
     let painter = ui.painter_at(c.expand(1.0));
     let (read, write) = snap
         .disks
@@ -280,14 +307,14 @@ pub fn disk_card(ui: &mut Ui, width: f32, snap: &Snapshot) -> Response {
     painter.text(
         pos2(c.left(), c.bottom() - 16.0),
         Align2::LEFT_BOTTOM,
-        format!("读 {}/s", fmt(read)),
+        tf!("读 {}/s", "R {}/s", fmt(read)),
         FontId::proportional(11.5),
         p.faint,
     );
     painter.text(
         pos2(c.left(), c.bottom()),
         Align2::LEFT_BOTTOM,
-        format!("写 {}/s", fmt(write)),
+        tf!("写 {}/s", "W {}/s", fmt(write)),
         FontId::proportional(11.5),
         p.faint,
     );
@@ -408,7 +435,15 @@ pub fn network_card(
     let p = Palette::of(ui.ctx());
     let (down, up) = (metric::NETWORK, metric::NETWORK_UP);
     let (rx, tx) = (snap.net_rx, snap.net_tx);
-    let (resp, c) = card_frame(ui, width, "网络", Icon::Network, "近 60 秒", down, active);
+    let (resp, c) = card_frame(
+        ui,
+        width,
+        t!("网络", "Network"),
+        Icon::Network,
+        t!("近 60 秒", "Last 60 s"),
+        down,
+        active,
+    );
     let painter = ui.painter_at(c.expand(1.0));
 
     // 左侧两行：下载（大）、上传（小）。
@@ -799,7 +834,18 @@ pub fn tool_button(ui: &mut Ui, glyph: Icon, label: &str, enabled: bool, danger:
 /// 两段式开关（带图标）。返回是否被切换。
 pub fn segmented(ui: &mut Ui, value: &mut bool, items: [(Icon, &str); 2]) -> bool {
     let p = Palette::of(ui.ctx());
-    let seg_w = 70.0;
+    // 至少 70pt；文字较长（英文）时按最宽的一项加图标与边距。
+    let seg_w = items
+        .iter()
+        .map(|(_, label)| {
+            ui.painter()
+                .layout_no_wrap(label.to_string(), FontId::proportional(12.5), p.text)
+                .size()
+                .x
+                + 42.0
+        })
+        .fold(70.0, f32::max)
+        .ceil();
     let height = 32.0;
     let (rect, _) = ui.allocate_exact_size(vec2(seg_w * 2.0 + 6.0, height), Sense::hover());
     ui.painter()

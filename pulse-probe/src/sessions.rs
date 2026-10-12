@@ -62,9 +62,9 @@ pub enum SessionState {
 impl SessionState {
     pub fn label(self) -> &'static str {
         match self {
-            SessionState::Active => "活动",
-            SessionState::Disconnected => "已断开",
-            SessionState::Other => "其他",
+            SessionState::Active => crate::t!("活动", "Active"),
+            SessionState::Disconnected => crate::t!("已断开", "Disconnected"),
+            SessionState::Other => crate::t!("其他", "Other"),
         }
     }
 }

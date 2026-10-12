@@ -2,6 +2,9 @@
 
 use std::path::PathBuf;
 
+use pulse_probe::i18n::Lang;
+use pulse_probe::t;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Speed {
     High,
@@ -15,10 +18,10 @@ impl Speed {
 
     pub fn label(self) -> &'static str {
         match self {
-            Speed::High => "高（0.5 秒）",
-            Speed::Normal => "正常（1 秒）",
-            Speed::Low => "低（4 秒）",
-            Speed::Paused => "暂停",
+            Speed::High => t!("高（0.5 秒）", "High (0.5 s)"),
+            Speed::Normal => t!("正常（1 秒）", "Normal (1 s)"),
+            Speed::Low => t!("低（4 秒）", "Low (4 s)"),
+            Speed::Paused => t!("暂停", "Paused"),
         }
     }
 
@@ -64,7 +67,7 @@ impl SearchEngine {
             SearchEngine::Google => "Google",
             SearchEngine::Bing => "Bing",
             SearchEngine::DuckDuckGo => "DuckDuckGo",
-            SearchEngine::Baidu => "百度",
+            SearchEngine::Baidu => t!("百度", "Baidu"),
         }
     }
 
@@ -100,9 +103,9 @@ impl ThemeChoice {
 
     pub fn label(self) -> &'static str {
         match self {
-            ThemeChoice::System => "跟随系统",
-            ThemeChoice::Light => "浅色",
-            ThemeChoice::Dark => "深色",
+            ThemeChoice::System => t!("跟随系统", "System"),
+            ThemeChoice::Light => t!("浅色", "Light"),
+            ThemeChoice::Dark => t!("深色", "Dark"),
         }
     }
 
@@ -123,6 +126,43 @@ impl ThemeChoice {
     }
 }
 
+/// 界面语言。默认跟随 Windows 的显示语言。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Language {
+    System,
+    Zh,
+    En,
+}
+
+impl Language {
+    pub const ALL: [Language; 3] = [Language::System, Language::Zh, Language::En];
+
+    /// 具体语言的选项用它自己的语言写，切换前后都认得出来。
+    pub fn label(self) -> &'static str {
+        match self {
+            Language::System => t!("跟随系统", "System"),
+            Language::Zh => "中文",
+            Language::En => "English",
+        }
+    }
+
+    pub fn resolve(self) -> Lang {
+        match self {
+            Language::System => pulse_probe::i18n::system_lang(),
+            Language::Zh => Lang::Zh,
+            Language::En => Lang::En,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Language::System => "system",
+            Language::Zh => "zh",
+            Language::En => "en",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub speed: Speed,
@@ -130,6 +170,7 @@ pub struct Settings {
     pub theme: ThemeChoice,
     pub grouped: bool,
     pub search: SearchEngine,
+    pub language: Language,
 }
 
 impl Default for Settings {
@@ -140,6 +181,7 @@ impl Default for Settings {
             theme: ThemeChoice::System,
             grouped: true,
             search: SearchEngine::Google,
+            language: Language::System,
         }
     }
 }
@@ -188,6 +230,12 @@ impl Settings {
                         .find(|x| x.key() == v)
                         .unwrap_or(s.search)
                 }
+                "language" => {
+                    s.language = Language::ALL
+                        .into_iter()
+                        .find(|x| x.key() == v)
+                        .unwrap_or(s.language)
+                }
                 _ => {}
             }
         }
@@ -196,12 +244,13 @@ impl Settings {
 
     fn serialize(&self) -> String {
         format!(
-            "speed={}\nalways_on_top={}\ntheme={}\ngrouped={}\nsearch={}\n",
+            "speed={}\nalways_on_top={}\ntheme={}\ngrouped={}\nsearch={}\nlanguage={}\n",
             self.speed.key(),
             self.always_on_top,
             self.theme.key(),
             self.grouped,
             self.search.key(),
+            self.language.key(),
         )
     }
 
@@ -226,8 +275,26 @@ mod tests {
             theme: ThemeChoice::Dark,
             grouped: false,
             search: SearchEngine::DuckDuckGo,
+            language: Language::En,
         };
         assert_eq!(Settings::parse(&s.serialize()), s);
         assert_eq!(Settings::parse("garbage\nspeed=nope"), Settings::default());
+    }
+
+    #[test]
+    fn old_files_without_language_follow_system() {
+        // 加入语言设置之前保存的文件没有 language 这一行。
+        let old = "speed=low\nalways_on_top=true\ntheme=dark\ngrouped=false\nsearch=bing\n";
+        let s = Settings::parse(old);
+        assert_eq!(s.language, Language::System);
+        assert_eq!(s.speed, Speed::Low);
+        assert_eq!(s.search, SearchEngine::Bing);
+        for lang in Language::ALL {
+            let s = Settings {
+                language: lang,
+                ..Settings::default()
+            };
+            assert_eq!(Settings::parse(&s.serialize()).language, lang);
+        }
     }
 }

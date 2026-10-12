@@ -33,11 +33,11 @@ pub enum State {
 impl State {
     pub fn label(self) -> &'static str {
         match self {
-            State::Stopped => "已停止",
-            State::Starting => "正在启动",
-            State::Stopping => "正在停止",
-            State::Running => "正在运行",
-            State::Paused => "已暂停",
+            State::Stopped => crate::t!("已停止", "Stopped"),
+            State::Starting => crate::t!("正在启动", "Starting"),
+            State::Stopping => crate::t!("正在停止", "Stopping"),
+            State::Running => crate::t!("正在运行", "Running"),
+            State::Paused => crate::t!("已暂停", "Paused"),
         }
     }
 }
@@ -63,11 +63,11 @@ impl StartType {
 
     pub fn label(self) -> &'static str {
         match self {
-            StartType::Automatic => "自动",
-            StartType::Delayed => "自动（延迟启动）",
-            StartType::Manual => "手动",
-            StartType::Disabled => "禁用",
-            StartType::Boot => "引导",
+            StartType::Automatic => crate::t!("自动", "Automatic"),
+            StartType::Delayed => crate::t!("自动（延迟启动）", "Automatic (delayed start)"),
+            StartType::Manual => crate::t!("手动", "Manual"),
+            StartType::Disabled => crate::t!("禁用", "Disabled"),
+            StartType::Boot => crate::t!("引导", "Boot"),
         }
     }
 }
@@ -374,7 +374,11 @@ pub fn start(name: &str) -> Result<(), String> {
     if wait_for(&svc, SERVICE_RUNNING.0, Duration::from_secs(30)) {
         Ok(())
     } else {
-        Err("等待服务启动超时".into())
+        Err(crate::t!(
+            "等待服务启动超时",
+            "Timed out waiting for the service to start"
+        )
+        .into())
     }
 }
 
@@ -386,7 +390,11 @@ pub fn stop(name: &str) -> Result<(), String> {
     if wait_for(&svc, SERVICE_STOPPED.0, Duration::from_secs(30)) {
         Ok(())
     } else {
-        Err("等待服务停止超时".into())
+        Err(crate::t!(
+            "等待服务停止超时",
+            "Timed out waiting for the service to stop"
+        )
+        .into())
     }
 }
 
@@ -401,7 +409,13 @@ pub fn set_start_type(name: &str, t: StartType) -> Result<(), String> {
         StartType::Automatic | StartType::Delayed => SERVICE_AUTO_START,
         StartType::Manual => SERVICE_DEMAND_START,
         StartType::Disabled => SERVICE_DISABLED,
-        StartType::Boot => return Err("不支持修改为引导启动".into()),
+        StartType::Boot => {
+            return Err(crate::t!(
+                "不支持修改为引导启动",
+                "Changing to boot start isn't supported"
+            )
+            .into());
+        }
     };
     unsafe {
         ChangeServiceConfigW(
