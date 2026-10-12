@@ -9,7 +9,7 @@ use pulse_probe::{t, tf};
 use crate::dialogs::{self, Kind, PRIMARY_FILL, PRIMARY_FILL_HOVER};
 use crate::icons_gen::Icon;
 use crate::theme::{Palette, semibold};
-use crate::update::{Check, Error, Install, Release};
+use crate::update::{Check, Error, Install, Method, Release};
 use crate::widgets;
 
 /// 更新对话框里用户的选择。
@@ -176,7 +176,18 @@ pub fn dialog(
                     .color(p.danger),
                 );
             }
-            Install::Idle if !release.can_install => {
+            Install::Idle if release.method == Method::Installer { elevate: true } => {
+                ui.label(
+                    RichText::new(t!(
+                        "将运行安装程序完成更新，Windows 会请求管理员权限。",
+                        "The installer will run to finish the update. Windows will ask for administrator permission.",
+                        "インストーラーを実行して更新を完了します。Windows から管理者権限の確認が求められます。"
+                    ))
+                    .size(12.0)
+                    .color(p.muted),
+                );
+            }
+            Install::Idle if release.method == Method::Manual => {
                 ui.label(
                     RichText::new(tf!(
                         "{app} 所在的文件夹不可写（例如位于 Program Files），无法自动更新。请从下载页面获取新版本。",
@@ -193,7 +204,7 @@ pub fn dialog(
         ui.add_space(10.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            if release.can_install {
+            if release.method != Method::Manual {
                 if dialogs::button(
                     ui,
                     t!("更新并重启", "Update and restart", "更新して再起動"),
@@ -349,6 +360,12 @@ pub fn error_text(e: &Error) -> String {
             "程序所在的文件夹不可写",
             "the app's folder isn't writable",
             "アプリのフォルダーに書き込めません"
+        )
+        .into(),
+        Error::Cancelled => t!(
+            "未获得管理员权限",
+            "administrator permission was not granted",
+            "管理者権限が許可されませんでした"
         )
         .into(),
         Error::Io(msg) => msg.trim().trim_end_matches(['。', '.']).to_string(),

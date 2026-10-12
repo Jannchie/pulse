@@ -364,6 +364,12 @@ const UPDATE_CONFIG: update::Config = update::Config {
     current_version: env!("CARGO_PKG_VERSION"),
     asset_pattern: "pulse-{tag}-windows-x64.exe",
     checksums: "SHA256SUMS.txt",
+    // 与 installer/pulse.iss 的 AppId 对应。
+    installer: Some(update::InstallerConfig {
+        asset_pattern: "pulse-{tag}-windows-x64-setup.exe",
+        uninstall_key: "{99CDD8A9-DE19-4475-9D3B-DEA7657484E0}_is1",
+        args: "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /LAUNCH=1",
+    }),
 };
 
 impl App {
@@ -380,7 +386,7 @@ impl App {
             ));
         }
         let interval = Arc::new(AtomicU64::new(settings.speed.millis()));
-        update::cleanup_old();
+        update::cleanup_old(&UPDATE_CONFIG);
         let updater = {
             let ctx = ctx.clone();
             update::Updater::new(UPDATE_CONFIG, move || ctx.request_repaint())

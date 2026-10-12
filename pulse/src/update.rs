@@ -3,7 +3,7 @@
 //! 与界面无关，也不依赖本程序的其他模块（只用 `windows` 与 `serde_json`），可以原样复制到别的程序：
 //!
 //! ```ignore
-//! update::cleanup_old();                       // 启动时删掉上次更新留下的 <exe>.old
+//! update::cleanup_old(&cfg);                   // 启动时删掉上次更新留下的 <exe>.old
 //! let updater = Updater::new(Config { … }, move || ctx.request_repaint());
 //! updater.start(settings.auto_update);         // 5 秒后检查一次，之后每 24 小时
 //! // 每帧：updater.status() → 标题栏提示 / 对话框；用户点击后 updater.install(release)
@@ -11,9 +11,14 @@
 //! ```
 //!
 //! - 网络走 WinHTTP（`WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`），沿用系统代理与 TLS，自动跟随重定向。
-//! - 下载的 exe 先写到 exe 同目录的临时文件（同一卷，改名是原子的），按 `SHA256SUMS.txt` 校验后，
-//!   把正在运行的 exe 改名为 `<exe>.old`（Windows 允许改名运行中的 exe），新文件移到原路径，
-//!   以相同参数启动新进程。任何一步失败都会恢复原文件名。
+//! - 三种更新方式（[`Method`]）：
+//!   - 由安装程序安装的（Inno Setup 卸载信息里的安装位置就是 exe 所在目录）：下载安装程序，
+//!     校验后静默运行（所有用户安装时请求管理员权限），由它替换文件并重新启动程序。
+//!   - 便携版且目录可写：下载的 exe 先写到同目录的临时文件（同一卷，改名是原子的），校验后
+//!     把正在运行的 exe 改名为 `<exe>.old`（Windows 允许改名运行中的 exe），新文件移到原路径，
+//!     以相同参数启动新进程。任何一步失败都会恢复原文件名。
+//!   - 其他情况：只提供发布页链接。
+//! - 下载的文件都按发布里的 `SHA256SUMS.txt` 校验，没有校验和或不符时放弃。
 //! - 网络、哈希、文件操作都在后台线程，界面只读 [`Updater::status`]。
 
 use std::ffi::c_void;
@@ -43,6 +48,19 @@ pub struct Config {
     pub asset_pattern: &'static str,
     /// 校验和资产名，每行 `<sha256>  <文件名>`，如 `"SHA256SUMS.txt"`。
     pub checksums: &'static str,
+    /// 安装版的更新方式；没有安装程序时为 None。
+    pub installer: Option<InstallerConfig>,
+}
+
+/// 用 Inno Setup 安装程序更新安装版。
+#[derive(Clone, Copy, Debug)]
+pub struct InstallerConfig {
+    /// 安装程序资产名，`{tag}` 会替换为标签名，如 `"pulse-{tag}-windows-x64-setup.exe"`。
+    pub asset_pattern: &'static str,
+    /// 卸载信息的键名，即 `<AppId>_is1`，如 `"{99CDD8A9-…}_is1"`。
+    pub uninstall_key: &'static str,
+    /// 静默更新时传给安装程序的参数。
+    pub args: &'static str,
 }
 
 impl Config {
@@ -65,6 +83,24 @@ impl Config {
     }
 }
 
+/// 如何安装某个新版本，检查时按程序所在位置决定。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Method {
+    /// 便携版：直接替换 exe。
+    InPlace,
+    /// 安装版：运行安装程序；`elevate` 为所有用户安装，需要管理员权限。
+    Installer { elevate: bool },
+    /// 无法自动更新（目录不可写，或发布里没有合适的文件），只能打开发布页。
+    Manual,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Asset {
+    name: String,
+    url: String,
+    size: u64,
+}
+
 /// 一个比当前版本新的发布。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Release {
@@ -72,13 +108,11 @@ pub struct Release {
     pub version: String,
     /// 发行说明（Markdown 原文，过长时截断）。
     pub notes: String,
-    /// 发布页地址，无法自动替换时在浏览器中打开。
+    /// 发布页地址，无法自动更新时在浏览器中打开。
     pub page_url: String,
-    /// exe 所在目录可写，可以直接替换。
-    pub can_install: bool,
-    asset_name: String,
-    asset_url: String,
-    asset_size: u64,
+    pub method: Method,
+    exe: Option<Asset>,
+    setup: Option<Asset>,
     checksums_url: Option<String>,
 }
 
@@ -100,6 +134,8 @@ pub enum Error {
     ChecksumMismatch,
     /// exe 所在目录不可写。
     NotWritable,
+    /// 用户在 UAC 提示里拒绝了管理员权限。
+    Cancelled,
     /// 文件操作失败，附系统给出的说明。
     Io(String),
 }
@@ -238,10 +274,7 @@ impl Updater {
             if s.install.busy() {
                 return;
             }
-            s.install = Install::Downloading {
-                done: 0,
-                total: release.asset_size,
-            };
+            s.install = Install::Downloading { done: 0, total: 0 };
         }
         (self.inner.notify)();
         let inner = self.inner.clone();
@@ -330,10 +363,85 @@ pub fn check(cfg: &Config) -> Result<Option<Release>, Error> {
     let Some(release) = select_release(cfg, api)? else {
         return Ok(None);
     };
-    Ok(Some(Release {
-        can_install: exe_dir_writable(),
-        ..release
-    }))
+    let installed = cfg.installer.and_then(|i| installed_scope(i.uninstall_key));
+    let method = choose_method(
+        installed,
+        exe_dir_writable(),
+        release.exe.is_some(),
+        release.setup.is_some(),
+    );
+    Ok(Some(Release { method, ..release }))
+}
+
+/// `installed`：Some(是否为所有用户安装)；None 表示便携版。
+fn choose_method(
+    installed: Option<bool>,
+    writable: bool,
+    has_exe: bool,
+    has_setup: bool,
+) -> Method {
+    match installed {
+        Some(machine) if has_setup => Method::Installer { elevate: machine },
+        _ if writable && has_exe => Method::InPlace,
+        _ => Method::Manual,
+    }
+}
+
+/// 当前 exe 是否由安装程序安装：卸载信息里的 InstallLocation 与 exe 所在目录相同。
+/// 返回 Some(true) 表示所有用户安装（HKLM），Some(false) 表示当前用户安装（HKCU）。
+fn installed_scope(uninstall_key: &str) -> Option<bool> {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    let (dir, _) = exe_location()?;
+    let subkey = format!(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{uninstall_key}");
+    [(HKEY_LOCAL_MACHINE, true), (HKEY_CURRENT_USER, false)]
+        .into_iter()
+        .find(|(root, _)| {
+            reg_string(*root, &subkey, "InstallLocation")
+                .is_some_and(|loc| same_dir(&loc, &dir.to_string_lossy()))
+        })
+        .map(|(_, machine)| machine)
+}
+
+fn same_dir(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        s.trim()
+            .trim_end_matches(['\\', '/'])
+            .replace('/', "\\")
+            .to_lowercase()
+    };
+    !a.trim().is_empty() && norm(a) == norm(b)
+}
+
+fn reg_string(
+    root: windows::Win32::System::Registry::HKEY,
+    subkey: &str,
+    value: &str,
+) -> Option<String> {
+    use windows::Win32::System::Registry::{RRF_RT_REG_SZ, RegGetValueW};
+    use windows::core::PCWSTR;
+    let (subkey, value) = (wide(subkey), wide(value));
+    let mut buf = vec![0u16; 1024];
+    let mut len = (buf.len() * 2) as u32;
+    let err = unsafe {
+        RegGetValueW(
+            root,
+            PCWSTR(subkey.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut len),
+        )
+    };
+    if err.is_err() {
+        return None;
+    }
+    let n = (len as usize / 2).min(buf.len());
+    Some(
+        String::from_utf16_lossy(&buf[..n])
+            .trim_end_matches('\0')
+            .to_string(),
+    )
 }
 
 /// 从 API 响应挑出可安装的新版本：草稿、预发布、不比当前新的都忽略。
@@ -353,17 +461,21 @@ fn select_release(cfg: &Config, api: ApiRelease) -> Result<Option<Release>, Erro
     if !latest.release || latest <= current {
         return Ok(None);
     }
-    let want = cfg.asset_name(&api.tag_name);
-    let asset = api
-        .assets
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case(&want))
-        .ok_or(Error::AssetMissing)?;
-    let checksums_url = api
-        .assets
-        .iter()
-        .find(|a| a.name.eq_ignore_ascii_case(cfg.checksums))
-        .map(|a| a.browser_download_url.clone());
+    let find = |name: &str| {
+        api.assets
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name))
+            .map(|a| Asset {
+                name: a.name.clone(),
+                url: a.browser_download_url.clone(),
+                size: a.size,
+            })
+    };
+    let exe = find(&cfg.asset_name(&api.tag_name));
+    let setup = cfg
+        .installer
+        .and_then(|i| find(&i.asset_pattern.replace("{tag}", &api.tag_name)));
+    let checksums_url = find(cfg.checksums).map(|a| a.url);
     let mut notes = api.body.unwrap_or_default().replace("\r\n", "\n");
     if let Some((i, _)) = notes.char_indices().nth(NOTES_LIMIT) {
         notes.truncate(i);
@@ -373,10 +485,9 @@ fn select_release(cfg: &Config, api: ApiRelease) -> Result<Option<Release>, Erro
         version: version.to_string(),
         notes: notes.trim().to_string(),
         page_url: api.html_url,
-        can_install: false,
-        asset_name: asset.name.clone(),
-        asset_url: asset.browser_download_url.clone(),
-        asset_size: asset.size,
+        method: Method::Manual,
+        exe,
+        setup,
         checksums_url,
     }))
 }
@@ -451,37 +562,91 @@ fn exe_location() -> Option<(PathBuf, String)> {
 // ---------------------------------------------------------------- 安装
 
 fn install(inner: &Inner, release: &Release) -> Result<(), Error> {
-    let cfg = &inner.cfg;
-    let exe = std::env::current_exe()?;
-    let (dir, file) = exe_location().ok_or(Error::NotWritable)?;
-    if !exe_dir_writable() {
-        return Err(Error::NotWritable);
+    match release.method {
+        Method::InPlace => install_in_place(inner, release),
+        Method::Installer { elevate } => install_with_setup(inner, release, elevate),
+        Method::Manual => Err(Error::NotWritable),
     }
-    let ua = cfg.user_agent();
+}
 
-    // 先取校验和：没有就不必下载。
+/// 从发布的 `SHA256SUMS.txt` 里取 `asset` 的哈希。先取校验和：没有就不必下载。
+fn expected_hash(release: &Release, asset: &Asset, ua: &str) -> Result<[u8; 32], Error> {
     let url = release
         .checksums_url
         .as_deref()
         .ok_or(Error::ChecksumMissing)?;
     let mut sums = Vec::new();
-    http_get(url, &ua, "application/octet-stream", |chunk, _| {
+    http_get(url, ua, "application/octet-stream", |chunk, _| {
         sums.extend_from_slice(chunk);
         if sums.len() > 1 << 20 {
             return Err(Error::BadResponse);
         }
         Ok(())
     })?;
-    let expected = parse_checksums(&String::from_utf8_lossy(&sums), &release.asset_name)
-        .ok_or(Error::ChecksumMissing)?;
+    parse_checksums(&String::from_utf8_lossy(&sums), &asset.name).ok_or(Error::ChecksumMissing)
+}
 
+fn install_in_place(inner: &Inner, release: &Release) -> Result<(), Error> {
+    let asset = release.exe.as_ref().ok_or(Error::AssetMissing)?;
+    let exe = std::env::current_exe()?;
+    let (dir, file) = exe_location().ok_or(Error::NotWritable)?;
+    if !exe_dir_writable() {
+        return Err(Error::NotWritable);
+    }
+    let ua = inner.cfg.user_agent();
+    let expected = expected_hash(release, asset, &ua)?;
     let tmp = dir.join(format!("{file}.download"));
-    let result = download_verified(inner, release, &ua, &tmp, &expected)
+    let result = download_verified(inner, asset, &ua, &tmp, &expected)
         .and_then(|()| swap_and_restart(&exe, &dir, &file, &tmp));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+/// 下载安装程序到临时目录，校验后静默运行；它会关闭本程序、替换文件并重新启动。
+fn install_with_setup(inner: &Inner, release: &Release, elevate: bool) -> Result<(), Error> {
+    let cfg = &inner.cfg;
+    let installer = cfg.installer.ok_or(Error::AssetMissing)?;
+    let asset = release.setup.as_ref().ok_or(Error::AssetMissing)?;
+    let ua = cfg.user_agent();
+    let expected = expected_hash(release, asset, &ua)?;
+    let path = std::env::temp_dir().join(format!("{}-update-{}", cfg.repo, asset.name));
+    let result = download_verified(inner, asset, &ua, &path, &expected)
+        .and_then(|()| run_installer(&path, installer.args, elevate));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&path);
+    }
+    result
+}
+
+/// 启动安装程序；`elevate` 时以管理员身份运行，用户拒绝 UAC 时返回 [`Error::Cancelled`]。
+fn run_installer(path: &Path, args: &str, elevate: bool) -> Result<(), Error> {
+    use windows::Win32::UI::Shell::{
+        SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::{PCWSTR, w};
+    let file = wide(&path.to_string_lossy());
+    let params = wide(args);
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
+        lpVerb: if elevate { w!("runas") } else { w!("open") },
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    if let Err(e) = unsafe { ShellExecuteExW(&mut info) } {
+        // ERROR_CANCELLED：用户在 UAC 提示里点了"否"。
+        return Err(if e.code().0 as u32 == 0x8007_04c7 {
+            Error::Cancelled
+        } else {
+            Error::Io(e.message())
+        });
+    }
+    Ok(())
 }
 
 fn set_install(inner: &Inner, state: Install) {
@@ -492,7 +657,7 @@ fn set_install(inner: &Inner, state: Install) {
 /// 下载到 `tmp`，边写边算 SHA-256，与 `expected` 不符时报错。
 fn download_verified(
     inner: &Inner,
-    release: &Release,
+    asset: &Asset,
     ua: &str,
     tmp: &Path,
     expected: &[u8; 32],
@@ -501,22 +666,17 @@ fn download_verified(
     let mut hasher = Sha256::new()?;
     let mut done = 0u64;
     let mut reported = Instant::now();
-    http_get(
-        &release.asset_url,
-        ua,
-        "application/octet-stream",
-        |chunk, len| {
-            out.write_all(chunk)?;
-            hasher.update(chunk)?;
-            done += chunk.len() as u64;
-            if reported.elapsed() >= Duration::from_millis(100) {
-                reported = Instant::now();
-                let total = len.unwrap_or(release.asset_size).max(done);
-                set_install(inner, Install::Downloading { done, total });
-            }
-            Ok(())
-        },
-    )?;
+    http_get(&asset.url, ua, "application/octet-stream", |chunk, len| {
+        out.write_all(chunk)?;
+        hasher.update(chunk)?;
+        done += chunk.len() as u64;
+        if reported.elapsed() >= Duration::from_millis(100) {
+            reported = Instant::now();
+            let total = len.unwrap_or(asset.size).max(done);
+            set_install(inner, Install::Downloading { done, total });
+        }
+        Ok(())
+    })?;
     set_install(inner, Install::Verifying);
     out.sync_all()?;
     drop(out);
@@ -559,13 +719,23 @@ fn old_path(dir: &Path, file: &str) -> PathBuf {
 }
 
 /// 启动时在后台删掉上次更新留下的 `<exe>.old`；旧进程可能还没完全退出，删不掉就隔一会儿再试。
-pub fn cleanup_old() {
+/// 临时目录里上次运行过的安装程序也一并删掉。
+pub fn cleanup_old(cfg: &Config) {
     let Some((dir, file)) = exe_location() else {
         return;
     };
+    let setup_prefix = format!("{}-update-", cfg.repo).to_lowercase();
     let _ = std::thread::Builder::new()
         .name("update-cleanup".into())
         .spawn(move || {
+            if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_lowercase();
+                    if name.starts_with(&setup_prefix) && name.ends_with(".exe") {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
             let prefix = format!("{file}.").to_lowercase();
             for _ in 0..30 {
                 let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -793,6 +963,11 @@ mod tests {
         current_version: "0.3.1",
         asset_pattern: "pulse-{tag}-windows-x64.exe",
         checksums: "SHA256SUMS.txt",
+        installer: Some(InstallerConfig {
+            asset_pattern: "pulse-{tag}-windows-x64-setup.exe",
+            uninstall_key: "{99CDD8A9-DE19-4475-9D3B-DEA7657484E0}_is1",
+            args: "/VERYSILENT",
+        }),
     };
 
     fn v(s: &str) -> Version {
@@ -862,6 +1037,7 @@ mod tests {
                 &[
                     "pulse-v0.3.2-windows-x64.zip",
                     "pulse-v0.3.2-windows-x64.exe",
+                    "pulse-v0.3.2-windows-x64-setup.exe",
                     "SHA256SUMS.txt",
                 ],
             ),
@@ -869,22 +1045,21 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(r.version, "0.3.2");
-        assert_eq!(r.asset_name, "pulse-v0.3.2-windows-x64.exe");
-        assert_eq!(
-            r.asset_url,
-            "https://example.com/pulse-v0.3.2-windows-x64.exe"
-        );
+        let exe = r.exe.unwrap();
+        assert_eq!(exe.name, "pulse-v0.3.2-windows-x64.exe");
+        assert_eq!(exe.url, "https://example.com/pulse-v0.3.2-windows-x64.exe");
+        assert_eq!(r.setup.unwrap().name, "pulse-v0.3.2-windows-x64-setup.exe");
         assert_eq!(
             r.checksums_url.as_deref(),
             Some("https://example.com/SHA256SUMS.txt")
         );
         assert_eq!(r.notes, "notes\nline 2");
 
-        // 没有 exe 资产。
-        assert_eq!(
-            select_release(&CFG, api("v0.3.2", &["pulse-v0.3.2-windows-x64.zip"])),
-            Err(Error::AssetMissing)
-        );
+        // 没有 exe 也没有安装程序：仍然报告新版本，只能手动下载。
+        let r = select_release(&CFG, api("v0.3.2", &["pulse-v0.3.2-windows-x64.zip"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!((r.exe, r.setup), (None, None));
         // 没有校验和文件也能选出来，安装时再报错。
         let r = select_release(&CFG, api("v0.4.0", &["pulse-v0.4.0-windows-x64.exe"]))
             .unwrap()
@@ -908,6 +1083,50 @@ mod tests {
     }
 
     #[test]
+    fn chooses_install_method() {
+        // 安装版优先用安装程序；所有用户安装要提权。
+        assert_eq!(
+            choose_method(Some(true), false, true, true),
+            Method::Installer { elevate: true }
+        );
+        assert_eq!(
+            choose_method(Some(false), true, true, true),
+            Method::Installer { elevate: false }
+        );
+        // 安装版但发布里没有安装程序：目录可写就直接替换，否则手动。
+        assert_eq!(
+            choose_method(Some(true), true, true, false),
+            Method::InPlace
+        );
+        assert_eq!(
+            choose_method(Some(true), false, true, false),
+            Method::Manual
+        );
+        // 便携版。
+        assert_eq!(choose_method(None, true, true, true), Method::InPlace);
+        assert_eq!(choose_method(None, false, true, true), Method::Manual);
+        assert_eq!(choose_method(None, true, false, true), Method::Manual);
+    }
+
+    #[test]
+    fn compares_install_dirs() {
+        assert!(same_dir(
+            r"C:\Program Files\Pulse\",
+            r"C:\Program Files\Pulse"
+        ));
+        assert!(same_dir(
+            r"c:\program files\pulse",
+            r"C:\Program Files\Pulse"
+        ));
+        assert!(same_dir("C:/Tools/Pulse/", r"C:\Tools\Pulse"));
+        assert!(!same_dir(
+            r"C:\Program Files\Pulse",
+            r"C:\Program Files\Pulse2"
+        ));
+        assert!(!same_dir("", r"C:\"));
+    }
+
+    #[test]
     fn truncates_long_notes() {
         let mut a = api("v0.3.2", &["pulse-v0.3.2-windows-x64.exe"]);
         a.body = Some("字".repeat(NOTES_LIMIT + 100));
@@ -925,7 +1144,8 @@ mod tests {
             ..CFG
         };
         let r = check(&cfg).unwrap().expect("a release newer than 0.0.1");
-        assert!(r.asset_url.starts_with("https://"));
+        let exe = r.exe.clone().unwrap();
+        assert!(exe.url.starts_with("https://"));
         let mut sums = Vec::new();
         http_get(
             r.checksums_url.as_deref().unwrap(),
@@ -937,7 +1157,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(parse_checksums(&String::from_utf8_lossy(&sums), &r.asset_name).is_some());
+        assert!(parse_checksums(&String::from_utf8_lossy(&sums), &exe.name).is_some());
     }
 
     #[test]
