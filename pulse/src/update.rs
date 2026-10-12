@@ -108,7 +108,7 @@ struct Asset {
 pub struct Release {
     /// 不带 `v` 的版本号，如 `"0.3.2"`。
     pub version: String,
-    /// 发行说明（Markdown 原文，过长时截断）。
+    /// 发行说明（去掉了 Markdown 标记的纯文本，过长时截断）。
     pub notes: String,
     /// 发布页地址，无法自动更新时在浏览器中打开。
     pub page_url: String,
@@ -478,7 +478,7 @@ fn select_release(cfg: &Config, api: ApiRelease) -> Result<Option<Release>, Erro
         .installer
         .and_then(|i| find(&i.asset_pattern.replace("{tag}", &api.tag_name)));
     let checksums_url = find(cfg.checksums).map(|a| a.url);
-    let mut notes = api.body.unwrap_or_default().replace("\r\n", "\n");
+    let mut notes = plain_notes(&api.body.unwrap_or_default());
     if let Some((i, _)) = notes.char_indices().nth(NOTES_LIMIT) {
         notes.truncate(i);
         notes.push_str("\n…");
@@ -530,6 +530,36 @@ impl Version {
 }
 
 /// `exe` 所在目录能否创建文件。
+/// 把 GitHub 发行说明的常用 Markdown 转成纯文本：标题去掉 `#`，列表项换成 `•`，
+/// 去掉加粗与行内代码标记，`[文字](链接)` 只留文字。
+fn plain_notes(md: &str) -> String {
+    let mut out = String::with_capacity(md.len());
+    for line in md.lines() {
+        let line = line.trim_end();
+        let text = line.trim_start();
+        out.push_str(&line[..line.len() - text.len()]);
+        let mut text = text.trim_start_matches('#').trim_start();
+        if let Some(rest) = text.strip_prefix("* ").or_else(|| text.strip_prefix("- ")) {
+            out.push_str("• ");
+            text = rest;
+        }
+        let mut text = text.replace("**", "").replace('`', "");
+        while let Some(open) = text.find('[') {
+            let Some(mid) = text[open..].find("](").map(|i| open + i) else {
+                break;
+            };
+            let Some(close) = text[mid..].find(')').map(|i| mid + i) else {
+                break;
+            };
+            text.replace_range(mid..=close, "");
+            text.remove(open);
+        }
+        out.push_str(&text);
+        out.push('\n');
+    }
+    out
+}
+
 fn exe_dir_writable() -> bool {
     let Some((dir, file)) = exe_location() else {
         return false;
@@ -1143,6 +1173,15 @@ mod tests {
         let r = select_release(&CFG, a).unwrap().unwrap();
         assert_eq!(r.notes.chars().count(), NOTES_LIMIT + 2);
         assert!(r.notes.ends_with('…'));
+    }
+
+    #[test]
+    fn strips_markdown_from_notes() {
+        let md = "## What's Changed\r\n* **ui**: add `--flag` by [@a](https://x)\r\n  - nested\r\n\r\n**Full Changelog**: https://x/compare/v1...v2";
+        assert_eq!(
+            plain_notes(md),
+            "What's Changed\n• ui: add --flag by @a\n  • nested\n\nFull Changelog: https://x/compare/v1...v2\n"
+        );
     }
 
     /// 访问真实的 GitHub API：`cargo test -p pulse -- --ignored live`。
