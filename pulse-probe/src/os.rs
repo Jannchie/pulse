@@ -89,10 +89,55 @@ pub fn kill(pid: u32) -> windows::core::Result<()> {
 }
 
 /// 在资源管理器中定位文件。
+///
+/// 不用 `explorer /select,<路径>`：路径含空格时 `Command` 会给整个参数加引号，
+/// 变成 `"/select,C:\Program Files\..."`，资源管理器解析失败后打开默认文件夹（逗号同理）。
+/// 改用 Shell API；定位不到这一项时退而打开所在文件夹。放到单独线程里做，
+/// 资源管理器响应慢时不卡界面。
 pub fn reveal_in_explorer(path: &str) {
-    let _ = std::process::Command::new("explorer")
-        .arg(format!("/select,{path}"))
-        .spawn();
+    let path = path.to_owned();
+    let _ = std::thread::Builder::new()
+        .name("reveal".into())
+        .spawn(move || reveal_blocking(&path));
+}
+
+fn reveal_blocking(path: &str) {
+    use windows::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+    };
+    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+
+    let wide = crate::wide(path);
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+    let selected = unsafe {
+        let pidl = ILCreateFromPathW(PCWSTR(wide.as_ptr()));
+        if pidl.is_null() {
+            false
+        } else {
+            let ok = SHOpenFolderAndSelectItems(pidl, None, 0).is_ok();
+            ILFree(Some(pidl));
+            ok
+        }
+    };
+    if !selected
+        && let Some(dir) = std::path::Path::new(path).parent()
+        && dir.is_dir()
+    {
+        let dir = crate::wide(&dir.to_string_lossy());
+        unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                PCWSTR(dir.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+    if com.is_ok() {
+        unsafe { CoUninitialize() };
+    }
 }
 
 /// exe 的文件描述（资源管理器"属性 → 详细信息"里的那个），例如 Code.exe → "Visual Studio Code"。
