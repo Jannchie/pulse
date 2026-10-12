@@ -191,7 +191,7 @@ fn sidebar(ui: &mut Ui, snap: &Snapshot, series: &Series, device: &mut Device) {
     for d in &snap.disks {
         entries.push(Entry {
             device: Device::Disk(d.index),
-            icon: Icon::HardDrive,
+            icon: disk_icon(d),
             color: metric::DISK,
             title: tf!(
                 "磁盘 {} ({})",
@@ -1170,11 +1170,20 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
 
 // ---------------------------------------------------------------- 磁盘
 
+/// 按介质选图标：可移动盘、固态盘、其余（机械盘或未知）。
+fn disk_icon(d: &DiskStat) -> Icon {
+    match (d.removable, d.ssd) {
+        (true, _) => Icon::UsbDrive,
+        (false, Some(true)) => Icon::Ssd,
+        _ => Icon::HardDrive,
+    }
+}
+
 fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
     let p = Palette::of(ui.ctx());
     page_header(
         ui,
-        Icon::HardDrive,
+        disk_icon(d),
         metric::DISK,
         &tf!(
             "磁盘 {} ({})",

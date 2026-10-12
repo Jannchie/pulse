@@ -34,6 +34,8 @@ const USED = [
   ['FolderOpen', 'folder-open'],
   ['AlertTriangle', 'alert-triangle'],
   ['HardDrive', 'hard-drive'],
+  ['Ssd', 'ssd'],
+  ['UsbDrive', 'usb-drive'],
   ['Wifi', 'wifi'],
   ['Activity', 'activity'],
   ['Pause', 'pause'],
