@@ -7,6 +7,7 @@ use eframe::egui::{
 
 use pulse_probe::{t, tf};
 
+use crate::recorder::ImportStatus;
 use crate::settings::{Language, SearchEngine, Settings, Speed, ThemeChoice};
 use crate::theme::{Palette, semibold};
 use crate::update::Check;
@@ -17,6 +18,8 @@ pub enum SettingsAction {
     SetTaskmgrReplaced(bool),
     /// 开启或关闭开机自启（计划任务或 Run 键）。
     SetAutostart(bool),
+    /// 从 Active Time 导入使用记录。
+    ImportActiveTime,
     /// 立即检查更新。
     CheckUpdate,
     /// 打开更新对话框。
@@ -30,6 +33,7 @@ pub fn show(
     autostart: Option<bool>,
     elevated: bool,
     update: &Check,
+    import: Option<&ImportStatus>,
 ) -> Option<SettingsAction> {
     let mut action = None;
     egui::ScrollArea::vertical()
@@ -206,6 +210,56 @@ pub fn show(
                         );
                     });
 
+                    group(ui, t!("使用记录", "Activity", "使用状況の記録"), |ui| {
+                        row(
+                            ui,
+                            t!("记录使用情况", "Record activity", "使用状況を記録"),
+                            t!(
+                                "记录各程序在前台的时长、窗口标题和每分钟的性能占用，只保存在本机。",
+                                "Record how long each program is in the foreground, its window titles, and per-minute resource usage. Stored only on this PC.", "各プログラムが前面にあった時間、ウィンドウ タイトル、1 分ごとのリソース使用量を記録します。データはこの PC にだけ保存されます。"
+                            ),
+                            |ui| {
+                                widgets::switch(ui, &mut settings.record_usage, true);
+                            },
+                        );
+                        // 只在找到 Active Time 的数据库时显示。
+                        if let Some(status) = import {
+                            let desc = match status {
+                                ImportStatus::Idle => t!(
+                                    "找到了 Active Time 的记录，可以导入 Pulse 开始记录之前的部分。",
+                                    "Found Active Time data. Import the part recorded before Pulse started recording.", "Active Time の記録が見つかりました。Pulse が記録を始める前の部分を取り込めます。"
+                                )
+                                .to_string(),
+                                ImportStatus::Running(p) => tf!(
+                                    "正在导入… {:.0}%",
+                                    "Importing… {:.0}%",
+                                    "取り込んでいます… {:.0}%",
+                                    p * 100.0
+                                ),
+                                ImportStatus::Done(r) => {
+                                    let hours = r.seconds / 3600;
+                                    let programs = r.programs;
+                                    tf!(
+                                        "已导入 {hours} 小时、{programs} 个程序的记录。",
+                                        "Imported {hours} hours across {programs} programs.",
+                                        "{hours} 時間分、{programs} 個のプログラムの記録を取り込みました。"
+                                    )
+                                }
+                                ImportStatus::Failed(e) => tf!(
+                                    "导入失败：{e}",
+                                    "Import failed: {e}",
+                                    "取り込みに失敗しました：{e}"
+                                ),
+                            };
+                            row(ui, t!("从 Active Time 导入", "Import from Active Time", "Active Time から取り込む"), &desc, |ui| {
+                                let enabled = !matches!(status, ImportStatus::Running(_));
+                                if dialogs::button(ui, t!("导入", "Import", "取り込む"), dialogs::Kind::Secondary, enabled).clicked() {
+                                    action = Some(SettingsAction::ImportActiveTime);
+                                }
+                            });
+                        }
+                    });
+
                     group(ui, t!("关于", "About", "バージョン情報"), |ui| {
                         ui.add_space(16.0);
                         ui.horizontal(|ui| {
@@ -333,7 +387,7 @@ fn divider(ui: &mut Ui) {
 }
 
 /// 文字分段选择器，返回新选中的下标。
-fn choice(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
+pub fn choice(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
     let p = Palette::of(ui.ctx());
     let font = FontId::proportional(12.5);
     let widths: Vec<f32> = labels

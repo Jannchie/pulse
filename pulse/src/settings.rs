@@ -183,6 +183,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// 已经提示过"关闭后仍在后台运行"。
     pub tray_hinted: bool,
+    /// 记录各程序的使用时长与性能历史。
+    pub record_usage: bool,
 }
 
 impl Default for Settings {
@@ -198,6 +200,7 @@ impl Default for Settings {
             skipped_version: String::new(),
             close_to_tray: true,
             tray_hinted: false,
+            record_usage: true,
         }
     }
 }
@@ -256,6 +259,7 @@ impl Settings {
                 "skip_version" => s.skipped_version = v.to_string(),
                 "close_to_tray" => s.close_to_tray = v != "false",
                 "tray_hinted" => s.tray_hinted = v == "true",
+                "record_usage" => s.record_usage = v != "false",
                 _ => {}
             }
         }
@@ -264,7 +268,7 @@ impl Settings {
 
     fn serialize(&self) -> String {
         format!(
-            "speed={}\nalways_on_top={}\ntheme={}\ngrouped={}\nsearch={}\nlanguage={}\nauto_update={}\nskip_version={}\nclose_to_tray={}\ntray_hinted={}\n",
+            "speed={}\nalways_on_top={}\ntheme={}\ngrouped={}\nsearch={}\nlanguage={}\nauto_update={}\nskip_version={}\nclose_to_tray={}\ntray_hinted={}\nrecord_usage={}\n",
             self.speed.key(),
             self.always_on_top,
             self.theme.key(),
@@ -275,6 +279,7 @@ impl Settings {
             self.skipped_version,
             self.close_to_tray,
             self.tray_hinted,
+            self.record_usage,
         )
     }
 
@@ -304,6 +309,7 @@ mod tests {
             skipped_version: "0.3.2".into(),
             close_to_tray: false,
             tray_hinted: true,
+            record_usage: false,
         };
         assert_eq!(Settings::parse(&s.serialize()), s);
         assert_eq!(Settings::parse("garbage\nspeed=nope"), Settings::default());

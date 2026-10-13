@@ -50,6 +50,13 @@ static MUTEX: AtomicIsize = AtomicIsize::new(0);
 /// 资源管理器重启后广播的消息，收到时要重新添加图标。
 static TASKBAR_CREATED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 
+/// 退出前要做的清理（把还没写入的记录存盘），由 main 注册。
+static ON_QUIT: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
+
+pub fn set_on_quit(f: impl Fn() + Send + 'static) {
+    *ON_QUIT.lock().unwrap() = Some(Box::new(f));
+}
+
 /// 单实例：已有 Pulse 在运行时把 `filter`（搜索参数）交给它，返回 true，调用方应直接退出。
 /// `show` 为 false（开机自启的 `--tray`）时只交参数，不调出窗口。
 pub fn hand_over(filter: &str, show: bool) -> bool {
@@ -301,9 +308,12 @@ pub fn hide_window() {
     }
 }
 
-/// 真正退出：移除托盘图标后结束进程。
+/// 真正退出：做完清理、移除托盘图标后结束进程。
 pub fn quit() -> ! {
     QUITTING.store(true, Ordering::Relaxed);
+    if let Some(f) = ON_QUIT.lock().unwrap().as_ref() {
+        f();
+    }
     remove();
     std::process::exit(0);
 }

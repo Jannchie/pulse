@@ -4,14 +4,19 @@ mod brand_art;
 mod dialogs;
 mod fonts;
 mod gpu_panel;
+mod history;
 mod icons;
 mod icons_gen;
+mod input;
 mod model;
 mod perf;
+mod recorder;
 mod services_view;
 mod settings;
 mod settings_view;
 mod startup_view;
+mod stats;
+mod stats_view;
 mod table;
 mod theme;
 mod titlebar;
@@ -111,7 +116,11 @@ struct Shared {
 }
 
 /// `interval` 为采集间隔（毫秒），0 表示暂停。
-fn spawn_collector(ctx: egui::Context, interval: Arc<AtomicU64>) -> Arc<Mutex<Shared>> {
+fn spawn_collector(
+    ctx: egui::Context,
+    interval: Arc<AtomicU64>,
+    recorder: recorder::Recorder,
+) -> Arc<Mutex<Shared>> {
     let shared = Arc::new(Mutex::new(Shared::default()));
     let out = shared.clone();
     std::thread::Builder::new()
@@ -180,7 +189,9 @@ fn spawn_collector(ctx: egui::Context, interval: Arc<AtomicU64>) -> Arc<Mutex<Sh
                     s.snapshot = Arc::new(snap);
                     s.seq += 1;
                 }
-                tray::set_tip(&tray_tip(&out.lock().unwrap().snapshot));
+                let snap = out.lock().unwrap().snapshot.clone();
+                tray::set_tip(&tray_tip(&snap));
+                recorder.perf(perf_sample(&snap));
                 // 缩到托盘时不重画，界面重新显示时再取最新数据。
                 if tray::window_visible() {
                     ctx.request_repaint();
@@ -190,6 +201,31 @@ fn spawn_collector(ctx: egui::Context, interval: Arc<AtomicU64>) -> Arc<Mutex<Sh
         })
         .expect("spawn collector");
     shared
+}
+
+/// 交给记录线程的一次采样：整体占用与各进程的数值。
+fn perf_sample(s: &Snapshot) -> recorder::PerfSample {
+    recorder::PerfSample {
+        cpu: s.cpu_total,
+        mem: s.mem_used as f32 / s.mem_total.max(1) as f32 * 100.0,
+        gpu: s.gpu_total,
+        disk: s.disks.iter().map(|d| d.read_rate + d.write_rate).sum(),
+        net_rx: s.net_rx,
+        net_tx: s.net_tx,
+        procs: s
+            .processes
+            .iter()
+            .map(|p| recorder::ProcSample {
+                pid: p.pid,
+                name: p.name.clone(),
+                cpu: p.cpu,
+                memory: p.private_ws,
+                disk: p.io_rate,
+                net: p.net_rx + p.net_tx,
+                gpu: p.gpu,
+            })
+            .collect(),
+    }
 }
 
 /// 托盘图标的悬停提示：CPU 与内存占用。
@@ -275,6 +311,7 @@ enum View {
     Services,
     Startup,
     Users,
+    Stats,
     Settings,
 }
 
@@ -377,6 +414,7 @@ struct App {
     services_shared: Arc<Mutex<ServicesShared>>,
     services: Arc<Vec<Service>>,
     services_view: ServicesState,
+    stats: stats_view::StatsState,
     /// None 表示还没读过。
     startup: Option<Vec<StartupItem>>,
     startup_view: StartupState,
@@ -402,6 +440,9 @@ struct App {
     restarting: bool,
     /// 隐藏启动、窗口还处于隐身状态：第一帧画完后隐藏窗口。
     start_hidden: bool,
+    recorder: recorder::Recorder,
+    /// Active Time 的数据库（找到时）。
+    active_time: Option<std::path::PathBuf>,
 }
 
 /// 本程序在 GitHub 上的发布信息。
@@ -445,6 +486,12 @@ impl App {
         if hidden {
             tray::cloak(true);
         }
+        let recorder = recorder::Recorder::start(settings.record_usage);
+        {
+            // 退出（托盘菜单、注销关机、安装程序关闭）前把这一分钟的记录写进去。
+            let r = recorder.clone();
+            tray::set_on_quit(move || r.flush());
+        }
         let autostart = Arc::new(Mutex::new(None));
         {
             let (out, ctx) = (autostart.clone(), ctx.clone());
@@ -454,7 +501,7 @@ impl App {
             });
         }
         Self {
-            shared: spawn_collector(ctx.clone(), interval.clone()),
+            shared: spawn_collector(ctx.clone(), interval.clone(), recorder.clone()),
             snapshot: Arc::default(),
             history: Default::default(),
             gpu_history: Vec::new(),
@@ -483,6 +530,7 @@ impl App {
             services_shared: spawn_services(ctx.clone()),
             services: Arc::default(),
             services_view: ServicesState::default(),
+            stats: stats_view::StatsState::default(),
             startup: None,
             startup_view: StartupState::default(),
             startup_rx: None,
@@ -492,6 +540,8 @@ impl App {
             taskmgr_replaced: pulse_probe::os::taskmgr_replaced(),
             autostart,
             start_hidden: hidden,
+            recorder,
+            active_time: history::active_time_db(),
             settings,
             scroll_to: None,
             passes: VecDeque::new(),
@@ -1318,10 +1368,19 @@ impl App {
                 t!("启动", "Startup", "スタートアップ"),
             ),
             (View::Users, Icon::Users, t!("用户", "Users", "ユーザー")),
+            (
+                View::Stats,
+                Icon::History,
+                t!("统计", "Activity", "使用状況"),
+            ),
         ] {
             let resp = tab(ui, self.view == view, glyph, label);
             holes.push(resp.rect);
             if resp.clicked() {
+                // 回到统计页时重新查询，看到的是最新数据。
+                if view == View::Stats && self.view != View::Stats {
+                    self.stats.invalidate();
+                }
                 self.view = view;
             }
         }
@@ -1711,6 +1770,9 @@ impl App {
         if s.auto_update != before.auto_update {
             self.updater.set_auto(s.auto_update);
         }
+        if s.record_usage != before.record_usage {
+            self.recorder.set_enabled(s.record_usage);
+        }
         if s.close_to_tray != before.close_to_tray {
             tray::set_visible(s.close_to_tray);
         }
@@ -1972,6 +2034,10 @@ impl eframe::App for App {
                 let elevated = self.snapshot.elevated;
                 let replaced = self.taskmgr_replaced;
                 let autostart = *self.autostart.lock().unwrap();
+                let import = self
+                    .active_time
+                    .as_ref()
+                    .map(|_| self.recorder.import_status());
                 let action = central
                     .show(ui, |ui| {
                         settings_view::show(
@@ -1981,6 +2047,7 @@ impl eframe::App for App {
                             autostart,
                             elevated,
                             &self.update.check,
+                            import.as_ref(),
                         )
                     })
                     .inner;
@@ -1989,6 +2056,13 @@ impl eframe::App for App {
                 }
                 match action {
                     Some(settings_view::SettingsAction::CheckUpdate) => self.updater.check_now(),
+                    Some(settings_view::SettingsAction::ImportActiveTime) => {
+                        if let Some(src) = self.active_time.clone() {
+                            let ctx = ui.ctx().clone();
+                            self.recorder
+                                .import_active_time(src, move || ctx.request_repaint());
+                        }
+                    }
                     Some(settings_view::SettingsAction::SetAutostart(on)) => {
                         match pulse_probe::autostart::set(on, elevated) {
                             Ok(()) => *self.autostart.lock().unwrap() = Some(on),
@@ -2040,6 +2114,16 @@ impl eframe::App for App {
                         ),
                     }
                 }
+            }
+            View::Stats => {
+                central.show(ui, |ui| {
+                    stats_view::show(
+                        ui,
+                        &mut self.stats,
+                        &mut self.icons,
+                        &self.snapshot.processes,
+                    );
+                });
             }
             View::Users => {
                 if self

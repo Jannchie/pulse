@@ -62,6 +62,8 @@ const USED = [
   ['CheckCircle', 'check-circle'],
   ['XCircle', 'x-circle'],
   ['FileLock', 'file-lock'],
+  ['History', 'history'],
+  ['ChevronLeft', 'chevron-left'],
 ]
 const STYLE = { radius: 2, weight: 'regular' }
 // 覆盖 12–40 设备像素：13–16pt 的图标在 100%–250% 缩放下都能取到对应尺寸。
