@@ -37,10 +37,11 @@ pub fn title_pill(ui: &mut Ui, version: &str) -> Response {
         PRIMARY_FILL
     };
     ui.painter().rect_filled(rect, CornerRadius::same(13), fill);
+    // 下载图标的托盘在底部，按几何中心放会显得偏低，上移 1pt 与文字对齐。
     widgets::icon(
         ui,
         Icon::Download,
-        pos2(rect.left() + 17.0, rect.center().y),
+        pos2(rect.left() + 17.0, rect.center().y - 1.0),
         13.0,
         Color32::WHITE,
     );
