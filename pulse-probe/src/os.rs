@@ -362,3 +362,21 @@ pub fn set_taskmgr_replaced(on: bool) -> Result<(), String> {
         Err(crate::win32_message(r.0))
     }
 }
+
+/// 控制台程序的输出（OEM 代码页，日文系统上是 Shift-JIS）转成字符串。
+pub(crate) fn decode_console(bytes: &[u8]) -> String {
+    use windows::Win32::Globalization::{
+        CP_OEMCP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS, MultiByteToWideChar,
+    };
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let flags = MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0);
+    let n = unsafe { MultiByteToWideChar(CP_OEMCP, flags, bytes, None) };
+    if n <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let mut buf = vec![0u16; n as usize];
+    unsafe { MultiByteToWideChar(CP_OEMCP, flags, bytes, Some(&mut buf)) };
+    String::from_utf16_lossy(&buf)
+}

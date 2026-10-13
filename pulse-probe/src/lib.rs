@@ -1,6 +1,7 @@
 //! 采集层：一次 `NtQuerySystemInformation(SystemProcessInformation)` 拿到全部进程，
 //! 与上一次快照做差得到 CPU / I/O / GPU / 网络速率。不依赖任何 UI。
 
+pub mod autostart;
 pub mod control;
 pub mod disk;
 pub mod fonts;
