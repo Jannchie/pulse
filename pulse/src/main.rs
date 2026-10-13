@@ -15,6 +15,7 @@ mod startup_view;
 mod table;
 mod theme;
 mod titlebar;
+mod tray;
 mod update;
 mod update_view;
 mod users_view;
@@ -48,9 +49,18 @@ use users_view::UserAction;
 const HISTORY: usize = 60;
 
 fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // 开机自启带 --tray：只显示托盘图标，不弹出窗口。
+    let hidden = args.iter().any(|a| a == pulse_probe::autostart::TRAY_FLAG);
+    let filter = filter_from_args(args);
+    // 已经有 Pulse 在运行：把搜索参数交给它（并调出窗口），自己退出。
+    if tray::hand_over(&filter, !hidden) {
+        return Ok(());
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Pulse")
+            .with_visible(!hidden)
             .with_inner_size([1200.0, 780.0])
             .with_min_inner_size([1100.0, 640.0])
             // 先给一个图标，免得出现 eframe 默认的 egui 标志；窗口建好后 titlebar 会换成 exe 资源里的多尺寸图标。
@@ -73,7 +83,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             titlebar::install(cc);
-            Ok(Box::new(App::new(&cc.egui_ctx)))
+            Ok(Box::new(App::new(&cc.egui_ctx, filter, hidden)))
         }),
     )
 }
@@ -170,12 +180,28 @@ fn spawn_collector(ctx: egui::Context, interval: Arc<AtomicU64>) -> Arc<Mutex<Sh
                     s.snapshot = Arc::new(snap);
                     s.seq += 1;
                 }
-                ctx.request_repaint();
+                tray::set_tip(&tray_tip(&out.lock().unwrap().snapshot));
+                // 缩到托盘时不重画，界面重新显示时再取最新数据。
+                if tray::window_visible() {
+                    ctx.request_repaint();
+                }
                 std::thread::sleep(Duration::from_millis(ms).saturating_sub(started.elapsed()));
             }
         })
         .expect("spawn collector");
     shared
+}
+
+/// 托盘图标的悬停提示：CPU 与内存占用。
+fn tray_tip(s: &Snapshot) -> String {
+    let mem = s.mem_used as f64 / s.mem_total.max(1) as f64 * 100.0;
+    tf!(
+        "Pulse\nCPU {:.0}% · 内存 {:.0}%",
+        "Pulse\nCPU {:.0}% · Memory {:.0}%",
+        "Pulse\nCPU {:.0}% · メモリ {:.0}%",
+        s.cpu_total,
+        mem
+    )
 }
 
 enum Modal {
@@ -361,6 +387,8 @@ struct App {
     settings: Settings,
     interval: Arc<AtomicU64>,
     taskmgr_replaced: bool,
+    /// 是否开机自启；查询要启动 schtasks.exe，在后台线程里填入，查完之前是 None。
+    autostart: Arc<Mutex<Option<bool>>>,
     /// 键盘导航后让表格滚动到这一行。
     scroll_to: Option<usize>,
     /// 最近一秒内的重绘时刻，用来确认空闲时没有空转。
@@ -372,6 +400,8 @@ struct App {
     update_announced: Option<String>,
     /// 新版本已启动，正在关闭本窗口。
     restarting: bool,
+    /// 隐藏启动、窗口还处于隐身状态：第一帧画完后隐藏窗口。
+    start_hidden: bool,
 }
 
 /// 本程序在 GitHub 上的发布信息。
@@ -390,7 +420,7 @@ const UPDATE_CONFIG: update::Config = update::Config {
 };
 
 impl App {
-    fn new(ctx: &egui::Context) -> Self {
+    fn new(ctx: &egui::Context, filter: String, hidden: bool) -> Self {
         let settings = Settings::load();
         let lang = settings.language.resolve();
         pulse_probe::i18n::set_lang(lang);
@@ -410,6 +440,19 @@ impl App {
             update::Updater::new(UPDATE_CONFIG, move || ctx.request_repaint())
         };
         updater.start(settings.auto_update);
+        // 隐藏启动（开机自启）时必须有托盘图标，否则无从打开窗口。
+        tray::set_visible(settings.close_to_tray || hidden);
+        if hidden {
+            tray::cloak(true);
+        }
+        let autostart = Arc::new(Mutex::new(None));
+        {
+            let (out, ctx) = (autostart.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                *out.lock().unwrap() = Some(pulse_probe::autostart::enabled());
+                ctx.request_repaint();
+            });
+        }
         Self {
             shared: spawn_collector(ctx.clone(), interval.clone()),
             snapshot: Arc::default(),
@@ -424,7 +467,7 @@ impl App {
             sort: SortKey::Cpu,
             descending: true,
             // 命令行参数作为初始搜索词，例如 `pulse :5173` 直接定位占用端口的进程。
-            filter: initial_filter(),
+            filter,
             listening_only: false,
             locks: None,
             lock_filter: String::new(),
@@ -447,6 +490,8 @@ impl App {
             sessions_at: None,
             interval,
             taskmgr_replaced: pulse_probe::os::taskmgr_replaced(),
+            autostart,
+            start_hidden: hidden,
             settings,
             scroll_to: None,
             passes: VecDeque::new(),
@@ -1552,6 +1597,49 @@ impl App {
         });
     }
 
+    /// 托盘相关：另一个 Pulse 进程交来的搜索参数；关闭窗口时缩到托盘。
+    fn poll_tray(&mut self, ctx: &egui::Context) {
+        // 隐藏启动：这一帧之后 eframe 会让窗口可见，所以在下一帧隐藏它再解除隐身。
+        if self.start_hidden {
+            if ctx.cumulative_frame_nr() == 0 {
+                ctx.request_repaint();
+            } else {
+                self.start_hidden = false;
+                tray::hide_window();
+                tray::cloak(false);
+            }
+        }
+        if let Some(filter) = tray::take_pending() {
+            self.filter = filter;
+            self.view = View::Processes;
+            self.dirty = true;
+        }
+        if !ctx.input(|i| i.viewport().close_requested()) || tray::quitting() {
+            return;
+        }
+        if !self.settings.close_to_tray {
+            tray::quit();
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        tray::hide_window();
+        if !self.settings.tray_hinted {
+            self.settings.tray_hinted = true;
+            self.settings.save();
+            tray::notify(
+                t!(
+                    "Pulse 仍在后台运行",
+                    "Pulse is still running",
+                    "Pulse はバックグラウンドで実行中です"
+                ),
+                t!(
+                    "单击通知区域的图标重新打开，右键可以退出。可以在设置中关闭此行为。",
+                    "Click the notification-area icon to reopen it, or right-click to exit. You can turn this off in Settings.",
+                    "通知領域のアイコンをクリックすると再び開き、右クリックで終了できます。この動作は設定で無効にできます。"
+                ),
+            );
+        }
+    }
+
     /// 有新版本且用户没有跳过它。
     fn pending_update(&self) -> Option<Arc<update::Release>> {
         match &self.update.check {
@@ -1588,6 +1676,7 @@ impl App {
         }
         if matches!(self.update.install, update::Install::Restarting) && !self.restarting {
             self.restarting = true;
+            tray::set_quitting();
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
@@ -1595,7 +1684,11 @@ impl App {
     fn apply_update_choice(&mut self, release: Arc<update::Release>, choice: update_view::Choice) {
         use update_view::Choice;
         match choice {
-            Choice::Install => self.updater.install(release),
+            Choice::Install => {
+                // 更新会在本进程退出前启动新版本，先放开单实例锁，新版本才不会把自己交回给这里。
+                tray::release_instance();
+                self.updater.install(release);
+            }
             Choice::Later => {
                 self.updater.dismiss_install_error();
                 self.modal = None;
@@ -1617,6 +1710,9 @@ impl App {
         let s = &self.settings;
         if s.auto_update != before.auto_update {
             self.updater.set_auto(s.auto_update);
+        }
+        if s.close_to_tray != before.close_to_tray {
+            tray::set_visible(s.close_to_tray);
         }
         if s.grouped != before.grouped {
             self.dirty = true;
@@ -1804,6 +1900,7 @@ impl eframe::App for App {
         self.icons.poll(ui.ctx());
         self.poll_update(ui.ctx());
         self.poll_locks(ui.ctx());
+        self.poll_tray(ui.ctx());
         if self.dirty {
             let lock_pids: Option<HashSet<u32>> = self.locks.as_ref().map(|l| {
                 l.report
@@ -1874,12 +1971,14 @@ impl eframe::App for App {
                 let before = self.settings.clone();
                 let elevated = self.snapshot.elevated;
                 let replaced = self.taskmgr_replaced;
+                let autostart = *self.autostart.lock().unwrap();
                 let action = central
                     .show(ui, |ui| {
                         settings_view::show(
                             ui,
                             &mut self.settings,
                             replaced,
+                            autostart,
                             elevated,
                             &self.update.check,
                         )
@@ -1890,6 +1989,20 @@ impl eframe::App for App {
                 }
                 match action {
                     Some(settings_view::SettingsAction::CheckUpdate) => self.updater.check_now(),
+                    Some(settings_view::SettingsAction::SetAutostart(on)) => {
+                        match pulse_probe::autostart::set(on, elevated) {
+                            Ok(()) => *self.autostart.lock().unwrap() = Some(on),
+                            Err(e) => self.notify_err(
+                                t!(
+                                    "无法修改开机启动设置",
+                                    "Couldn't change the startup setting",
+                                    "スタートアップの設定を変更できませんでした"
+                                )
+                                .into(),
+                                Some(e),
+                            ),
+                        }
+                    }
                     Some(settings_view::SettingsAction::ShowUpdate) => {
                         if let update::Check::Available(r) = &self.update.check {
                             self.modal = Some(Modal::Update(r.clone()));
@@ -2298,11 +2411,8 @@ fn lock_path(filter: &str) -> Option<std::path::PathBuf> {
 }
 
 /// 命令行参数作为初始搜索词，例如 `pulse :5173`。
-/// 通过"替换任务管理器"启动时命令行是 `pulse.exe --taskmgr <taskmgr.exe 路径> /7 …`，标记之后的都忽略。
-fn initial_filter() -> String {
-    filter_from_args(std::env::args().skip(1).collect())
-}
-
+/// 通过"替换任务管理器"启动时命令行是 `pulse.exe --taskmgr <taskmgr.exe 路径> /7 …`，标记之后的都忽略；
+/// 开机自启的 `--tray` 不算搜索词。
 fn filter_from_args(args: Vec<String>) -> String {
     // 系统总会把 taskmgr.exe 的路径接在注册表值后面；早期版本写入的值没有 --taskmgr 标记，
     // 所以遇到标记或 taskmgr.exe 路径都停止。
@@ -2310,6 +2420,7 @@ fn filter_from_args(args: Vec<String>) -> String {
         .take_while(|a| {
             a != pulse_probe::os::TASKMGR_FLAG && !a.to_lowercase().ends_with("taskmgr.exe")
         })
+        .filter(|a| a != pulse_probe::autostart::TRAY_FLAG)
         .collect::<Vec<_>>()
         .join(" ")
 }

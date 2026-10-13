@@ -12,6 +12,7 @@ Pulse is a replacement for the Windows Task Manager, written natively in Rust wi
 
 Compared with the built-in Task Manager:
 
+- Closing the window keeps Pulse running in the notification area; click the icon to reopen it. It can start in the notification area at sign-in (turned on as administrator, it uses a scheduled task with highest privileges, so there is no UAC prompt). Launching Pulse again brings up the running window.
 - Search covers process names, descriptions, command lines and paths, with fuzzy matching, typo tolerance and `:port` lookup.
 - Per-process GPU usage and VRAM, network traffic, listening ports and CPU time.
 - Tells same-named processes apart: node.exe shows as "vite · project" or "pnpm dev · project", and likewise for Python, Java and .NET; child processes of Chrome, Edge, VS Code and other Chromium apps are labeled as renderer, GPU process or network service; vmmemWSL shows the running WSL distributions.

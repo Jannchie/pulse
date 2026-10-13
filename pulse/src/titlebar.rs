@@ -57,6 +57,7 @@ pub fn install(cc: &eframe::CreationContext<'_>) -> bool {
     HWND_RAW.store(w.hwnd.get(), Ordering::Relaxed);
     let _ = CTX.set(cc.egui_ctx.clone());
     set_window_icon(hwnd);
+    crate::tray::attach(hwnd);
     unsafe {
         if !SetWindowSubclass(hwnd, Some(subclass), 1, 0).as_bool() {
             return false;
@@ -108,6 +109,13 @@ fn set_window_icon(hwnd: HWND) {
                 );
             }
         }
+    }
+}
+
+/// 让界面重画一帧（从其他线程或窗口消息里唤醒 egui）。
+pub fn request_repaint() {
+    if let Some(ctx) = CTX.get() {
+        ctx.request_repaint();
     }
 }
 
@@ -202,6 +210,9 @@ unsafe extern "system" fn subclass(
     _id: usize,
     _data: usize,
 ) -> LRESULT {
+    if let Some(r) = crate::tray::handle(hwnd, msg, wparam, lparam) {
+        return r;
+    }
     unsafe {
         match msg {
             WM_NCCALCSIZE if wparam.0 != 0 => {

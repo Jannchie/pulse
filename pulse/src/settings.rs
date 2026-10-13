@@ -179,6 +179,10 @@ pub struct Settings {
     pub auto_update: bool,
     /// 用户选择跳过的版本（不带 v），不再为它提示。
     pub skipped_version: String,
+    /// 关闭窗口时缩到通知区域，继续在后台运行。
+    pub close_to_tray: bool,
+    /// 已经提示过"关闭后仍在后台运行"。
+    pub tray_hinted: bool,
 }
 
 impl Default for Settings {
@@ -192,6 +196,8 @@ impl Default for Settings {
             language: Language::System,
             auto_update: true,
             skipped_version: String::new(),
+            close_to_tray: true,
+            tray_hinted: false,
         }
     }
 }
@@ -248,6 +254,8 @@ impl Settings {
                 }
                 "auto_update" => s.auto_update = v != "false",
                 "skip_version" => s.skipped_version = v.to_string(),
+                "close_to_tray" => s.close_to_tray = v != "false",
+                "tray_hinted" => s.tray_hinted = v == "true",
                 _ => {}
             }
         }
@@ -256,7 +264,7 @@ impl Settings {
 
     fn serialize(&self) -> String {
         format!(
-            "speed={}\nalways_on_top={}\ntheme={}\ngrouped={}\nsearch={}\nlanguage={}\nauto_update={}\nskip_version={}\n",
+            "speed={}\nalways_on_top={}\ntheme={}\ngrouped={}\nsearch={}\nlanguage={}\nauto_update={}\nskip_version={}\nclose_to_tray={}\ntray_hinted={}\n",
             self.speed.key(),
             self.always_on_top,
             self.theme.key(),
@@ -265,6 +273,8 @@ impl Settings {
             self.language.key(),
             self.auto_update,
             self.skipped_version,
+            self.close_to_tray,
+            self.tray_hinted,
         )
     }
 
@@ -292,6 +302,8 @@ mod tests {
             language: Language::Ja,
             auto_update: false,
             skipped_version: "0.3.2".into(),
+            close_to_tray: false,
+            tray_hinted: true,
         };
         assert_eq!(Settings::parse(&s.serialize()), s);
         assert_eq!(Settings::parse("garbage\nspeed=nope"), Settings::default());

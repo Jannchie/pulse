@@ -15,6 +15,8 @@ use crate::{dialogs, update_view, widgets};
 pub enum SettingsAction {
     /// 切换"替换任务管理器"（写 IFEO 注册表，需要管理员权限）。
     SetTaskmgrReplaced(bool),
+    /// 开启或关闭开机自启（计划任务或 Run 键）。
+    SetAutostart(bool),
     /// 立即检查更新。
     CheckUpdate,
     /// 打开更新对话框。
@@ -25,6 +27,7 @@ pub fn show(
     ui: &mut Ui,
     settings: &mut Settings,
     taskmgr_replaced: bool,
+    autostart: Option<bool>,
     elevated: bool,
     update: &Check,
 ) -> Option<SettingsAction> {
@@ -173,6 +176,34 @@ pub fn show(
                                 action = Some(SettingsAction::SetTaskmgrReplaced(on));
                             }
                         });
+                        let desc = if elevated {
+                            t!(
+                                "登录后以管理员权限在通知区域启动，不弹出窗口和 UAC 提示。",
+                                "Start in the notification area at sign-in, with administrator rights and no UAC prompt.", "サインイン時に管理者権限で通知領域に起動します。ウィンドウや UAC は表示されません。"
+                            )
+                        } else {
+                            t!(
+                                "登录后在通知区域启动。以管理员身份运行 Pulse 再开启，可获得完整功能且不弹 UAC。",
+                                "Start in the notification area at sign-in. Turn it on while running as administrator to get every feature without a UAC prompt.", "サインイン時に通知領域に起動します。管理者として実行中にオンにすると、UAC なしですべての機能を使えます。"
+                            )
+                        };
+                        row(ui, t!("开机时启动", "Start at sign-in", "サインイン時に起動"), desc, |ui| {
+                            let mut on = autostart.unwrap_or(false);
+                            if widgets::switch(ui, &mut on, autostart.is_some()).changed() {
+                                action = Some(SettingsAction::SetAutostart(on));
+                            }
+                        });
+                        row(
+                            ui,
+                            t!("关闭时保留在通知区域", "Keep running when closed", "閉じても通知領域で実行"),
+                            t!(
+                                "关闭窗口后 Pulse 在后台继续运行，单击通知区域图标重新打开，右键退出。",
+                                "Closing the window keeps Pulse running. Click its notification-area icon to reopen it, or right-click to exit.", "ウィンドウを閉じても Pulse はバックグラウンドで実行を続けます。通知領域のアイコンをクリックすると再び開き、右クリックで終了できます。"
+                            ),
+                            |ui| {
+                                widgets::switch(ui, &mut settings.close_to_tray, true);
+                            },
+                        );
                     });
 
                     group(ui, t!("关于", "About", "バージョン情報"), |ui| {

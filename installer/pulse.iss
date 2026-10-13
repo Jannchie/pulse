@@ -89,6 +89,7 @@ Filename: "{app}\pulse.exe"; Flags: nowait runasoriginaluser; Check: RelaunchAft
 [Code]
 const
   IFEO_TASKMGR = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe';
+  RUN_KEY = 'Software\Microsoft\Windows\CurrentVersion\Run';
 
 { 自动更新传入 /LAUNCH=1：静默安装完成后重新启动 Pulse。 }
 function RelaunchAfterUpdate: Boolean;
@@ -113,13 +114,21 @@ begin
   end;
 end;
 
-{ "替换任务管理器"写的 IFEO 值：只在它指向本次卸载的 pulse.exe 时删除，否则保持原样。 }
+{ 卸载时撤销 Pulse 自己写入的系统设置：
+  - "替换任务管理器"写的 IFEO 值：只在它指向本次卸载的 pulse.exe 时删除，否则保持原样；
+  - "开机时启动"：管理员身份开启时是名为 Pulse 的计划任务，普通权限时是当前用户 Run 键里的 Pulse 值。 }
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Value: String;
+  ResultCode: Integer;
 begin
-  if (CurUninstallStep = usUninstall) and
-     RegQueryStringValue(HKLM64, IFEO_TASKMGR, 'Debugger', Value) and
+  if CurUninstallStep <> usUninstall then
+    Exit;
+  if RegQueryStringValue(HKLM64, IFEO_TASKMGR, 'Debugger', Value) and
      PointsTo(Value, ExpandConstant('{app}\pulse.exe')) then
     RegDeleteValue(HKLM64, IFEO_TASKMGR, 'Debugger');
+  if RegQueryStringValue(HKCU, RUN_KEY, 'Pulse', Value) and
+     PointsTo(Value, ExpandConstant('{app}\pulse.exe')) then
+    RegDeleteValue(HKCU, RUN_KEY, 'Pulse');
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN Pulse /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
