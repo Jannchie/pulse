@@ -245,6 +245,42 @@ pub(crate) fn command_line(handle: &OwnedHandle) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
 
+/// 系统的"打开文件"对话框，`owner` 是父窗口句柄。阻塞到用户选完，放在后台线程调用。
+pub fn pick_file(owner: isize, title: &str) -> Option<String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{
+        CLSCTX_ALL, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
+        CoInitializeEx, CoTaskMemFree, CoUninitialize,
+    };
+    use windows::Win32::UI::Shell::{
+        FOS_FORCEFILESYSTEM, FOS_NODEREFERENCELINKS, FileOpenDialog, IFileOpenDialog,
+        SIGDN_FILESYSPATH,
+    };
+    use windows::core::HSTRING;
+
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+    let result = unsafe {
+        (|| {
+            let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_ALL).ok()?;
+            // 选中快捷方式时查的是快捷方式文件本身，不跳到它指向的目标。
+            dlg.SetOptions(FOS_FORCEFILESYSTEM | FOS_NODEREFERENCELINKS)
+                .ok()?;
+            let _ = dlg.SetTitle(&HSTRING::from(title));
+            let parent = (owner != 0).then_some(HWND(owner as *mut _));
+            dlg.Show(parent).ok()?;
+            let item = dlg.GetResult().ok()?;
+            let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+            let s = name.to_string().ok();
+            CoTaskMemFree(Some(name.0 as *const _));
+            s
+        })()
+    };
+    if com.is_ok() {
+        unsafe { CoUninitialize() };
+    }
+    result
+}
+
 /// FILETIME（100ns，自 1601 年起，UTC）→ 本地时间 `YYYY-MM-DD HH:MM`。
 pub fn format_filetime(t: i64) -> String {
     use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};

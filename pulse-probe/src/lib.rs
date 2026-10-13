@@ -7,10 +7,12 @@ pub mod fonts;
 pub mod gpu;
 pub mod i18n;
 pub mod icon;
+pub mod locks;
 pub mod net;
 pub mod nic;
 pub mod os;
 pub mod ports;
+pub mod runtime;
 pub mod services;
 pub mod sessions;
 pub mod startup;
@@ -116,6 +118,10 @@ pub struct Process {
     /// exe 的文件描述，例如 Code.exe → "Visual Studio Code"。
     pub description: Option<Arc<str>>,
     pub command_line: Option<Arc<str>>,
+    /// 工作目录；只对 node、python 等运行时读取（用来认出项目）。
+    pub cwd: Option<Arc<str>>,
+    /// 比 exe 名更具体的身份：node.exe → "vite · pulse"，Chromium 子进程 → "GPU 进程"。
+    pub identity: Option<runtime::Identity>,
     /// 监听中的 TCP 端口与已绑定的 UDP 端口。
     pub ports: Vec<ports::Port>,
     /// 占全部逻辑核心的百分比（0–100），与任务管理器口径一致。
@@ -215,6 +221,8 @@ struct Entry {
     path: Option<Arc<str>>,
     description: Option<Arc<str>>,
     command_line: Option<Arc<str>>,
+    cwd: Option<Arc<str>>,
+    identity: Option<runtime::Identity>,
 }
 
 pub struct Collector {
@@ -238,6 +246,7 @@ pub struct Collector {
     memory_installed: Option<u64>,
     disks: disk::DiskMonitor,
     nics: nic::NicMonitor,
+    wsl: runtime::WslWatcher,
 }
 
 impl Default for Collector {
@@ -278,6 +287,7 @@ impl Collector {
             memory_installed: system::installed_memory(),
             disks: disk::DiskMonitor::new(),
             nics: nic::NicMonitor::new(),
+            wsl: runtime::WslWatcher::default(),
         }
     }
 
@@ -351,6 +361,14 @@ impl Collector {
                             .clone()
                     });
                     let command_line = handle.as_ref().and_then(os::command_line).map(Arc::from);
+                    let name = image_name(raw);
+                    let cwd = runtime::wants_cwd(&name)
+                        .then(|| locks::current_directory(pid))
+                        .flatten()
+                        .map(Arc::from);
+                    let identity = command_line.as_deref().and_then(|cmd| {
+                        runtime::identify(&name, path.as_deref(), cmd, cwd.as_deref())
+                    });
                     let entry = Entry {
                         cpu_time,
                         io_bytes,
@@ -360,6 +378,8 @@ impl Collector {
                         path,
                         description,
                         command_line,
+                        cwd,
+                        identity,
                     };
                     (entry, true)
                 }
@@ -422,6 +442,8 @@ impl Collector {
                     path: entry.path.clone(),
                     description: entry.description.clone(),
                     command_line: entry.command_line.clone(),
+                    cwd: entry.cwd.clone(),
+                    identity: entry.identity.clone(),
                     ports: ports.remove(&pid).unwrap_or_default(),
                     cpu,
                     private_ws: raw.working_set_private_size as u64,
@@ -466,6 +488,14 @@ impl Collector {
                 }
                 entry.net = now;
             }
+        }
+
+        // WSL 2 的虚拟机进程：标上运行中的发行版。
+        if let Some(vm) = processes
+            .iter_mut()
+            .find(|p| p.name.eq_ignore_ascii_case("vmmemWSL"))
+        {
+            vm.identity = Some(runtime::Identity::Wsl(self.wsl.distros()));
         }
 
         let iface = net::interface_totals();
