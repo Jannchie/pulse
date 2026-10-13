@@ -4,12 +4,10 @@
 //! 是否空闲由这里自己查。用户超过 [`IDLE_MS`] 没有任何输入、或屏幕已锁定时不计时。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::history::{AppRef, Db, ImportReport, PerfMinute, Seconds, TopKind};
+use crate::history::{AppRef, Db, PerfMinute, Seconds, TopKind};
 
 /// 超过这么久没有键盘鼠标输入就算离开，不再计时。
 pub const IDLE_MS: u32 = 5 * 60 * 1000;
@@ -38,15 +36,6 @@ pub struct PerfSample {
     pub procs: Vec<ProcSample>,
 }
 
-#[derive(Clone, Debug, Default)]
-pub enum ImportStatus {
-    #[default]
-    Idle,
-    Running(f32),
-    Done(ImportReport),
-    Failed(String),
-}
-
 enum Msg {
     Perf(PerfSample),
     SetEnabled(bool),
@@ -57,7 +46,6 @@ enum Msg {
 #[derive(Clone)]
 pub struct Recorder {
     tx: Sender<Msg>,
-    import: Arc<Mutex<ImportStatus>>,
 }
 
 impl Recorder {
@@ -67,10 +55,7 @@ impl Recorder {
             .name("recorder".into())
             .spawn(move || run(rx, enabled))
             .expect("spawn recorder");
-        Self {
-            tx,
-            import: Arc::default(),
-        }
+        Self { tx }
     }
 
     pub fn perf(&self, s: PerfSample) {
@@ -87,37 +72,6 @@ impl Recorder {
         if self.tx.send(Msg::Flush(tx)).is_ok() {
             let _ = rx.recv_timeout(Duration::from_secs(2));
         }
-    }
-
-    pub fn import_status(&self) -> ImportStatus {
-        self.import.lock().unwrap().clone()
-    }
-
-    /// 在后台导入 Active Time 的记录（单独的数据库连接，分批提交，不耽误记录线程写入）。
-    pub fn import_active_time(&self, src: PathBuf, notify: impl Fn() + Send + 'static) {
-        let status = self.import.clone();
-        if matches!(*status.lock().unwrap(), ImportStatus::Running(_)) {
-            return;
-        }
-        *status.lock().unwrap() = ImportStatus::Running(0.0);
-        std::thread::spawn(move || {
-            let result = Db::open().and_then(|mut db| {
-                // 只导入 Pulse 开始记录之前的部分，两边不会重复计时。
-                let before = db
-                    .meta("recording_since")
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or_else(now_minute);
-                db.import_active_time(&src, before, &|p| {
-                    *status.lock().unwrap() = ImportStatus::Running(p);
-                    notify();
-                })
-            });
-            *status.lock().unwrap() = match result {
-                Ok(r) => ImportStatus::Done(r),
-                Err(e) => ImportStatus::Failed(e.to_string()),
-            };
-            notify();
-        });
     }
 }
 

@@ -441,8 +441,6 @@ struct App {
     /// 隐藏启动、窗口还处于隐身状态：第一帧画完后隐藏窗口。
     start_hidden: bool,
     recorder: recorder::Recorder,
-    /// Active Time 的数据库（找到时）。
-    active_time: Option<std::path::PathBuf>,
 }
 
 /// 本程序在 GitHub 上的发布信息。
@@ -541,7 +539,6 @@ impl App {
             autostart,
             start_hidden: hidden,
             recorder,
-            active_time: history::active_time_db(),
             settings,
             scroll_to: None,
             passes: VecDeque::new(),
@@ -2034,10 +2031,6 @@ impl eframe::App for App {
                 let elevated = self.snapshot.elevated;
                 let replaced = self.taskmgr_replaced;
                 let autostart = *self.autostart.lock().unwrap();
-                let import = self
-                    .active_time
-                    .as_ref()
-                    .map(|_| self.recorder.import_status());
                 let action = central
                     .show(ui, |ui| {
                         settings_view::show(
@@ -2047,7 +2040,6 @@ impl eframe::App for App {
                             autostart,
                             elevated,
                             &self.update.check,
-                            import.as_ref(),
                         )
                     })
                     .inner;
@@ -2056,13 +2048,6 @@ impl eframe::App for App {
                 }
                 match action {
                     Some(settings_view::SettingsAction::CheckUpdate) => self.updater.check_now(),
-                    Some(settings_view::SettingsAction::ImportActiveTime) => {
-                        if let Some(src) = self.active_time.clone() {
-                            let ctx = ui.ctx().clone();
-                            self.recorder
-                                .import_active_time(src, move || ctx.request_repaint());
-                        }
-                    }
                     Some(settings_view::SettingsAction::SetAutostart(on)) => {
                         match pulse_probe::autostart::set(on, elevated) {
                             Ok(()) => *self.autostart.lock().unwrap() = Some(on),

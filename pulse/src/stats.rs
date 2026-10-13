@@ -247,7 +247,7 @@ impl Store {
         Ok(())
     }
 
-    /// 导入的旧记录只有程序名、没有路径；同名程序正在运行时借用它的路径，就有了图标和友好的名称。
+    /// 有些旧记录只有程序名、没有路径；同名程序正在运行时借用它的路径，就有了图标和友好的名称。
     pub fn fill_paths(&mut self, procs: &[pulse_probe::Process]) {
         let mut running: HashMap<String, &std::sync::Arc<str>> = HashMap::new();
         for p in procs {

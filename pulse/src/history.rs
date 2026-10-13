@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// 性能明细保留的天数；使用记录不清理（每天只有几百行）。
 const PERF_DAYS: i64 = 30;
@@ -23,7 +23,7 @@ pub fn path() -> Option<PathBuf> {
     )
 }
 
-/// 程序的标识：按 exe 文件名（不含扩展名、不区分大小写）归并，与 Active Time 的记录一致。
+/// 程序的标识：按 exe 文件名（不含扩展名、不区分大小写）归并。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AppRef {
     /// 小写的 exe 文件名。
@@ -91,7 +91,11 @@ impl Db {
 
     pub fn open_at(p: &std::path::Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(p)?;
-        conn.execute_batch(
+        // 统计页等其他连接写入时，等它写完而不是直接失败。
+        conn.busy_timeout(std::time::Duration::from_secs(30))?;
+        // 两个连接同时建库时，切换 WAL 不走 busy_timeout，会直接报 "database is locked"，稍后重试。
+        let mut tries = 0;
+        while let Err(e) = conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -113,7 +117,13 @@ impl Db {
                  minute INTEGER NOT NULL, kind INTEGER NOT NULL, rank INTEGER NOT NULL,
                  app INTEGER NOT NULL, pid INTEGER NOT NULL, value REAL NOT NULL,
                  PRIMARY KEY(minute, kind, rank)) WITHOUT ROWID;",
-        )?;
+        ) {
+            tries += 1;
+            if tries >= 50 || e.sqlite_error_code() != Some(rusqlite::ErrorCode::DatabaseBusy) {
+                return Err(e);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         Ok(Self {
             conn,
             apps: HashMap::new(),
@@ -227,7 +237,7 @@ impl Db {
                 tops.push((*kind as i64, *rank, id, *pid, *value));
             }
         }
-        // 保存点：单独调用时就是一个事务，导入时嵌套在外层事务里也能用。
+        // 这一分钟的所有写入放在同一个事务里。
         let tx = self.conn.savepoint()?;
         {
             let mut ins = tx.prepare_cached(
@@ -284,180 +294,6 @@ impl Db {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 从 Active Time 导入
-
-/// Active Time 的数据库位置（存在时）。
-pub fn active_time_db() -> Option<PathBuf> {
-    let p = PathBuf::from(std::env::var_os("APPDATA")?)
-        .join("Active Time")
-        .join("data.db");
-    p.exists().then_some(p)
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ImportReport {
-    pub minutes: i64,
-    pub seconds: i64,
-    pub programs: usize,
-}
-
-/// Active Time 记录的程序名：去掉 `.exe`；被当成 GBK 解码的日文（"偍偟偐偗" 这类）还原成 Shift-JIS 的原文。
-pub fn clean_program_name(raw: &str) -> String {
-    let name = raw
-        .len()
-        .checked_sub(4)
-        .filter(|&n| raw.is_char_boundary(n) && raw[n..].eq_ignore_ascii_case(".exe"))
-        .map_or(raw, |n| &raw[..n]);
-    let kana = |s: &str| s.chars().any(|c| ('\u{3040}'..='\u{30ff}').contains(&c));
-    let cjk = name.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
-    if cjk
-        && !kana(name)
-        && let Some(fixed) = pulse_probe::foreground::recode(name, 936, 932)
-        && kana(&fixed)
-    {
-        return fixed;
-    }
-    name.to_string()
-}
-
-impl Db {
-    /// 导入 Active Time 的记录：只导入 `before`（Pulse 开始记录的那一分钟）之前的部分，
-    /// 两边不会重复计时。`progress` 收到 0–1 的进度。
-    pub fn import_active_time(
-        &mut self,
-        src: &std::path::Path,
-        before: i64,
-        progress: &dyn Fn(f32),
-    ) -> rusqlite::Result<ImportReport> {
-        let from = self
-            .meta("import.active_time.until")
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(i64::MIN);
-        let srcdb = Connection::open_with_flags(
-            src,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        let mut report = ImportReport::default();
-        let mut programs = std::collections::HashSet::new();
-        // (分钟, 程序, 标题) → 秒数；按分钟顺序读，换分钟时写入上一分钟。
-        let mut cur_minute = i64::MIN;
-        let mut cur: HashMap<(AppRef, String), Seconds> = HashMap::new();
-        let mut names: HashMap<String, AppRef> = HashMap::new();
-        let flush = |db: &mut Db,
-                     minute: i64,
-                     cur: &mut HashMap<(AppRef, String), Seconds>,
-                     report: &mut ImportReport|
-         -> rusqlite::Result<()> {
-            if cur.is_empty() {
-                return Ok(());
-            }
-            report.minutes += 1;
-            report.seconds += cur.values().map(|s| s.active as i64).sum::<i64>();
-            db.write_minute(minute, cur, None)?;
-            cur.clear();
-            Ok(())
-        };
-
-        // 2022-06-23 起最早的几天带窗口标题（表名 ls、is），时间是 "2022-06-23 02:55:00.000 +00:00"。
-        // 之后的 minute_records 只有程序名，时间是毫秒。
-        let mut sources: Vec<(String, bool)> = Vec::new();
-        for t in ["ls", "is"] {
-            let exists: bool = srcdb
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                    [t],
-                    |r| r.get::<_, i64>(0),
-                )
-                .map(|n| n > 0)?;
-            if exists {
-                sources.push((t.to_string(), true));
-            }
-        }
-        sources.push(("minute_records".into(), false));
-
-        let (lo, hi): (i64, i64) = srcdb.query_row(
-            "SELECT COALESCE(MIN(timestamp), 0), COALESCE(MAX(timestamp), 0) FROM minute_records",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        let span = ((hi - lo) / 60_000).max(1) as f32;
-
-        self.conn.execute_batch("BEGIN")?;
-        let result = (|| -> rusqlite::Result<()> {
-            for (table, text_time) in &sources {
-                let sql = if *text_time {
-                    format!(
-                        "SELECT CAST(strftime('%s', substr(timestamp, 1, 19)) AS INTEGER) / 60,
-                                program, COALESCE(title, ''), event, seconds
-                         FROM \"{table}\" ORDER BY timestamp"
-                    )
-                } else {
-                    "SELECT timestamp / 60000, program, '', event, seconds
-                     FROM minute_records ORDER BY timestamp"
-                        .to_string()
-                };
-                let mut stmt = srcdb.prepare(&sql)?;
-                let mut rows = stmt.query([])?;
-                let mut n = 0u64;
-                while let Some(r) = rows.next()? {
-                    // Active Time 的库里偶有字段为空的行，跳过。
-                    let Some(minute) = r.get::<_, Option<i64>>(0)? else {
-                        continue;
-                    };
-                    if minute <= from || minute >= before {
-                        continue;
-                    }
-                    let program: Option<String> = r.get(1)?;
-                    let Some(program) = program.filter(|p| !p.is_empty()) else {
-                        continue;
-                    };
-                    let title: String = r.get::<_, Option<String>>(2)?.unwrap_or_default();
-                    let event: Option<String> = r.get(3)?;
-                    let seconds: i64 = r.get::<_, Option<i64>>(4)?.unwrap_or(0);
-                    if minute != cur_minute {
-                        // 写入时已在外层事务里；write_minute 自己的事务改用保存点。
-                        flush(self, cur_minute, &mut cur, &mut report)?;
-                        cur_minute = minute;
-                        n += 1;
-                        if n.is_multiple_of(2000) && !*text_time {
-                            progress(((minute * 60_000 - lo) / 60_000) as f32 / span);
-                        }
-                    }
-                    let app = names
-                        .entry(program.clone())
-                        .or_insert_with(|| AppRef::new(&clean_program_name(&program), None))
-                        .clone();
-                    programs.insert(app.key.clone());
-                    let s = cur.entry((app, title)).or_default();
-                    let secs = seconds.clamp(0, 60) as u32;
-                    s.active = (s.active + secs).min(60);
-                    if event.as_deref() == Some("type") {
-                        s.typing = (s.typing + secs).min(60);
-                    }
-                }
-            }
-            flush(self, cur_minute, &mut cur, &mut report)
-        })();
-        match result {
-            Ok(()) => {
-                let until = before.min(hi / 60_000);
-                self.set_meta("import.active_time.until", &until.to_string())?;
-                self.conn.execute_batch("COMMIT")?;
-            }
-            Err(e) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                self.apps.clear();
-                self.titles.clear();
-                return Err(e);
-            }
-        }
-        progress(1.0);
-        report.programs = programs.len();
-        Ok(report)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,20 +305,6 @@ mod tests {
         let p = dir.join("history.db");
         let db = Db::open_at(&p).unwrap();
         (dir, db)
-    }
-
-    #[test]
-    fn cleans_program_names() {
-        assert_eq!(clean_program_name("Code.exe"), "Code");
-        assert_eq!(clean_program_name("msedge"), "msedge");
-        assert_eq!(
-            clean_program_name("偍偟偐偗墱條偲丄僉儈偺塕"),
-            "おしかけ奥様と、キミの嘘"
-        );
-        // 本来就是中文、日文的名字不动。
-        assert_eq!(clean_program_name("觅长生"), "觅长生");
-        assert_eq!(clean_program_name("オフィスお尻"), "オフィスお尻");
-        assert_eq!(clean_program_name("信息:"), "信息:");
     }
 
     #[test]
@@ -515,94 +337,21 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    fn total(db: &Db, key: &str) -> i64 {
-        db.conn
-            .query_row(
-                "SELECT COALESCE(SUM(u.active), 0) FROM usage u JOIN apps a ON a.id = u.app WHERE a.key = ?1",
-                [key],
-                |r| r.get(0),
-            )
-            .unwrap()
-    }
-
-    /// 造一个 Active Time 格式的小库，确认导入的换算与截止时间。
     #[test]
-    fn imports_active_time() {
-        let (dir, mut db) = temp_db("import");
-        let src = dir.join("data.db");
-        let s = Connection::open(&src).unwrap();
-        s.execute_batch(
-            "CREATE TABLE `is` (id INTEGER PRIMARY KEY, program TEXT, title TEXT, event TEXT, timestamp DATETIME, seconds INTEGER, createdAt DATETIME);
-             INSERT INTO `is`(program, title, event, timestamp, seconds, createdAt) VALUES
-               ('Code.exe', 'a.rs', 'type', '2022-06-23 02:55:00.000 +00:00', 5, ''),
-               ('Code.exe', 'a.rs', 'read', '2022-06-23 02:55:00.000 +00:00', 5, '');
-             CREATE TABLE minute_records (id INTEGER PRIMARY KEY, program TEXT, title TEXT, event TEXT, timestamp DATETIME, seconds INTEGER, createdAt DATETIME);
-             INSERT INTO minute_records(program, event, timestamp, seconds, createdAt) VALUES
-               ('msedge', 'read', 1656354420000, 40, ''),
-               ('msedge', 'type', 1656354420000, 30, ''),
-               ('偍偟偐偗', 'read', 1656354480000, 5, ''),
-               ('msedge', 'read', 1700000000000, 5, '');",
-        )
-        .unwrap();
-        drop(s);
-        // Pulse 从 1700000000000 那一分钟开始记录，之后的不导入。
-        let before = 1_700_000_000_000 / 60_000;
-        let r = db.import_active_time(&src, before, &|_| {}).unwrap();
-        assert_eq!(r.minutes, 3);
-        assert_eq!(r.programs, 3);
-        assert_eq!(total(&db, "code"), 10);
-        // 同一分钟 70 秒封顶为 60。
-        assert_eq!(total(&db, "msedge"), 60);
-        assert_eq!(total(&db, "おしかけ"), 5);
-        let titled: i64 = db
-            .conn
-            .query_row("SELECT COUNT(*) FROM titles WHERE text = 'a.rs'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(titled, 1);
-        // 再导一次不会重复。
-        let again = db.import_active_time(&src, before, &|_| {}).unwrap();
-        assert_eq!(again.minutes, 0);
-        assert_eq!(total(&db, "msedge"), 60);
-        drop(db);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod real_import {
-    use super::*;
-
-    /// 用本机真实的 Active Time 数据（只读）导入到临时库，看耗时与结果。
-    /// `cargo test --release -p pulse -- --ignored --nocapture real_active_time`
-    #[test]
-    #[ignore]
-    fn real_active_time() {
-        let Some(src) = active_time_db() else { return };
-        let dir = std::env::temp_dir().join("pulse-real-import");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut db = Db::open_at(&dir.join("history.db")).unwrap();
-        let t = std::time::Instant::now();
-        let r = db
-            .import_active_time(&src, i64::MAX, &|p| eprint!("\r{:.0}%  ", p * 100.0))
-            .unwrap();
-        eprintln!("\n{r:?} in {:?}", t.elapsed());
-        let mut stmt = db
-            .conn
-            .prepare(
-                "SELECT a.name, SUM(d.active) / 3600 FROM usage_day d JOIN apps a ON a.id = d.app
-                 GROUP BY d.app ORDER BY 2 DESC LIMIT 15",
-            )
-            .unwrap();
-        let top: Vec<(String, i64)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        eprintln!("top: {top:?}");
-        let size = std::fs::metadata(dir.join("history.db")).unwrap().len();
-        eprintln!("db size {} MB", size / 1_000_000);
+    fn opens_concurrently() {
+        // 记录线程和统计页同时建库，两边都要打开成功。
+        for i in 0..10 {
+            let (dir, _db) = temp_db(&format!("race{i}"));
+            let p = dir.with_file_name("race.db");
+            let opens: Vec<_> = (0..2)
+                .map(|_| {
+                    let p = p.clone();
+                    std::thread::spawn(move || Db::open_at(&p).map(drop))
+                })
+                .collect();
+            for h in opens {
+                h.join().unwrap().unwrap();
+            }
+        }
     }
 }

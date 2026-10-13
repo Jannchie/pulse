@@ -92,7 +92,7 @@ impl StatsState {
         self.loaded = Some((self.range, self.anchor, Instant::now()));
     }
 
-    /// 让下一帧重新查询（例如导入完成后）。
+    /// 让下一帧重新查询。
     pub fn invalidate(&mut self) {
         self.loaded = None;
     }
@@ -315,9 +315,9 @@ fn empty(ui: &mut Ui) {
         ui.add_space(4.0);
         ui.label(
             RichText::new(t!(
-                "Pulse 在后台运行时会记录各程序在前台的时长。也可以在「设置 → 使用记录」里导入 Active Time 的数据。",
-                "Pulse records how long each program is in the foreground while it runs. You can also import Active Time data under Settings → Activity.",
-                "Pulse の実行中は、各プログラムが前面にあった時間を記録します。「設定 → 使用状況の記録」から Active Time のデータを取り込むこともできます。"
+                "Pulse 在后台运行时会记录各程序在前台的时长。",
+                "Pulse records how long each program is in the foreground while it runs.",
+                "Pulse の実行中は、各プログラムが前面にあった時間を記録します。"
             ))
             .size(12.5)
             .color(p.muted),
