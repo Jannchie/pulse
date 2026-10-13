@@ -1,4 +1,4 @@
-//! 统计页的数据：从使用记录库里按日、周、月、全部汇总各程序的使用时长。
+//! 统计页的数据：从使用记录库里按日、周、月、年、最近 N 天、自选区间汇总各程序的使用时长。
 //!
 //! 只读连接，查询都在毫秒级（按天的汇总表很小，单日明细有分钟索引），在界面线程里直接查，结果缓存。
 
@@ -94,40 +94,150 @@ impl Date {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Range {
+    /// 包含锚点的自然日、周、月、年。
     Day,
     Week,
     Month,
+    Year,
+    /// 截止到现在的最近 24 小时、7 天、30 天、365 天（含今天）。
+    Last24h,
+    Last7,
+    Last30,
+    Last365,
     All,
+    /// 日历上选的区间 [起, 止)。
+    Custom(Date, Date),
+}
+
+/// 图表里一列代表多长时间。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grain {
+    FiveMin,
+    Day,
+    Week,
+    Month,
+}
+
+/// 区间实际覆盖的日期 [start, end)；最近 24 小时还有精确到分钟的 [起, 止)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub start: Date,
+    pub end: Date,
+    pub minutes: Option<(i64, i64)>,
+}
+
+impl Span {
+    fn days(start: Date, end: Date) -> Self {
+        Self {
+            start,
+            end,
+            minutes: None,
+        }
+    }
+
+    pub fn len_days(&self) -> i64 {
+        self.start.days_until(self.end)
+    }
+
+    /// 按分钟的 [起, 止)。
+    pub fn minute_bounds(&self) -> (i64, i64) {
+        self.minutes
+            .unwrap_or((self.start.minute(), self.end.minute()))
+    }
 }
 
 impl Range {
-    pub const ALL: [Range; 4] = [Range::Day, Range::Week, Range::Month, Range::All];
+    /// 自然区间（可前后翻页）。
+    pub const PERIODS: [Range; 5] = [
+        Range::Day,
+        Range::Week,
+        Range::Month,
+        Range::Year,
+        Range::All,
+    ];
+    /// 截止到现在的滚动区间。
+    pub const ROLLING: [Range; 4] = [Range::Last24h, Range::Last7, Range::Last30, Range::Last365];
 
-    /// 包含 `anchor` 的区间 [起, 止)。
-    pub fn bounds(self, anchor: Date, first: Option<Date>) -> (Date, Date) {
+    pub fn span(self, anchor: Date, first: Option<Date>) -> Span {
+        let today = Date::today();
+        let tomorrow = today.add_days(1);
         match self {
-            Range::Day => (anchor, anchor.add_days(1)),
+            Range::Day => Span::days(anchor, anchor.add_days(1)),
             Range::Week => {
                 let start = anchor.add_days(-(anchor.weekday() as i64));
-                (start, start.add_days(7))
+                Span::days(start, start.add_days(7))
             }
-            Range::Month => (anchor.month_start(), anchor.month_start().add_months(1)),
-            Range::All => (
-                first.unwrap_or(anchor).month_start(),
-                Date::today().add_days(1),
-            ),
+            Range::Month => Span::days(anchor.month_start(), anchor.month_start().add_months(1)),
+            Range::Year => {
+                let start = Date {
+                    y: anchor.y,
+                    m: 1,
+                    d: 1,
+                };
+                Span::days(start, start.add_months(12))
+            }
+            Range::Last24h => {
+                // 截止到下一个 5 分钟整点，图表的每个点正好对齐 5 分钟。
+                let end = (now_minute() + 4) / 5 * 5;
+                let start = end - 24 * 60;
+                Span {
+                    start: Date::from_key(pulse_probe::os::local_day(start * 60)),
+                    end: tomorrow,
+                    minutes: Some((start, end)),
+                }
+            }
+            Range::Last7 => Span::days(today.add_days(-6), tomorrow),
+            Range::Last30 => Span::days(today.add_days(-29), tomorrow),
+            Range::Last365 => Span::days(today.add_days(-364), tomorrow),
+            Range::All => Span::days(first.unwrap_or(anchor).month_start(), tomorrow),
+            Range::Custom(a, b) => Span::days(a, b),
         }
     }
 
-    /// 上一个 / 下一个区间的锚点。
-    pub fn step(self, anchor: Date, dir: i32) -> Date {
+    /// 图表一列的粒度：列数大致在 7–60 之间。
+    pub fn grain(self, span: &Span) -> Grain {
         match self {
-            Range::Day => anchor.add_days(dir as i64),
-            Range::Week => anchor.add_days(7 * dir as i64),
-            Range::Month => anchor.month_start().add_months(dir),
-            Range::All => anchor,
+            Range::Day | Range::Last24h => Grain::FiveMin,
+            Range::Week | Range::Month | Range::Last7 | Range::Last30 => Grain::Day,
+            Range::Last365 => Grain::Week,
+            Range::Year | Range::All => Grain::Month,
+            Range::Custom(..) => match span.len_days() {
+                ..=1 => Grain::FiveMin,
+                2..=62 => Grain::Day,
+                63..=420 => Grain::Week,
+                _ => Grain::Month,
+            },
         }
     }
+
+    /// 能否前后翻页：截止到现在的区间与"全部"不能。
+    pub fn steppable(self) -> bool {
+        matches!(
+            self,
+            Range::Day | Range::Week | Range::Month | Range::Year | Range::Custom(..)
+        )
+    }
+
+    /// 上一个 / 下一个区间：返回新的区间与锚点。
+    pub fn step(self, anchor: Date, dir: i32) -> (Range, Date) {
+        match self {
+            Range::Day => (self, anchor.add_days(dir as i64)),
+            Range::Week => (self, anchor.add_days(7 * dir as i64)),
+            Range::Month => (self, anchor.month_start().add_months(dir)),
+            Range::Year => (self, anchor.month_start().add_months(12 * dir)),
+            Range::Custom(a, b) => {
+                let n = a.days_until(b) * dir as i64;
+                (Range::Custom(a.add_days(n), b.add_days(n)), anchor)
+            }
+            _ => (self, anchor),
+        }
+    }
+}
+
+fn now_minute() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64 / 60)
 }
 
 #[derive(Clone, Debug)]
@@ -165,11 +275,13 @@ impl Column {
 
 #[derive(Clone, Debug)]
 pub struct Data {
-    pub range: Range,
-    pub start: Date,
+    pub span: Span,
+    pub grain: Grain,
     pub totals: Vec<Total>,
-    /// 日视图：288 个 5 分钟；周、月视图：每天一列；全部：每月一列。
+    /// 每 5 分钟一列（共 288 列，从 `span.minute_bounds().0` 起），或每天、每周、每月一列。
     pub columns: Vec<Column>,
+    /// 按天以上的粒度时，每列的起始日期（第一列可能早于 `span.start`，如月粒度时是那个月的 1 日）。
+    pub buckets: Vec<Date>,
     /// 有记录的天数（算日均用）。
     pub days_with_data: i64,
     /// 热力图：最近 53 周每天的活跃秒数。
@@ -285,15 +397,27 @@ impl Store {
         let first: Option<i64> =
             conn.query_row("SELECT MIN(day) FROM usage_day", [], |r| r.get(0))?;
         let first = first.map(Date::from_key);
-        let (start, end) = range.bounds(anchor, first);
+        let span = range.span(anchor, first);
+        let grain = range.grain(&span);
+        let (start, end) = (span.start, span.end);
 
         let mut totals = Vec::new();
         {
-            let mut stmt = conn.prepare_cached(
-                "SELECT app, SUM(active), SUM(typing) FROM usage_day
-                 WHERE day >= ?1 AND day < ?2 GROUP BY app ORDER BY 2 DESC",
-            )?;
-            let rows = stmt.query_map([start.key(), end.key()], |r| {
+            // 最近 24 小时不是整天，按分钟明细汇总；其余按天的汇总表。
+            let (sql, bounds) = match span.minutes {
+                Some((a, b)) => (
+                    "SELECT app, SUM(active), SUM(typing) FROM usage
+                     WHERE minute >= ?1 AND minute < ?2 GROUP BY app ORDER BY 2 DESC",
+                    [a, b],
+                ),
+                None => (
+                    "SELECT app, SUM(active), SUM(typing) FROM usage_day
+                     WHERE day >= ?1 AND day < ?2 GROUP BY app ORDER BY 2 DESC",
+                    [start.key(), end.key()],
+                ),
+            };
+            let mut stmt = conn.prepare_cached(sql)?;
+            let rows = stmt.query_map(bounds, |r| {
                 Ok(Total {
                     app: r.get(0)?,
                     active: r.get(1)?,
@@ -310,64 +434,63 @@ impl Store {
             |r| r.get(0),
         )?;
 
-        let columns = match range {
-            Range::Day => {
-                let (a, b) = (start.minute(), end.minute());
-                let slots = ((b - a) / 5).clamp(1, 300) as usize;
-                let mut cols = vec![HashMap::<i64, i64>::new(); slots];
-                let mut stmt = conn.prepare_cached(
-                    "SELECT minute, app, SUM(active) FROM usage
-                     WHERE minute >= ?1 AND minute < ?2 GROUP BY minute, app",
-                )?;
-                let rows = stmt.query_map([a, b], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, i64>(2)?,
-                    ))
-                })?;
-                for row in rows {
-                    let (minute, app, secs) = row?;
-                    let i = ((minute - a) / 5) as usize;
-                    if let Some(c) = cols.get_mut(i) {
-                        *c.entry(app).or_default() += secs;
-                    }
+        let mut buckets = Vec::new();
+        let columns = if grain == Grain::FiveMin {
+            let (a, b) = span.minute_bounds();
+            let slots = ((b - a) / 5).clamp(1, 300) as usize;
+            let mut cols = vec![HashMap::<i64, i64>::new(); slots];
+            let mut stmt = conn.prepare_cached(
+                "SELECT minute, app, SUM(active) FROM usage
+                 WHERE minute >= ?1 AND minute < ?2 GROUP BY minute, app",
+            )?;
+            let rows = stmt.query_map([a, b], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (minute, app, secs) = row?;
+                let i = ((minute - a) / 5) as usize;
+                if let Some(c) = cols.get_mut(i) {
+                    *c.entry(app).or_default() += secs;
                 }
-                cols.into_iter().map(to_column).collect()
             }
-            Range::Week | Range::Month | Range::All => {
-                let by_month = range == Range::All;
-                let n = if by_month {
-                    let months = (end.y - start.y) * 12 + end.m as i32 - start.m as i32 + 1;
-                    months.max(1) as usize
-                } else {
-                    start.days_until(end).max(1) as usize
+            cols.into_iter().map(to_column).collect()
+        } else {
+            let mut b = match grain {
+                Grain::Month => start.month_start(),
+                _ => start,
+            };
+            while b < end {
+                buckets.push(b);
+                b = match grain {
+                    Grain::Month => b.add_months(1),
+                    Grain::Week => b.add_days(7),
+                    _ => b.add_days(1),
                 };
-                let mut cols = vec![HashMap::<i64, i64>::new(); n];
-                let mut stmt = conn.prepare_cached(
-                    "SELECT day, app, active FROM usage_day WHERE day >= ?1 AND day < ?2",
-                )?;
-                let rows = stmt.query_map([start.key(), end.key()], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, i64>(2)?,
-                    ))
-                })?;
-                for row in rows {
-                    let (day, app, secs) = row?;
-                    let d = Date::from_key(day);
-                    let i = if by_month {
-                        ((d.y - start.y) * 12 + d.m as i32 - start.m as i32) as usize
-                    } else {
-                        start.days_until(d) as usize
-                    };
-                    if let Some(c) = cols.get_mut(i) {
-                        *c.entry(app).or_default() += secs;
-                    }
-                }
-                cols.into_iter().map(to_column).collect()
             }
+            let mut cols = vec![HashMap::<i64, i64>::new(); buckets.len().max(1)];
+            let mut stmt = conn.prepare_cached(
+                "SELECT day, app, active FROM usage_day WHERE day >= ?1 AND day < ?2",
+            )?;
+            let rows = stmt.query_map([start.key(), end.key()], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (day, app, secs) = row?;
+                let d = Date::from_key(day);
+                let i = buckets.partition_point(|&b| b <= d).saturating_sub(1);
+                if let Some(c) = cols.get_mut(i) {
+                    *c.entry(app).or_default() += secs;
+                }
+            }
+            cols.into_iter().map(to_column).collect()
         };
 
         // 热力图：截至 anchor 所在周的最近 53 周。
@@ -388,10 +511,11 @@ impl Store {
         }
 
         Ok(Data {
-            range,
-            start,
+            span,
+            grain,
             totals,
             columns,
+            buckets,
             days_with_data,
             heat,
             first,
@@ -438,13 +562,43 @@ mod tests {
     }
 
     #[test]
-    fn range_bounds() {
+    fn range_spans() {
         let d = Date::from_key(20261013);
-        let (a, b) = Range::Week.bounds(d, None);
-        assert_eq!((a.key(), b.key()), (20261012, 20261019));
-        let (a, b) = Range::Month.bounds(d, None);
-        assert_eq!((a.key(), b.key()), (20261001, 20261101));
-        assert_eq!(Range::Month.step(d, -1).key(), 20260901);
+        let keys = |r: Range| {
+            let s = r.span(d, None);
+            (s.start.key(), s.end.key())
+        };
+        assert_eq!(keys(Range::Week), (20261012, 20261019));
+        assert_eq!(keys(Range::Month), (20261001, 20261101));
+        assert_eq!(keys(Range::Year), (20260101, 20270101));
+        assert_eq!(Range::Month.step(d, -1).1.key(), 20260901);
+        assert_eq!(Range::Year.step(d, 1).1.y, 2027);
+        let custom = Range::Custom(Date::from_key(20260901), Date::from_key(20260911));
+        assert_eq!(
+            custom.step(d, -1).0,
+            Range::Custom(Date::from_key(20260822), Date::from_key(20260901))
+        );
+        // 最近 N 天含今天。
+        let s = Range::Last7.span(d, None);
+        assert_eq!(s.len_days(), 7);
+        assert_eq!(s.end, Date::today().add_days(1));
+        let s = Range::Last24h.span(d, None);
+        let (a, b) = s.minutes.unwrap();
+        assert_eq!((b - a, b % 5), (1440, 0));
+    }
+
+    #[test]
+    fn grains() {
+        let d = Date::from_key(20261013);
+        let custom = |a: i64, b: i64| Range::Custom(Date::from_key(a), Date::from_key(b));
+        let g = |r: Range| r.grain(&r.span(d, None));
+        assert_eq!(g(Range::Last24h), Grain::FiveMin);
+        assert_eq!(g(Range::Last30), Grain::Day);
+        assert_eq!(g(Range::Last365), Grain::Week);
+        assert_eq!(g(Range::Year), Grain::Month);
+        assert_eq!(g(custom(20261013, 20261014)), Grain::FiveMin);
+        assert_eq!(g(custom(20260901, 20261014)), Grain::Day);
+        assert_eq!(g(custom(20250101, 20261014)), Grain::Month);
     }
 
     #[test]

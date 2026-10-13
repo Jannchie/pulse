@@ -59,6 +59,7 @@ pub enum Icon {
     FileLock,
     History,
     ChevronLeft,
+    Calendar,
 }
 
 impl Icon {
@@ -117,6 +118,7 @@ impl Icon {
             Icon::FileLock => "file-lock",
             Icon::History => "history",
             Icon::ChevronLeft => "chevron-left",
+            Icon::Calendar => "calendar",
         }
     }
 
@@ -126,7 +128,7 @@ impl Icon {
     }
 }
 
-static TABLE: [[&str; 29]; 53] = [
+static TABLE: [[&str; 29]; 54] = [
     // search
     [
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 10.5a6.5 6.5 0 1 0 13 0 6.5 6.5 0 1 0-13 0m11.1 4.6l5.4 5.4\" stroke-width=\"1.5\"/></svg>",
@@ -1822,5 +1824,37 @@ static TABLE: [[&str; 29]; 53] = [
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"38\" height=\"38\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M15.3 5.4L9.05 11.65a.5.5 0 0 0 0 .7L15.3 18.6\" stroke-width=\"1.5\"/></svg>",
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"39\" height=\"39\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M15.3 5.4L9.05 11.65a.5.5 0 0 0 0 .7L15.3 18.6\" stroke-width=\"1.5\"/></svg>",
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M15.3 5.4L9.05 11.65a.5.5 0 0 0 0 .7L15.3 18.6\" stroke-width=\"1.5\"/></svg>",
+    ],
+    // calendar
+    [
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6.75 4.75h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H6.75a2 2 0 0 1-2-2V6.75a2 2 0 0 1 2-2zm-2 5h16.5M8.5 2.75v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.06 4.9h12.5a2 2 0 0 1 2 2V19.4a2 2 0 0 1-2 2H5.06a2 2 0 0 1-2-2V6.9a2 2 0 0 1 2-2zm-2 5h16.5M6.81 2.9V7.4m9-4.5V7.4\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 4.32h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V6.32a2 2 0 0 1 2-2zm-2 5h16.5M7.5 2.32v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 5.35h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V7.35a2 2 0 0 1 2-2zm-2 5h16.5M7.5 3.35v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 5.25h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V7.25a2 2 0 0 1 2-2zm-2 5h16.5M7.5 3.25v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"17\" height=\"17\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 5.34h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V7.34a2 2 0 0 1 2-2zm-2 5h16.5M7.5 3.34v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 5.08h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V7.08a2 2 0 0 1 2-2zm-2 5h16.5M7.5 3.08v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"19\" height=\"19\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6.22 4.54h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H6.22a2 2 0 0 1-2-2V6.54a2 2 0 0 1 2-2zm-2 5h16.5m-12.75-7v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6.35 4.35h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H6.35a2 2 0 0 1-2-2V6.35a2 2 0 0 1 2-2zm-2 5h16.5M8.1 2.35v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"21\" height=\"21\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.32 4.46h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.32a2 2 0 0 1-2-2V6.46a2 2 0 0 1 2-2zm-2 5h16.5m-12.75-7v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"22\" height=\"22\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 4.48h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V6.48a2 2 0 0 1 2-2zm-2 5h16.5M7.5 2.48v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"23\" height=\"23\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.62 4.92h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.62a2 2 0 0 1-2-2V6.92a2 2 0 0 1 2-2zm-2 5h16.5m-12.75-7v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 4.75h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V6.75a2 2 0 0 1 2-2zm-2 5h16.5M7.5 2.75v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"25\" height=\"25\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 4.59h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V6.59a2 2 0 0 1 2-2zm-2 5h16.5M7.5 2.59v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"26\" height=\"26\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.46 4.98h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.46a2 2 0 0 1-2-2V6.98a2 2 0 0 1 2-2zm-2 5h16.5m-12.75-7v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"27\" height=\"27\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6.11 4.97h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H6.11a2 2 0 0 1-2-2V6.97a2 2 0 0 1 2-2zm-2 5h16.5m-12.75-7v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"28\" height=\"28\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6.18 5.04h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H6.18a2 2 0 0 1-2-2V7.04a2 2 0 0 1 2-2zm-2 5h16.5m-12.75-7v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"29\" height=\"29\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.44 4.89h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.44a2 2 0 0 1-2-2V6.89a2 2 0 0 1 2-2zm-2 5h16.5m-12.75-7v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"30\" height=\"30\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.4 4.55H17.9a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.4a2 2 0 0 1-2-2V6.55a2 2 0 0 1 2-2zm-2 5H19.9m-12.75-7v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"31\" height=\"31\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 4.43h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V6.43a2 2 0 0 1 2-2zm-2 5h16.5M7.5 2.43v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 4.5h12.5a2 2 0 0 1 2 2V19a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V6.5a2 2 0 0 1 2-2zm-2 5h16.5M7.5 2.5V7m9-4.5V7\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"33\" height=\"33\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 4.48h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V6.48a2 2 0 0 1 2-2zm-2 5h16.5M7.5 2.48v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"34\" height=\"34\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6.06 4.93h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H6.06a2 2 0 0 1-2-2V6.93a2 2 0 0 1 2-2zm-2 5h16.5m-12.75-7v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"35\" height=\"35\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6.01 4.69h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H6.01a2 2 0 0 1-2-2V6.69a2 2 0 0 1 2-2zm-2 5h16.5m-12.75-7v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"36\" height=\"36\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6.08 4.75h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H6.08a2 2 0 0 1-2-2V6.75a2 2 0 0 1 2-2zm-2 5h16.5m-12.75-7v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"37\" height=\"37\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.49 4.8h12.5a2 2 0 0 1 2 2V19.3a2 2 0 0 1-2 2H5.49a2 2 0 0 1-2-2V6.8a2 2 0 0 1 2-2zm-2 5h16.5M7.24 2.8V7.3m9-4.5V7.3\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"38\" height=\"38\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.95 4.59h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.95a2 2 0 0 1-2-2V6.59a2 2 0 0 1 2-2zm-2 5h16.5M7.7 2.59v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"39\" height=\"39\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 4.98h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V6.98a2 2 0 0 1 2-2zm-2 5h16.5M7.5 2.98v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5.75 4.95h12.5a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2V6.95a2 2 0 0 1 2-2zm-2 5h16.5M7.5 2.95v4.5m9-4.5v4.5\" stroke-width=\"1.5\"/></svg>",
     ],
 ];

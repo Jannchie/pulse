@@ -1,4 +1,4 @@
-//! 统计页：各程序的使用时长（日、周、月、全部），以及最近一年每天的使用量热力图。
+//! 统计页：各程序的使用时长（日、周、月、年、最近 N 天、自选区间、全部），以及最近一年每天的使用量热力图。
 //!
 //! 图表沿用全应用的点阵语言：日视图每个点是 5 分钟，按那段时间在前台最久的程序着色；
 //! 周、月、全部视图每列是一天或一个月，按程序分段堆叠。
@@ -14,7 +14,7 @@ use pulse_probe::{t, tf};
 use crate::icons::Icons;
 use crate::icons_gen::Icon;
 use crate::perf::{Kpi, hero, section};
-use crate::stats::{Column, Data, Date, Range, Store};
+use crate::stats::{Column, Data, Date, Grain, Range, Span, Store};
 use crate::theme::{Palette, metric};
 use crate::widgets;
 
@@ -39,6 +39,9 @@ pub struct StatsState {
     /// 上次按正在运行的进程补全程序路径的时刻。
     filled: Option<Instant>,
     error: Option<String>,
+    /// 日历：正在看的月份（1 日）与已点下的起始日期。
+    cal_month: Date,
+    picking: Option<Date>,
 }
 
 impl Default for StatsState {
@@ -51,6 +54,8 @@ impl Default for StatsState {
             loaded: None,
             filled: None,
             error: None,
+            cal_month: Date::today().month_start(),
+            picking: None,
         }
     }
 }
@@ -103,7 +108,13 @@ fn range_label(r: Range) -> &'static str {
         Range::Day => t!("日", "Day", "日"),
         Range::Week => t!("周", "Week", "週"),
         Range::Month => t!("月", "Month", "月"),
+        Range::Year => t!("年", "Year", "年"),
         Range::All => t!("全部", "All", "すべて"),
+        Range::Last24h => t!("24 小时", "24 hours", "24 時間"),
+        Range::Last7 => t!("7 天", "7 days", "7 日間"),
+        Range::Last30 => t!("30 天", "30 days", "30 日間"),
+        Range::Last365 => t!("365 天", "365 days", "365 日間"),
+        Range::Custom(..) => t!("自选", "Custom", "期間指定"),
     }
 }
 
@@ -144,29 +155,61 @@ fn fmt_date(d: Date) -> String {
     )
 }
 
-/// 当前区间的标题：`2026年10月13日 周二`、`10月12日 – 10月18日`、`2026年10月`。
-fn range_title(range: Range, start: Date, end: Date) -> String {
+fn fmt_month_day(d: Date) -> String {
+    tf!("{}月{}日", "{:02}-{:02}", "{}月{}日", d.m, d.d)
+}
+
+/// 日期区间（两端都含）：同一年时省去后一个日期的年份，不是今年时前一个带上年份。
+fn fmt_days(first: Date, last: Date) -> String {
+    let this_year = Date::today().y;
+    let a = if first.y == this_year && last.y == this_year {
+        fmt_month_day(first)
+    } else {
+        fmt_date(first)
+    };
+    let b = if first.y == last.y {
+        fmt_month_day(last)
+    } else {
+        fmt_date(last)
+    };
+    if first == last {
+        a
+    } else {
+        format!("{a} – {b}")
+    }
+}
+
+fn month_title(d: Date) -> String {
+    tf!("{}年{}月", "{}-{:02}", "{}年{}月", d.y, d.m)
+}
+
+/// 当前区间的标题：`2026年10月13日 周二`、`10月12日 – 10月18日`、`2026年10月`、`过去 7 天 · …`。
+fn range_title(range: Range, span: &Span) -> String {
+    let last = span.end.add_days(-1);
     match range {
-        Range::Day => format!("{} {}", fmt_date(start), weekday_label(start.weekday())),
-        Range::Week => {
-            let last = end.add_days(-1);
-            tf!(
-                "{}月{}日 – {}月{}日",
-                "{:02}-{:02} – {:02}-{:02}",
-                "{}月{}日 – {}月{}日",
-                start.m,
-                start.d,
-                last.m,
-                last.d
+        Range::Day => format!(
+            "{} {}",
+            fmt_date(span.start),
+            weekday_label(span.start.weekday())
+        ),
+        Range::Week | Range::Custom(..) => fmt_days(span.start, last),
+        Range::Month => month_title(span.start),
+        Range::Year => tf!("{}年", "{}", "{}年", span.start.y),
+        Range::Last24h => t!("过去 24 小时", "Past 24 hours", "過去 24 時間").to_string(),
+        Range::Last7 | Range::Last30 | Range::Last365 => {
+            let n = span.len_days();
+            format!(
+                "{} · {}",
+                tf!("过去 {n} 天", "Past {n} days", "過去 {n} 日間"),
+                fmt_days(span.start, last)
             )
         }
-        Range::Month => tf!("{}年{}月", "{}-{:02}", "{}年{}月", start.y, start.m),
         Range::All => tf!(
             "{}年{}月起",
             "Since {}-{:02}",
             "{}年{}月から",
-            start.y,
-            start.m
+            span.start.y,
+            span.start.m
         ),
     }
 }
@@ -212,22 +255,21 @@ pub fn show(
             };
             ui.add_space(12.0);
             kpis(ui, &data, state);
-            match data.range {
-                Range::Day => {
-                    section(ui, t!("时间线", "Timeline", "タイムライン"));
-                    day_chart(ui, &data, state, &color_of);
-                }
-                _ => {
-                    section(ui, t!("使用时长", "Usage", "使用時間"));
-                    if let Some(pick) = columns_chart(ui, &data, &color_of) {
-                        // 点某一天看当天；全部视图里点某个月看那个月。
-                        let (range, anchor) = match data.range {
-                            Range::All => (Range::Month, pick),
-                            _ => (Range::Day, pick),
-                        };
-                        state.range = range;
-                        state.anchor = anchor;
-                    }
+            if data.grain == Grain::FiveMin {
+                section(ui, t!("时间线", "Timeline", "タイムライン"));
+                day_chart(ui, &data, state, &color_of);
+            } else {
+                section(ui, t!("使用时长", "Usage", "使用時間"));
+                if let Some(i) = columns_chart(ui, &data, &color_of) {
+                    // 点某一列看那一天、那一周或那个月。
+                    let b = data.buckets[i];
+                    let (range, anchor) = match data.grain {
+                        Grain::Month => (Range::Month, b),
+                        Grain::Week => (Range::Custom(b, b.add_days(7).min(data.span.end)), b),
+                        _ => (Range::Day, b),
+                    };
+                    state.range = range;
+                    state.anchor = anchor;
                 }
             }
             section(ui, t!("应用", "Apps", "アプリ"));
@@ -241,59 +283,245 @@ pub fn show(
         });
 }
 
+/// 页头第一行：自然区间（日、周、月、年、全部）、截止到现在的区间（24 小时 … 365 天）、日历；
+/// 第二行：前后翻页、当前区间的标题、回到今天。
 fn header(ui: &mut Ui, state: &mut StatsState) {
     let p = Palette::of(ui.ctx());
     ui.horizontal(|ui| {
-        let labels = Range::ALL.map(range_label);
-        let cur = Range::ALL
-            .iter()
-            .position(|&r| r == state.range)
-            .unwrap_or(0);
-        if let Some(i) = crate::settings_view::choice(ui, &labels, cur) {
-            state.range = Range::ALL[i];
+        let pick = |ui: &mut Ui, list: &[Range], current: Range| {
+            let labels: Vec<&str> = list.iter().map(|&r| range_label(r)).collect();
+            let cur = list
+                .iter()
+                .position(|&r| r == current)
+                .unwrap_or(usize::MAX);
+            crate::settings_view::choice(ui, &labels, cur).map(|i| list[i])
+        };
+        if let Some(r) = pick(ui, &Range::PERIODS, state.range) {
+            state.range = r;
         }
-        ui.add_space(12.0);
+        ui.add_space(8.0);
+        if let Some(r) = pick(ui, &Range::ROLLING, state.range) {
+            state.range = r;
+        }
+        ui.add_space(8.0);
+        calendar(ui, state);
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
         let first = state.data.as_ref().and_then(|d| d.first);
-        let (start, end) = state.range.bounds(state.anchor, first);
-        if state.range != Range::All {
-            if nav_button(ui, Icon::ChevronLeft).clicked() {
-                state.anchor = state.range.step(state.anchor, -1);
+        let span = state.range.span(state.anchor, first);
+        let today = Date::today();
+        if state.range.steppable() {
+            if nav_button(ui, Icon::ChevronLeft, true).clicked() {
+                (state.range, state.anchor) = state.range.step(state.anchor, -1);
             }
-            let today = Date::today();
-            let can_next = end <= today;
-            let resp = nav_button(ui, Icon::ChevronRight);
-            if resp.clicked() && can_next {
-                state.anchor = state.range.step(state.anchor, 1);
+            let can_next = span.end <= today;
+            if nav_button(ui, Icon::ChevronRight, can_next).clicked() && can_next {
+                (state.range, state.anchor) = state.range.step(state.anchor, 1);
             }
+            ui.add_space(6.0);
         }
-        ui.add_space(6.0);
         ui.label(
-            RichText::new(range_title(state.range, start, end))
+            RichText::new(range_title(state.range, &span))
                 .size(14.0)
                 .color(p.text),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let today = Date::today();
-            let showing_today = start <= today && today < end;
-            if !showing_today
+            let showing_today = span.start <= today && today < span.end;
+            if state.range.steppable()
+                && !showing_today
                 && widgets::tool_button(ui, Icon::History, t!("今天", "Today", "今日"), true, false)
                     .clicked()
             {
+                if matches!(state.range, Range::Custom(..)) {
+                    state.range = Range::Day;
+                }
                 state.anchor = today;
             }
         });
     });
 }
 
-fn nav_button(ui: &mut Ui, glyph: Icon) -> egui::Response {
+/// 日历按钮与弹出的月历：先点开始日期，再点结束日期（两端都含）；同一天点两次就是那一天。
+fn calendar(ui: &mut Ui, state: &mut StatsState) {
     let p = Palette::of(ui.ctx());
-    let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
-    if resp.hovered() {
+    let button = widgets::tool_button(
+        ui,
+        Icon::Calendar,
+        t!("选择日期", "Pick dates", "日付を選択"),
+        true,
+        false,
+    );
+    if button.clicked() {
+        let first = state.data.as_ref().and_then(|d| d.first);
+        let span = state.range.span(state.anchor, first);
+        state.cal_month = span.end.add_days(-1).month_start();
+        state.picking = None;
+    }
+    let popup = egui::Popup::from_toggle_button_response(&button)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .gap(6.0);
+    let popup_id = popup.get_id();
+    let today = Date::today();
+    let mut done = None;
+    popup.show(|ui| {
+        const CELL: f32 = 34.0;
+        ui.set_width(CELL * 7.0);
+        ui.spacing_mut().item_spacing = vec2(0.0, 4.0);
+        // 月份与翻页。
+        ui.horizontal(|ui| {
+            if nav_button(ui, Icon::ChevronLeft, true).clicked() {
+                state.cal_month = state.cal_month.add_months(-1);
+            }
+            let (r, _) = ui.allocate_exact_size(vec2(CELL * 7.0 - 56.0, 28.0), Sense::hover());
+            ui.painter().text(
+                r.center(),
+                Align2::CENTER_CENTER,
+                month_title(state.cal_month),
+                FontId::proportional(13.5),
+                p.text,
+            );
+            let can_next = state.cal_month.add_months(1) <= today;
+            if nav_button(ui, Icon::ChevronRight, can_next).clicked() && can_next {
+                state.cal_month = state.cal_month.add_months(1);
+            }
+        });
+        let (head, _) = ui.allocate_exact_size(vec2(CELL * 7.0, 20.0), Sense::hover());
+        for i in 0..7 {
+            ui.painter().text(
+                pos2(head.left() + (i as f32 + 0.5) * CELL, head.center().y),
+                Align2::CENTER_CENTER,
+                weekday_short(i),
+                FontId::proportional(11.0),
+                p.faint,
+            );
+        }
+        let first_cell = state
+            .cal_month
+            .add_days(-(state.cal_month.weekday() as i64));
+        let (grid, resp) = ui.allocate_exact_size(vec2(CELL * 7.0, CELL * 6.0), Sense::click());
+        let hover = resp.hover_pos().map(|h| {
+            let c = ((h.x - grid.left()) / CELL).clamp(0.0, 6.0) as i64;
+            let r = ((h.y - grid.top()) / CELL).clamp(0.0, 5.0) as i64;
+            first_cell.add_days(r * 7 + c)
+        });
+        // 高亮：正在选时是起点到悬停处，否则是当前的自选区间。
+        let selected = match (state.picking, hover, state.range) {
+            (Some(a), Some(h), _) => Some((a.min(h), a.max(h))),
+            (Some(a), None, _) => Some((a, a)),
+            (None, _, Range::Custom(a, b)) => Some((a, b.add_days(-1))),
+            _ => None,
+        };
+        for k in 0..42 {
+            let day = first_cell.add_days(k);
+            let cell = Rect::from_min_size(
+                pos2(
+                    grid.left() + (k % 7) as f32 * CELL,
+                    grid.top() + (k / 7) as f32 * CELL,
+                ),
+                vec2(CELL, CELL),
+            );
+            let inside = day.m == state.cal_month.m;
+            let future = day > today;
+            let in_sel = selected.is_some_and(|(a, b)| a <= day && day <= b);
+            let edge = selected.is_some_and(|(a, b)| day == a || day == b);
+            let r = cell.shrink(2.0);
+            if edge {
+                ui.painter().rect_filled(r, CornerRadius::same(8), p.accent);
+            } else if in_sel {
+                ui.painter()
+                    .rect_filled(r, CornerRadius::same(8), p.accent.gamma_multiply(0.22));
+            } else if hover == Some(day) && !future {
+                ui.painter().rect_filled(r, CornerRadius::same(8), p.hover);
+            }
+            if day == today && !edge {
+                ui.painter().rect_stroke(
+                    r,
+                    CornerRadius::same(8),
+                    egui::Stroke::new(1.0, p.faint),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            let color = if edge {
+                Color32::WHITE
+            } else if future {
+                p.faint.gamma_multiply(0.5)
+            } else if inside {
+                p.text
+            } else {
+                p.faint
+            };
+            ui.painter().text(
+                cell.center(),
+                Align2::CENTER_CENTER,
+                day.d.to_string(),
+                FontId::proportional(12.5),
+                color,
+            );
+        }
+        if resp.clicked()
+            && let Some(day) = hover
+            && day <= today
+        {
+            match state.picking.take() {
+                None => state.picking = Some(day),
+                Some(a) => done = Some((a.min(day), a.max(day))),
+            }
+        }
+        let _ = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+        ui.label(
+            RichText::new(if state.picking.is_some() {
+                t!("再点结束日期", "Now pick the end date", "終了日を選択")
+            } else {
+                t!("点开始日期", "Pick the start date", "開始日を選択")
+            })
+            .size(11.5)
+            .color(p.muted),
+        );
+    });
+    if let Some((a, b)) = done {
+        if a == b {
+            state.range = Range::Day;
+            state.anchor = a;
+        } else {
+            state.range = Range::Custom(a, b.add_days(1));
+            state.anchor = a;
+        }
+        egui::Popup::close_id(ui.ctx(), popup_id);
+    }
+}
+
+fn weekday_short(i: u32) -> &'static str {
+    match i {
+        0 => t!("一", "Mo", "月"),
+        1 => t!("二", "Tu", "火"),
+        2 => t!("三", "We", "水"),
+        3 => t!("四", "Th", "木"),
+        4 => t!("五", "Fr", "金"),
+        5 => t!("六", "Sa", "土"),
+        _ => t!("日", "Su", "日"),
+    }
+}
+
+fn nav_button(ui: &mut Ui, glyph: Icon, enabled: bool) -> egui::Response {
+    let p = Palette::of(ui.ctx());
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), sense);
+    if enabled && resp.hovered() {
         ui.painter()
             .rect_filled(rect, CornerRadius::same(6), p.hover);
     }
-    widgets::icon(ui, glyph, rect.center(), 16.0, p.text);
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    let color = if enabled { p.text } else { p.faint };
+    widgets::icon(ui, glyph, rect.center(), 16.0, color);
+    if enabled {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp
+    }
 }
 
 fn empty(ui: &mut Ui) {
@@ -360,7 +588,7 @@ fn kpis(ui: &mut Ui, data: &Data, state: &StatsState) {
             .caption(name),
         );
     }
-    if data.range != Range::Day {
+    if data.grain != Grain::FiveMin {
         items.push(
             Kpi::new(
                 t!("日均", "Daily average", "1 日平均"),
@@ -396,8 +624,8 @@ fn card(ui: &mut Ui, height: f32) -> (Rect, egui::Response) {
     (rect, resp)
 }
 
-/// 日视图：48 列（每列半小时）× 6 行（每行 5 分钟），每个点按那 5 分钟里在前台最久的程序着色，
-/// 越接近整 5 分钟都在用越不透明。
+/// 日视图与最近 24 小时：48 列（每列半小时）× 6 行（每行 5 分钟），每个点按那 5 分钟里
+/// 在前台最久的程序着色，越接近整 5 分钟都在用越不透明。
 fn day_chart(ui: &mut Ui, data: &Data, state: &StatsState, color_of: &dyn Fn(i64) -> Color32) {
     let p = Palette::of(ui.ctx());
     const COLS: usize = 48;
@@ -411,6 +639,11 @@ fn day_chart(ui: &mut Ui, data: &Data, state: &StatsState, color_of: &dyn Fn(i64
     let painter = ui.painter_at(rect);
     let left = rect.left() + pad + (width - pitch * COLS as f32) / 2.0;
     let top = rect.top() + pad;
+    let first_minute = data.span.minute_bounds().0;
+    // 某分钟的本地时、分。
+    let clock = |minute: i64| {
+        pulse_probe::os::local_time(minute * 60).map_or((0, 0), |(_, _, _, h, m)| (h, m))
+    };
     let mut hovered = None;
     for c in 0..COLS {
         for r in 0..ROWS {
@@ -435,15 +668,19 @@ fn day_chart(ui: &mut Ui, data: &Data, state: &StatsState, color_of: &dyn Fn(i64
                 hovered = Some(slot);
             }
         }
-        // 每 3 小时一个刻度。
-        if c % 6 == 0 {
+        // 每 3 小时（本地时间的 0、3、6 … 点）一个刻度，最近 24 小时的列不一定从整点开始。
+        let col_start = first_minute + c as i64 * 30;
+        let (h, m) = clock(col_start);
+        let to_hour = (60 - m as i64) % 60;
+        let hour = (h + u32::from(m > 0)) % 24;
+        if to_hour < 30 && hour % 3 == 0 {
             painter.text(
                 pos2(
-                    left + c as f32 * pitch + pitch * 0.14,
+                    left + (c as f32 + to_hour as f32 / 30.0) * pitch + pitch * 0.14,
                     top + ROWS as f32 * pitch + 6.0,
                 ),
                 Align2::LEFT_TOP,
-                format!("{}:00", c / 2),
+                format!("{hour}:00"),
                 FontId::proportional(11.0),
                 p.faint,
             );
@@ -453,14 +690,9 @@ fn day_chart(ui: &mut Ui, data: &Data, state: &StatsState, color_of: &dyn Fn(i64
         && let Some(col) = data.columns.get(slot)
         && col.total() > 0
     {
-        let start = slot as i64 * 5;
-        let label = format!(
-            "{:02}:{:02}–{:02}:{:02}",
-            start / 60,
-            start % 60,
-            (start + 5) / 60,
-            (start + 5) % 60
-        );
+        let start = first_minute + slot as i64 * 5;
+        let ((h0, m0), (h1, m1)) = (clock(start), clock(start + 5));
+        let label = format!("{h0:02}:{m0:02}–{h1:02}:{m1:02}");
         let apps = state.store.as_ref().map(|s| &s.apps);
         resp.on_hover_ui_at_pointer(|ui| {
             ui.label(RichText::new(label).strong());
@@ -474,9 +706,9 @@ fn day_chart(ui: &mut Ui, data: &Data, state: &StatsState, color_of: &dyn Fn(i64
     }
 }
 
-/// 周、月、全部视图：每列一天（或一个月），从底部往上按程序堆叠，每个点代表固定的时长。
-/// 点击某一列返回它的日期（全部视图里是那个月的第一天）。
-fn columns_chart(ui: &mut Ui, data: &Data, color_of: &dyn Fn(i64) -> Color32) -> Option<Date> {
+/// 按天以上的粒度：每列一天、一周或一个月，从底部往上按程序堆叠，每个点代表固定的时长。
+/// 点击某一列返回它的序号。
+fn columns_chart(ui: &mut Ui, data: &Data, color_of: &dyn Fn(i64) -> Color32) -> Option<usize> {
     let p = Palette::of(ui.ctx());
     let n = data.columns.len().max(1);
     let pad = 16.0;
@@ -556,18 +788,8 @@ fn columns_chart(ui: &mut Ui, data: &Data, color_of: &dyn Fn(i64) -> Color32) ->
         if resp.hover_pos().is_some_and(|h| col_rect.contains(h)) {
             hover_col = Some(i);
         }
-        let date = match data.range {
-            Range::All => data.start.add_months(i as i32),
-            _ => data.start.add_days(i as i64),
-        };
-        // 横轴标签：周视图每天、月视图每 5 天、全部视图每年一月（或首列）。
-        let label = match data.range {
-            Range::Week => Some(format!("{} {}", weekday_label(i as u32), date.d)),
-            Range::Month => {
-                (i == 0 || (date.d % 5 == 0 && date.d < 30)).then(|| date.d.to_string())
-            }
-            _ => (i == 0 || date.m == 1).then(|| date.y.to_string()),
-        };
+        let date = data.buckets[i];
+        let label = axis_label(data.grain, n, i, date);
         if let Some(label) = label {
             painter.text(
                 pos2(col_rect.center().x, base + 6.0),
@@ -593,12 +815,10 @@ fn columns_chart(ui: &mut Ui, data: &Data, color_of: &dyn Fn(i64) -> Color32) ->
     if let Some(i) = hover_col
         && let Some(col) = data.columns.get(i)
     {
-        let date = match data.range {
-            Range::All => data.start.add_months(i as i32),
-            _ => data.start.add_days(i as i64),
-        };
-        let title = match data.range {
-            Range::All => tf!("{}年{}月", "{}-{:02}", "{}年{}月", date.y, date.m),
+        let date = data.buckets[i];
+        let title = match data.grain {
+            Grain::Month => month_title(date),
+            Grain::Week => fmt_days(date, date.add_days(6).min(data.span.end.add_days(-1))),
             _ => format!("{} {}", fmt_date(date), weekday_label(date.weekday())),
         };
         resp.clone()
@@ -608,15 +828,43 @@ fn columns_chart(ui: &mut Ui, data: &Data, color_of: &dyn Fn(i64) -> Color32) ->
                 ui.label(fmt_duration(col.total()));
             });
     }
-    if resp.clicked()
-        && let Some(i) = hover_col
-    {
-        picked = Some(match data.range {
-            Range::All => data.start.add_months(i as i32),
-            _ => data.start.add_days(i as i64),
-        });
+    if resp.clicked() {
+        picked = hover_col;
     }
     picked
+}
+
+/// 横轴标签：一周以内每天写星期；按天时每 5（或 10）天写日期，每月 1 日写月份；
+/// 按周时在跨进新月份的那一列写月份；按月时一年以内每月都写，更长时只在一月写年份。
+fn axis_label(grain: Grain, n: usize, i: usize, date: Date) -> Option<String> {
+    match grain {
+        Grain::Day if n <= 7 => Some(format!("{} {}", weekday_label(date.weekday()), date.d)),
+        Grain::Day => {
+            let every = if n <= 31 { 5 } else { 10 };
+            if i == 0 || date.d == 1 {
+                Some(format!("{}/{}", date.m, date.d))
+            } else {
+                (date.d.is_multiple_of(every) && date.d < 30).then(|| date.d.to_string())
+            }
+        }
+        Grain::Week => {
+            let next = date.add_days(6);
+            (i == 0 || date.d == 1 || next.m != date.m).then(|| {
+                let m = if date.d == 1 { date } else { next };
+                if m.m == 1 {
+                    m.y.to_string()
+                } else {
+                    tf!("{}月", "{}", "{}月", month_name(m.m))
+                }
+            })
+        }
+        Grain::Month if n <= 13 => Some(if date.m == 1 && i > 0 {
+            date.y.to_string()
+        } else {
+            tf!("{}月", "{}", "{}月", month_name(date.m))
+        }),
+        _ => (i == 0 || date.m == 1).then(|| date.y.to_string()),
+    }
 }
 
 fn ranking(
