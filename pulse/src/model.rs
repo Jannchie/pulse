@@ -399,20 +399,32 @@ pub fn build(snap: &Snapshot, q: &Query) -> Table {
             .then_with(|| cmp((ka.0, ka.1, &ka.2), (kb.0, kb.1, &kb.2)))
     });
 
-    // 与任务管理器一样分成"应用"（有可见主窗口）与"后台进程"两段，段内保持排序。
-    let is_app = |gi: &usize| {
-        groups[*gi]
-            .members
-            .iter()
-            .any(|&i| procs[i].window.is_some())
+    // 按名称、PID 排序时与任务管理器一样分成"应用"（有可见主窗口）与"后台进程"两段；
+    // 按资源排序时不分段，否则 vmmemWSL 这类没有窗口的大户会排在所有应用后面，一眼看不到。
+    let sectioned = matches!(q.sort, SortKey::Name | SortKey::Pid);
+    let parts: Vec<(Option<Section>, Vec<usize>)> = if sectioned {
+        let is_app = |gi: &usize| {
+            groups[*gi]
+                .members
+                .iter()
+                .any(|&i| procs[i].window.is_some())
+        };
+        let (apps, background): (Vec<usize>, Vec<usize>) = order.into_iter().partition(is_app);
+        vec![
+            (Some(Section::Apps), apps),
+            (Some(Section::Background), background),
+        ]
+    } else {
+        vec![(None, order)]
     };
-    let (apps, background): (Vec<usize>, Vec<usize>) = order.into_iter().partition(is_app);
     let mut rows = Vec::with_capacity(procs.len() + 2);
-    for (section, list) in [(Section::Apps, apps), (Section::Background, background)] {
+    for (section, list) in parts {
         if list.is_empty() {
             continue;
         }
-        rows.push(Row::Section(section, list.len()));
+        if let Some(section) = section {
+            rows.push(Row::Section(section, list.len()));
+        }
         for gi in list {
             let g = &groups[gi];
             if g.members.len() == 1 {
@@ -599,6 +611,37 @@ mod tests {
         assert!(matches!(rows[0], Row::Section(Section::Apps, 1)));
         assert!(matches!(rows[1], Row::Single(2)));
         assert!(matches!(rows[2], Row::Section(Section::Background, 4)));
+    }
+
+    #[test]
+    fn resource_sort_mixes_sections() {
+        // 按 CPU 排序时不分段：没有窗口的后台大户（vmmemWSL）排在有窗口的应用前面。
+        let mut procs = sample();
+        procs[2].window = Some(pulse_probe::control::AppWindow {
+            hwnd: 1,
+            title: "微信".into(),
+            hung: false,
+        });
+        procs[2].cpu = 5.0;
+        procs[3].cpu = 60.0;
+        let snap = Snapshot {
+            processes: procs,
+            ..Default::default()
+        };
+        let expanded = HashSet::new();
+        let q = Query {
+            filter: "",
+            grouped: true,
+            sort: SortKey::Cpu,
+            descending: true,
+            expanded: &expanded,
+            listening_only: false,
+            pids: None,
+        };
+        let rows = build(&snap, &q).rows;
+        assert!(!rows.iter().any(|r| matches!(r, Row::Section(..))));
+        assert!(matches!(rows[0], Row::Single(3)));
+        assert!(matches!(rows[1], Row::Single(2)));
     }
 
     #[test]
