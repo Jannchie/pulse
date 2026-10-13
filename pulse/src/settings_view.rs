@@ -39,14 +39,6 @@ pub fn show(
                 ui.add_space(pad);
                 ui.vertical(|ui| {
                     ui.set_width(w);
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(t!("设置", "Settings", "設定"))
-                            .size(22.0)
-                            .family(semibold())
-                            .color(Palette::of(ui.ctx()).text),
-                    );
-                    ui.add_space(4.0);
 
                     group(ui, t!("常规", "General", "全般"), |ui| {
                         row(
@@ -54,7 +46,7 @@ pub fn show(
                             t!("更新速度", "Update speed", "更新速度"),
                             t!(
                                 "数据刷新的间隔。暂停后画面停在当前数值。",
-                                "How often data refreshes. Paused freezes the current values.", "データを更新する間隔です。一時停止すると、表示は現在の値のまま止まります。"
+                                "How often data refreshes. Paused freezes the current values.", "データの更新間隔。一時停止すると現在の値で止まります。"
                             ),
                             |ui| {
                                 let labels = Speed::ALL.map(|s| s.label());
@@ -73,7 +65,7 @@ pub fn show(
                             t!("搜索引擎", "Search engine", "検索エンジン"),
                             t!(
                                 "右键菜单里的“在线搜索”用它，在默认浏览器中打开。",
-                                "Used by “Search online”. Opens in your default browser.", "右クリック メニューの「オンラインで検索」で使用し、既定のブラウザーで開きます。"
+                                "Used by “Search online”. Opens in your default browser.", "「オンラインで検索」で使い、既定のブラウザーで開きます。"
                             ),
                             |ui| {
                                 let labels = SearchEngine::ALL.map(|e| e.label());
@@ -100,8 +92,8 @@ pub fn show(
                             ui,
                             t!("自动检查更新", "Check for updates automatically", "更新を自動的に確認する"),
                             t!(
-                                "启动时和每天检查一次 GitHub 上的新版本。只有在你确认后才会安装。",
-                                "Checks GitHub for a new version at startup and once a day. Updates are installed only when you confirm.", "起動時と 1 日 1 回、GitHub で新しいバージョンを確認します。更新は確認した後にのみインストールされます。"
+                                "启动时和每天检查一次新版本，确认后才安装。",
+                                "Checks for a new version at startup and daily; installs only after you confirm.", "起動時と 1 日 1 回、新しいバージョンを確認します。インストールは確認後のみです。"
                             ),
                             |ui| {
                                 widgets::switch(ui, &mut settings.auto_update, true);
@@ -115,7 +107,7 @@ pub fn show(
                             t!("主题", "Theme", "テーマ"),
                             t!(
                                 "跟随系统会随 Windows 的深浅色设置自动切换。",
-                                "System follows your Windows light or dark mode.", "「システム設定を使用」では、Windows のライト / ダーク モードに合わせて自動的に切り替わります。"
+                                "System follows your Windows light or dark mode.", "[システム] では Windows のライト / ダーク設定に合わせます。"
                             ),
                             |ui| {
                                 let labels = ThemeChoice::ALL.map(|t| t.label());
@@ -133,8 +125,8 @@ pub fn show(
                             ui,
                             t!("语言", "Language", "言語"),
                             t!(
-                                "跟随系统时，Windows 显示语言为中文或日文则用对应语言，否则用英文。",
-                                "System uses Chinese or Japanese if Windows is in one of them, otherwise English.", "「システム設定を使用」では、Windows の表示言語が日本語か中国語ならその言語、それ以外なら英語で表示します。"
+                                "跟随系统时使用 Windows 的显示语言。",
+                                "System uses the Windows display language.", "[システム] では Windows の表示言語を使います。"
                             ),
                             |ui| {
                                 let labels = Language::ALL.map(|l| l.label());
@@ -267,16 +259,11 @@ fn group(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
         });
 }
 
-/// 一行设置：左边名称 + 说明，右边控件，两者都在行内垂直居中。
-/// 说明在控件左侧换行，不会压到控件上（英文说明往往更长）。
+/// 一行设置：左边名称 + 一行说明，右边控件，两者都在行内垂直居中。
 fn row(ui: &mut Ui, title: &str, desc: &str, control: impl FnOnce(&mut Ui)) {
-    const H: f32 = 64.0;
+    const H: f32 = 60.0;
     let p = Palette::of(ui.ctx());
-    // 说明文字折成多行（日文较长）时行要跟着变高。所需高度要等控件排完才知道，
-    // 记下来下一帧用，变化时多画一帧。
-    let id = ui.id().with(("settings-row", title));
-    let h = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(H);
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), H), Sense::hover());
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
@@ -287,23 +274,24 @@ fn row(ui: &mut Ui, title: &str, desc: &str, control: impl FnOnce(&mut Ui)) {
     let title = ui
         .painter()
         .layout_no_wrap(title.to_string(), FontId::proportional(13.5), p.text);
-    let desc = ui.painter().layout(
+    // 说明只占一行，放不下时以省略号截断，悬停在这一行上显示全文。
+    let mut job = egui::text::LayoutJob::simple_singleline(
         desc.to_string(),
         FontId::proportional(12.0),
         p.muted,
-        (rect.width() - control_w - 24.0).max(120.0),
     );
-    let gap = 3.0;
-    let need = (title.size().y + gap + desc.size().y + 20.0).max(H).ceil();
-    if need != h {
-        ui.data_mut(|d| d.insert_temp(id, need));
-        ui.ctx().request_repaint();
+    job.wrap =
+        egui::text::TextWrapping::truncate_at_width((rect.width() - control_w - 24.0).max(120.0));
+    let galley = ui.painter().layout_job(job);
+    if galley.elided {
+        resp.on_hover_text(desc);
     }
-    let top = rect.center().y - (title.size().y + gap + desc.size().y) / 2.0;
+    let gap = 3.0;
+    let top = rect.center().y - (title.size().y + gap + galley.size().y) / 2.0;
     let desc_top = top + title.size().y + gap;
     ui.painter().galley(pos2(rect.left(), top), title, p.text);
     ui.painter()
-        .galley(pos2(rect.left(), desc_top), desc, p.muted);
+        .galley(pos2(rect.left(), desc_top), galley, p.muted);
 }
 
 fn divider(ui: &mut Ui) {

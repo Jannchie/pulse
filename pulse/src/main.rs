@@ -1519,7 +1519,7 @@ impl App {
                 self.snapshot.collect_time.as_secs_f64() * 1e3,
             )));
             if self.settings.speed == Speed::Paused {
-                widgets::status_chip(
+                widgets::status_text(
                     ui,
                     t!("已暂停更新", "Updates paused", "更新を一時停止中"),
                     p.muted,
@@ -1945,7 +1945,7 @@ fn tab(ui: &mut Ui, on: bool, glyph: Icon, label: &str) -> egui::Response {
         glyph,
         pos2(rect.left() + 18.0, rect.center().y),
         16.0,
-        if on { p.accent } else { fg },
+        fg,
     );
     ui.painter().galley(
         pos2(rect.left() + 31.0, rect.center().y - galley.size().y / 2.0),

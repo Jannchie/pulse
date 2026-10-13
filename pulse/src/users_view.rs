@@ -6,7 +6,7 @@ use pulse_probe::sessions::{Session, SessionState};
 use pulse_probe::{Snapshot, t, tf};
 
 use crate::icons_gen::Icon;
-use crate::theme::{Palette, metric, semibold};
+use crate::theme::{Palette, semibold};
 use crate::{fmt_bytes, fmt_rate, widgets};
 
 pub enum UserAction {
@@ -101,7 +101,7 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Option<UserAc
                     widgets::icon(ui, Icon::User, r.center(), 18.0, p.accent);
                     ui.label(RichText::new(&name).family(semibold()).color(p.text));
                     if s.current {
-                        widgets::status_chip(ui, t!("当前", "You", "自分"), p.muted);
+                        widgets::status_text(ui, t!("当前", "You", "自分"), p.muted);
                     }
                 });
                 row.col(|ui| {
@@ -119,11 +119,11 @@ pub fn show(ui: &mut Ui, sessions: &[Session], snap: &Snapshot) -> Option<UserAc
                 };
                 row.col(|ui| right(ui, u.processes.to_string()));
                 row.col(|ui| {
-                    widgets::heat(ui, u.cpu / 50.0, metric::CPU);
+                    widgets::heat(ui, u.cpu / 50.0);
                     right(ui, format!("{:.1}%", u.cpu));
                 });
                 row.col(|ui| {
-                    widgets::heat(ui, u.memory as f32 / (16u64 << 30) as f32, metric::MEMORY);
+                    widgets::heat(ui, u.memory as f32 / (16u64 << 30) as f32);
                     right(ui, fmt_bytes(u.memory));
                 });
                 row.col(|ui| right(ui, fmt_rate(u.disk)));

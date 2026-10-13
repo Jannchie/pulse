@@ -339,10 +339,10 @@ fn name_cell(ui: &mut Ui, c: NameCell) {
                     widgets::icon(ui, Icon::Leaf, r.center(), 13.0, metric::GPU);
                 }
                 if c.status.hung {
-                    widgets::status_chip(ui, t!("无响应", "Not responding", "応答なし"), p.danger);
+                    widgets::status_text(ui, t!("无响应", "Not responding", "応答なし"), p.danger);
                 }
                 if c.status.suspended {
-                    widgets::status_chip(ui, t!("已挂起", "Suspended", "中断"), p.muted);
+                    widgets::status_text(ui, t!("已挂起", "Suspended", "中断"), p.muted);
                 }
                 if let Some(d) = c.secondary {
                     ui.add(egui::Label::new(RichText::new(d).size(12.0).color(p.faint)).truncate());
@@ -364,7 +364,7 @@ fn value_cell(ui: &mut Ui, c: Col, sel: &Selection, m: &Metrics, cores: f32, net
         }
         Col::Cpu => {
             // 两个核心满载即视为最热，否则多核机器上永远看不出颜色。
-            widgets::heat(ui, m.cpu * cores / 200.0, metric::CPU);
+            widgets::heat(ui, m.cpu * cores / 200.0);
             widgets::right_label(ui, value(&p, format!("{:.1}%", m.cpu), m.cpu < 0.05));
         }
         Col::CpuTime => {
@@ -375,15 +375,15 @@ fn value_cell(ui: &mut Ui, c: Col, sel: &Selection, m: &Metrics, cores: f32, net
             );
         }
         Col::Memory => {
-            widgets::heat(ui, m.memory as f32 / (4u64 << 30) as f32, metric::MEMORY);
+            widgets::heat(ui, m.memory as f32 / (4u64 << 30) as f32);
             widgets::right_label(ui, value(&p, fmt_bytes(m.memory), false));
         }
         Col::Gpu => {
-            widgets::heat(ui, m.gpu / 60.0, metric::GPU);
+            widgets::heat(ui, m.gpu / 60.0);
             widgets::right_label(ui, value(&p, format!("{:.1}%", m.gpu), m.gpu < 0.05));
         }
         Col::Vram => {
-            widgets::heat(ui, m.vram as f32 / (4u64 << 30) as f32, metric::GPU);
+            widgets::heat(ui, m.vram as f32 / (4u64 << 30) as f32);
             let text = if m.vram == 0 {
                 "—".to_string()
             } else {
@@ -392,11 +392,11 @@ fn value_cell(ui: &mut Ui, c: Col, sel: &Selection, m: &Metrics, cores: f32, net
             widgets::right_label(ui, value(&p, text, m.vram == 0));
         }
         Col::Disk => {
-            widgets::heat(ui, m.disk as f32 / 50e6, metric::DISK);
+            widgets::heat(ui, m.disk as f32 / 50e6);
             widgets::right_label(ui, value(&p, fmt_rate(m.disk), m.disk == 0));
         }
         Col::Network if net_ok => {
-            widgets::heat(ui, m.net() as f32 / 10e6, metric::NETWORK);
+            widgets::heat(ui, m.net() as f32 / 10e6);
             widgets::right_label(ui, value(&p, fmt_rate(m.net()), m.net() == 0));
         }
         Col::Network => widgets::right_label(ui, RichText::new("—").color(p.faint)),

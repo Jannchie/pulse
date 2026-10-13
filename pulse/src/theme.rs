@@ -26,13 +26,9 @@ pub struct Palette {
     pub muted: Color32,
     pub faint: Color32,
     pub accent: Color32,
-    /// 端口标签文字。
-    pub chip: Color32,
     pub danger: Color32,
     /// 选中行底色的 accent 透明度。
     pub selection_alpha: f32,
-    /// 端口标签底色的 accent 透明度。
-    pub chip_alpha: f32,
 }
 
 /// 配色对齐 Windows 11 资源管理器、任务管理器的中性灰（不带色偏）；次要文字对比度不低于 7:1。
@@ -46,10 +42,8 @@ const DARK: Palette = Palette {
     muted: Color32::from_rgb(0xd6, 0xd6, 0xd6), // ≥ 8.6:1
     faint: Color32::from_rgb(0xc2, 0xc2, 0xc2), // ≥ 7.0:1
     accent: Color32::from_rgb(0x4f, 0x8c, 0xff),
-    chip: Color32::from_rgb(0xb3, 0xcd, 0xff),   // ≥ 8.5:1
     danger: Color32::from_rgb(0xff, 0xb4, 0xb4), // ≥ 7.4:1（只出现在按钮上）
-    selection_alpha: 0.14,
-    chip_alpha: 0.12,
+    selection_alpha: 0.10,
 };
 
 const LIGHT: Palette = Palette {
@@ -62,13 +56,14 @@ const LIGHT: Palette = Palette {
     muted: Color32::from_rgb(0x3d, 0x3d, 0x3d), // ≥ 8.9:1
     faint: Color32::from_rgb(0x4a, 0x4a, 0x4a), // ≥ 7.3:1
     accent: Color32::from_rgb(0x25, 0x63, 0xeb),
-    chip: Color32::from_rgb(0x1a, 0x37, 0x99),   // ≥ 7.5:1
     danger: Color32::from_rgb(0x8a, 0x18, 0x18), // ≥ 7.7:1（只出现在按钮上）
-    selection_alpha: 0.09,
-    chip_alpha: 0.09,
+    selection_alpha: 0.07,
 };
 
 /// 各指标的主题色，卡片曲线与表格热力底色共用。
+/// 进程表的热力底色。
+pub const HEAT: Color32 = Color32::from_rgb(0xf2, 0xa9, 0x3b);
+
 pub mod metric {
     use eframe::egui::Color32;
     pub const CPU: Color32 = Color32::from_rgb(0x4f, 0x8c, 0xff);
@@ -180,7 +175,8 @@ fn visuals(p: &Palette, dark: bool) -> Visuals {
     v.window_shadow = v.popup_shadow;
     v.weak_text_color = Some(p.muted);
     v.hyperlink_color = p.accent;
-    v.selection.bg_fill = p.accent.gamma_multiply(p.selection_alpha);
+    // 选中行用中性的浅灰（与任务管理器、资源管理器一致），不染强调色。
+    v.selection.bg_fill = p.text.gamma_multiply(p.selection_alpha);
     // 表格选中行用这个颜色画文字，保持正文色即可。
     v.selection.stroke = Stroke::new(1.0, p.text);
     v.striped = false;

@@ -96,7 +96,7 @@ pub fn show(
                     Device::Gpu(i) => match snap.gpus.get(i) {
                         Some(g) => {
                             let empty = GpuHistory::default();
-                            page_header(ui, Icon::Gpu, metric::GPU, &format!("GPU {i}"), &g.name);
+                            page_header(ui, &format!("GPU {i}"), &g.name);
                             let h = gpu_history.get(i).unwrap_or(&empty);
                             if let Some(PanelAction::Search(name)) =
                                 gpu_panel::page(ui, g, h, snap, icons)
@@ -285,7 +285,7 @@ fn sidebar(ui: &mut Ui, snap: &Snapshot, series: &Series, device: &mut Device) {
             e.icon,
             pos2(rect.left() + 20.0, rect.top() + 20.0),
             16.0,
-            e.color,
+            p.muted,
         );
         painter.text(
             pos2(rect.left() + 34.0, rect.top() + 20.0),
@@ -318,15 +318,10 @@ fn sidebar(ui: &mut Ui, snap: &Snapshot, series: &Series, device: &mut Device) {
 const COPY_CLICKED: &str = "perf-copy-summary";
 
 /// 设备页标题：图标、名称与型号，右侧是复制这台设备摘要的按钮。
-fn page_header(ui: &mut Ui, glyph: Icon, color: Color32, title: &str, subtitle: &str) {
+fn page_header(ui: &mut Ui, title: &str, subtitle: &str) {
     let p = Palette::of(ui.ctx());
     ui.add_space(2.0);
     ui.horizontal(|ui| {
-        let (tile, _) = ui.allocate_exact_size(vec2(42.0, 42.0), Sense::hover());
-        ui.painter()
-            .rect_filled(tile, CornerRadius::same(10), color.gamma_multiply(0.16));
-        widgets::icon(ui, glyph, tile.center(), 22.0, color);
-        ui.add_space(6.0);
         // 先从右边放按钮，剩下的宽度给名称和型号（型号过长时截断）。
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if widgets::tool_button(
@@ -366,7 +361,7 @@ fn page_header(ui: &mut Ui, glyph: Icon, color: Color32, title: &str, subtitle: 
     ui.add_space(14.0);
 }
 
-/// 关键指标卡片：标签、大号数值（附单位）、说明，以及可选的占比条。
+/// 关键指标：标签、数值（附单位）、说明，以及可选的占比条。不画卡片，直接排列。
 pub struct Kpi {
     label: &'static str,
     value: String,
@@ -412,9 +407,9 @@ pub fn hero(ui: &mut Ui, items: &[Kpi]) {
     let cols = if w > 640.0 { items.len() } else { 2 }.max(1);
     let cell_w = (w - gap * (cols - 1) as f32) / cols as f32;
     let height = if items.iter().any(|k| k.bar.is_some()) {
-        104.0
+        86.0
     } else {
-        92.0
+        72.0
     };
     for chunk in items.chunks(cols) {
         ui.horizontal(|ui| {
@@ -422,20 +417,18 @@ pub fn hero(ui: &mut Ui, items: &[Kpi]) {
             for k in chunk {
                 let (rect, _) = ui.allocate_exact_size(vec2(cell_w, height), Sense::hover());
                 let painter = ui.painter_at(rect);
-                painter.rect_filled(rect, CornerRadius::same(12), p.surface);
-                painter.circle_filled(pos2(rect.left() + 17.0, rect.top() + 19.0), 3.5, k.color);
                 painter.text(
-                    pos2(rect.left() + 27.0, rect.top() + 19.0),
+                    pos2(rect.left(), rect.top() + 8.0),
                     Align2::LEFT_CENTER,
                     k.label,
                     FontId::proportional(12.0),
                     p.muted,
                 );
                 let value = painter.text(
-                    pos2(rect.left() + 14.0, rect.top() + 30.0),
+                    pos2(rect.left(), rect.top() + 18.0),
                     Align2::LEFT_TOP,
                     &k.value,
-                    FontId::new(26.0, semibold()),
+                    FontId::new(22.0, semibold()),
                     p.text,
                 );
                 if !k.unit.is_empty() {
@@ -447,11 +440,11 @@ pub fn hero(ui: &mut Ui, items: &[Kpi]) {
                         p.muted,
                     );
                 }
-                let mut bottom = rect.bottom() - 12.0;
+                let mut bottom = rect.bottom() - 4.0;
                 if let Some(frac) = k.bar {
                     let bar = Rect::from_min_max(
-                        pos2(rect.left() + 14.0, rect.bottom() - 14.0),
-                        pos2(rect.right() - 14.0, rect.bottom() - 10.0),
+                        pos2(rect.left(), rect.bottom() - 6.0),
+                        pos2(rect.right() - 16.0, rect.bottom() - 2.0),
                     );
                     widgets::meter(&painter, bar, frac, k.color, p.track);
                     bottom = bar.top() - 7.0;
@@ -459,12 +452,12 @@ pub fn hero(ui: &mut Ui, items: &[Kpi]) {
                 if let Some(caption) = &k.caption {
                     widgets::text_truncated(
                         &painter,
-                        pos2(rect.left() + 14.0, bottom),
+                        pos2(rect.left(), bottom),
                         Align2::LEFT_BOTTOM,
                         caption,
                         FontId::proportional(11.5),
                         p.faint,
-                        rect.width() - 28.0,
+                        rect.width() - 16.0,
                     );
                 }
             }
@@ -707,7 +700,7 @@ fn disk_kind(d: &DiskStat) -> String {
 
 fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
     let info = &snap.cpu_info;
-    page_header(ui, Icon::Cpu, metric::CPU, "CPU", &info.name);
+    page_header(ui, "CPU", &info.name);
     let threads: u32 = snap.processes.iter().map(|p| p.threads).sum();
     let handles: u32 = snap.processes.iter().map(|p| p.handles).sum();
     let busiest = snap.cpu_cores.iter().copied().fold(0.0, f32::max);
@@ -938,13 +931,7 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         ),
         _ => format!("{:.0} GB", m.total as f64 / (1u64 << 30) as f64),
     };
-    page_header(
-        ui,
-        Icon::Memory,
-        metric::MEMORY,
-        t!("内存", "Memory", "メモリ"),
-        &subtitle,
-    );
+    page_header(ui, t!("内存", "Memory", "メモリ"), &subtitle);
     let gb = |b: u64| format!("{:.1}", b as f64 / (1u64 << 30) as f64);
     let frac = |a: u64, b: u64| a as f32 / b.max(1) as f32;
     hero(
@@ -1203,8 +1190,6 @@ fn disk_page(ui: &mut Ui, d: &DiskStat, series: &Series) {
     let p = Palette::of(ui.ctx());
     page_header(
         ui,
-        disk_icon(d),
-        metric::DISK,
         &tf!(
             "磁盘 {} ({})",
             "Disk {} ({})",
@@ -1548,17 +1533,7 @@ fn fmt_tb(bytes: u64) -> String {
 // ---------------------------------------------------------------- 网络
 
 fn network_page(ui: &mut Ui, n: &NicStat, series: &Series) {
-    page_header(
-        ui,
-        if n.kind == "Wi-Fi" {
-            Icon::Wifi
-        } else {
-            Icon::Network
-        },
-        metric::NETWORK,
-        &n.name,
-        &n.description,
-    );
+    page_header(ui, &n.name, &n.description);
     let status = match (&n.ssid, n.signal) {
         (Some(ssid), Some(signal)) => Kpi::new(
             t!("信号强度", "Signal strength", "シグナルの強さ"),

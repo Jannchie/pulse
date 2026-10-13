@@ -833,19 +833,11 @@ pub fn toggle_chip(ui: &mut Ui, on: &mut bool, glyph: Icon, label: &str) -> Resp
         *on = !*on;
     }
     let (fill, color) = match (*on, resp.hovered()) {
-        (true, _) => (p.accent.gamma_multiply(p.selection_alpha + 0.04), p.text),
+        (true, _) => (p.track, p.text),
         (false, true) => (p.hover, p.text),
         (false, false) => (p.surface, p.muted),
     };
     ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
-    if *on {
-        ui.painter().rect_stroke(
-            rect,
-            CornerRadius::same(8),
-            Stroke::new(1.0, p.accent.gamma_multiply(0.6)),
-            egui::StrokeKind::Inside,
-        );
-    }
     pill_content(ui, rect, glyph, label, color);
     resp
 }
@@ -1031,38 +1023,29 @@ pub fn menu_check(ui: &mut Ui, glyph: Option<Icon>, label: &str, checked: bool) 
 
 // ---------------------------------------------------------------- 表格
 
-/// 进程名旁的状态标签（"已挂起"、"无响应"）。
-pub fn status_chip(ui: &mut Ui, text: &str, color: Color32) {
-    let p = Palette::of(ui.ctx());
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text.to_string(), FontId::proportional(11.0), color);
-    let (rect, _) = ui.allocate_exact_size(vec2(galley.size().x + 12.0, 18.0), Sense::hover());
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(5), p.track);
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, color);
+/// 状态文字（"已挂起"、"无响应"、"当前"）：只有颜色，没有底色。
+pub fn status_text(ui: &mut Ui, text: &str, color: Color32) {
+    ui.label(RichText::new(text).size(12.0).color(color));
 }
 
-/// 进程名旁的端口小标签。
+/// 进程名旁的端口号（等宽次要文字）。
 pub fn port_chip(ui: &mut Ui, port: u16) {
     let p = Palette::of(ui.ctx());
     let galley = ui
         .painter()
-        .layout_no_wrap(format!(":{port}"), FontId::monospace(11.0), p.chip);
-    let size = vec2(galley.size().x + 10.0, 18.0);
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    ui.painter().rect_filled(
-        rect,
-        CornerRadius::same(5),
-        p.accent.gamma_multiply(p.chip_alpha),
+        .layout_no_wrap(format!(":{port}"), FontId::monospace(11.5), p.faint);
+    let (rect, _) = ui.allocate_exact_size(galley.size() + vec2(4.0, 0.0), Sense::hover());
+    ui.painter().galley(
+        rect.left_center() - vec2(0.0, galley.size().y / 2.0),
+        galley,
+        p.faint,
     );
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, p.chip);
 }
 
-/// 按负载给单元格铺一层指标色底，类似任务管理器的热力列。
-pub fn heat(ui: &Ui, level: f32, color: Color32) {
+/// 按负载给单元格铺一层底色，类似任务管理器的热力列。
+/// 热力底色：所有列用同一种暖色（与任务管理器一致），只表示"这里占用高"，不区分资源类型。
+pub fn heat(ui: &Ui, level: f32) {
+    let color = crate::theme::HEAT;
     let level = level.clamp(0.0, 1.0);
     // 低负载不着色，避免整列都染上颜色。
     if level < 0.05 {
