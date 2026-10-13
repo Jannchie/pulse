@@ -58,7 +58,6 @@ pub fn install(cc: &eframe::CreationContext<'_>) -> bool {
     let _ = CTX.set(cc.egui_ctx.clone());
     set_window_icon(hwnd);
     crate::tray::attach(hwnd);
-    crate::input::register(hwnd);
     unsafe {
         if !SetWindowSubclass(hwnd, Some(subclass), 1, 0).as_bool() {
             return false;
@@ -211,7 +210,6 @@ unsafe extern "system" fn subclass(
     _id: usize,
     _data: usize,
 ) -> LRESULT {
-    crate::input::observe(msg, lparam);
     if let Some(r) = crate::tray::handle(hwnd, msg, wparam, lparam) {
         return r;
     }

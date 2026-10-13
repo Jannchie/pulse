@@ -485,6 +485,7 @@ impl App {
             tray::cloak(true);
         }
         let recorder = recorder::Recorder::start(settings.record_usage);
+        input::start();
         {
             // 退出（托盘菜单、注销关机、安装程序关闭）前把这一分钟的记录写进去。
             let r = recorder.clone();

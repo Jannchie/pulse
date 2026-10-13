@@ -1,7 +1,7 @@
 //! 记录线程：每秒看一次前台程序，每分钟把这一分钟的使用情况和性能平均值写进数据库。
 //!
 //! 采集线程每次采样后把整体占用和各进程的数值发过来（[`Recorder::perf`]）；前台程序、窗口标题、
-//! 是否空闲由这里自己查。用户超过 [`IDLE_MS`] 没有任何输入、或屏幕已锁定时不计时。
+//! 是否空闲由这里自己查。用户超过 [`IDLE_MS`] 没有任何键盘、鼠标、手柄输入，或屏幕已锁定时不计时。
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -191,7 +191,9 @@ fn exe_stem(name: &str) -> &str {
 
 /// 一秒钟的前台记录：前台程序与标题；不在电脑前（空闲、锁屏）时为 None。
 fn sample_foreground() -> Option<(AppRef, String)> {
-    if pulse_probe::foreground::idle_ms() >= IDLE_MS {
+    // 键盘鼠标和手柄都超过 IDLE_MS 没动才算离开（系统的空闲时间不含手柄）。
+    crate::input::poll_xinput();
+    if pulse_probe::foreground::idle_ms() >= IDLE_MS && crate::input::gamepad_idle_ms() >= IDLE_MS {
         return None;
     }
     let fg = pulse_probe::foreground::foreground()?;
