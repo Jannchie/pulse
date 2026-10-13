@@ -564,7 +564,7 @@ fn kpis(ui: &mut Ui, data: &Data, state: &StatsState) {
             metric::CPU,
         ),
         Kpi::new(
-            t!("打字", "Typing", "入力"),
+            t!("输入", "Typing", "入力"),
             format!("{:.0}", typing as f64 / active.max(1) as f64 * 100.0),
             "%",
             metric::MEMORY,
@@ -932,9 +932,9 @@ fn ranking(
             p.text,
             name_w - 52.0,
         );
-        // 右侧：时长、打字占比；中间是相对排名第一的长度条。
+        // 右侧：时长、输入占比；中间是相对排名第一的长度条。
         let typing = tf!(
-            "打字 {:.0}%",
+            "输入 {:.0}%",
             "Typing {:.0}%",
             "入力 {:.0}%",
             t.typing as f64 / t.active.max(1) as f64 * 100.0
