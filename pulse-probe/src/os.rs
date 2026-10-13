@@ -380,3 +380,54 @@ pub(crate) fn decode_console(bytes: &[u8]) -> String {
     unsafe { MultiByteToWideChar(CP_OEMCP, flags, bytes, Some(&mut buf)) };
     String::from_utf16_lossy(&buf)
 }
+
+/// Unix 时间（秒）对应的本地日期时间：(年, 月, 日, 时, 分)。按当时的时区规则换算（含夏令时）。
+pub fn local_time(unix_secs: i64) -> Option<(i32, u32, u32, u32, u32)> {
+    use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    // 1601-01-01 到 1970-01-01 的秒数。
+    let t = (unix_secs + 11_644_473_600).checked_mul(10_000_000)?;
+    let ft = FILETIME {
+        dwLowDateTime: t as u32,
+        dwHighDateTime: (t >> 32) as u32,
+    };
+    let (mut utc, mut local) = (SYSTEMTIME::default(), SYSTEMTIME::default());
+    unsafe {
+        FileTimeToSystemTime(&ft, &mut utc).ok()?;
+        SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).ok()?;
+    }
+    Some((
+        local.wYear as i32,
+        local.wMonth as u32,
+        local.wDay as u32,
+        local.wHour as u32,
+        local.wMinute as u32,
+    ))
+}
+
+/// 本地日期编码成 yyyymmdd 整数，便于按天汇总与排序。
+pub fn local_day(unix_secs: i64) -> i64 {
+    local_time(unix_secs).map_or(0, |(y, m, d, ..)| {
+        y as i64 * 10_000 + m as i64 * 100 + d as i64
+    })
+}
+
+/// 本地日期 (年, 月, 日) 零点对应的 Unix 时间（秒），按当地时区规则（含夏令时）换算。
+pub fn local_midnight(y: i32, m: u32, d: u32) -> Option<i64> {
+    use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows::Win32::System::Time::{SystemTimeToFileTime, TzSpecificLocalTimeToSystemTime};
+    let local = SYSTEMTIME {
+        wYear: y as u16,
+        wMonth: m as u16,
+        wDay: d as u16,
+        ..Default::default()
+    };
+    let mut utc = SYSTEMTIME::default();
+    let mut ft = FILETIME::default();
+    unsafe {
+        TzSpecificLocalTimeToSystemTime(None, &local, &mut utc).ok()?;
+        SystemTimeToFileTime(&utc, &mut ft).ok()?;
+    }
+    let t = (ft.dwHighDateTime as i64) << 32 | ft.dwLowDateTime as i64;
+    Some(t / 10_000_000 - 11_644_473_600)
+}
