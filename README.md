@@ -56,3 +56,7 @@ cargo build --release   # 产物位于 target\release\pulse.exe
 ```
 
 发布新版本：修改 `pulse/Cargo.toml` 中的版本号并推送同名标签（如 `v0.2.0`），CI 会构建并创建 Release。
+
+## 许可证
+
+[MIT](LICENSE)。可以自由使用、修改、分发，包括商用，只需保留版权与许可声明。依赖的 [nucleo-matcher](https://crates.io/crates/nucleo-matcher) 使用 MPL-2.0，其源码可在 crates.io 获取。

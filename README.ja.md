@@ -56,3 +56,7 @@ cargo build --release   # 出力先: target\release\pulse.exe
 ```
 
 新しいバージョンをリリースするには、`pulse/Cargo.toml` のバージョンを更新し、同じ名前のタグ (例: `v0.2.0`) をプッシュします。CI がビルドを行い、リリースを作成します。
+
+## ライセンス
+
+[MIT](LICENSE)。著作権表示と許諾表示を残せば、商用を含めて自由に使用、改変、再配布できます。依存ライブラリの [nucleo-matcher](https://crates.io/crates/nucleo-matcher) は MPL-2.0 で、ソース コードは crates.io で入手できます。

@@ -56,3 +56,7 @@ cargo build --release   # output: target\release\pulse.exe
 ```
 
 To publish a release, bump the version in `pulse/Cargo.toml` and push a matching tag (for example `v0.2.0`); CI builds it and creates the release.
+
+## License
+
+[MIT](LICENSE). You may use, modify and distribute it freely, including commercially, as long as the copyright and license notice are kept. The [nucleo-matcher](https://crates.io/crates/nucleo-matcher) dependency is licensed under MPL-2.0; its source code is available on crates.io.
