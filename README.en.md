@@ -14,6 +14,7 @@ Compared with the built-in Task Manager:
 
 - Search covers process names, descriptions, command lines and paths, with fuzzy matching, typo tolerance and `:port` lookup.
 - Per-process GPU usage and VRAM, network traffic, listening ports and CPU time.
+- Tells same-named processes apart: node.exe shows as "vite · project" or "pnpm dev · project", and likewise for Python, Java and .NET; child processes of Chrome, Edge, VS Code and other Chromium apps are labeled as renderer, GPU process or network service; vmmemWSL shows the running WSL distributions.
 - The performance page shows NVMe health (remaining life, power-on hours, data written), memory modules and performance/efficiency cores.
 - Near-zero CPU while idle: the window repaints only when data or input changes.
 
@@ -37,6 +38,7 @@ Command-line arguments become the initial search. Right-click a process to end, 
 ## Common tasks
 
 - **Find what holds a port**: search `:8080`, or enable "Listening ports" in the toolbar.
+- **Find what holds a file**: paste a file or folder path into the search box, or click "File locks" in the toolbar and choose a file. Only the processes using it remain (open files, loaded DLLs, or a working directory inside the folder), and you can end them from there.
 - **Combine terms**: space-separated terms must all match; `!chrome` excludes, `^node` matches a prefix, `'vite` matches exactly.
 - **End a process tree**: right-click a process and choose "End process tree"; children are ended before the parent.
 - **Replace Ctrl+Shift+Esc**: enable "Replace Task Manager" under Settings → System; Windows then launches Pulse whenever Task Manager is requested.

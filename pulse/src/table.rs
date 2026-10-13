@@ -35,6 +35,8 @@ pub struct View<'a> {
     pub scroll_to: Option<usize>,
     /// pid → 该进程托管的服务名（svchost 等）。
     pub services: &'a std::collections::HashMap<u32, Vec<String>>,
+    /// 查文件占用时：pid → 占用方式。
+    pub locks: &'a std::collections::HashMap<u32, pulse_probe::locks::Reason>,
 }
 
 pub fn show(ui: &mut Ui, v: View) -> Vec<Action> {
@@ -49,6 +51,7 @@ pub fn show(ui: &mut Ui, v: View) -> Vec<Action> {
         icons,
         scroll_to,
         services,
+        locks,
     } = v;
     let mut actions = Vec::new();
     let procs = &snapshot.processes;
@@ -147,8 +150,15 @@ pub fn show(ui: &mut Ui, v: View) -> Vec<Action> {
                     Row::Section(..) => &[],
                 };
                 let member_procs: Vec<&Process> = members.iter().map(|&i| &procs[i]).collect();
-                // 分组里的成员共用同一个描述，改为显示命令行摘要，才看得出各自在跑什么（vite.js、main.js…）。
+                // 认得出的进程显示它在跑什么（"vite · pulse"、"GPU 进程"）；
+                // 分组里的其他成员共用同一个描述，改为显示命令行摘要，才看得出各自的区别。
                 let secondary: Option<String> = match r {
+                    Row::Member(i) | Row::Single(i) if locks.contains_key(&procs[i].pid) => locks
+                        .get(&procs[i].pid)
+                        .map(|reason| lock_reason(reason).into()),
+                    Row::Member(i) | Row::Single(i) if procs[i].identity.is_some() => {
+                        procs[i].identity.as_ref().map(|id| id.label())
+                    }
                     Row::Member(i) => procs[i].command_line.as_deref().and_then(cmd_summary),
                     _ => None,
                 }
@@ -773,6 +783,20 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
     );
 }
 
+/// 查文件占用时，行里显示的占用方式。
+pub fn lock_reason(r: &pulse_probe::locks::Reason) -> &'static str {
+    match r {
+        pulse_probe::locks::Reason::InUse => {
+            t!("正在使用此文件", "Has the file open", "ファイルを使用中")
+        }
+        pulse_probe::locks::Reason::WorkingDirectory => t!(
+            "工作目录在此文件夹中",
+            "Working directory is in this folder",
+            "作業ディレクトリがこのフォルダー内"
+        ),
+    }
+}
+
 fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String>>) {
     let p = Palette::of(ui.ctx());
     ui.set_max_width(520.0);
@@ -788,6 +812,17 @@ fn tooltip(ui: &mut Ui, pr: &Process, net_ok: bool, services: Option<&Vec<String
     }
     if let Some(d) = &pr.description {
         ui.label(small(d.to_string()));
+    }
+    if let Some(id) = &pr.identity {
+        ui.label(small(id.label()));
+    }
+    if let Some(cwd) = &pr.cwd {
+        ui.label(small(tf!(
+            "工作目录 {}",
+            "Working directory {}",
+            "作業ディレクトリ {}",
+            cwd.trim_end_matches('\\')
+        )));
     }
     let mut state = vec![tf!(
         "优先级 {}",

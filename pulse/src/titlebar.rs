@@ -54,6 +54,7 @@ pub fn install(cc: &eframe::CreationContext<'_>) -> bool {
         return false;
     };
     let hwnd = HWND(w.hwnd.get() as *mut _);
+    HWND_RAW.store(w.hwnd.get(), Ordering::Relaxed);
     let _ = CTX.set(cc.egui_ctx.clone());
     set_window_icon(hwnd);
     unsafe {
@@ -109,6 +110,13 @@ fn set_window_icon(hwnd: HWND) {
         }
     }
 }
+
+/// 主窗口句柄（系统对话框的父窗口）；还没创建时为 0。
+pub fn hwnd() -> isize {
+    HWND_RAW.load(Ordering::Relaxed)
+}
+
+static HWND_RAW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
 /// 是否由 Pulse 自己绘制标题栏。
 pub fn installed() -> bool {

@@ -123,6 +123,8 @@ pub struct Query<'a> {
     pub expanded: &'a HashSet<String>,
     /// 只看有 TCP 监听端口的进程。
     pub listening_only: bool,
+    /// 只看这些进程（查文件占用时），此时不再按搜索词和监听端口过滤。
+    pub pids: Option<&'a HashSet<u32>>,
 }
 
 /// 搜索用的一个关键词。
@@ -187,7 +189,7 @@ impl Searcher {
     }
 
     /// 所有词都要命中（可以落在不同字段）；返回各词最佳得分之和，越大越相关。
-    /// 字段权重：名称 > 描述 > 命令行 > 路径。
+    /// 字段权重：名称 > 描述 > 身份（"vite · pulse"）> 命令行 > 路径。
     fn score(&mut self, p: &Process) -> Option<u32> {
         // pulse 自己的命令行里可能就带着搜索词（`pulse :5173`），不参与匹配。
         let cmd = if p.pid == std::process::id() {
@@ -195,9 +197,11 @@ impl Searcher {
         } else {
             p.command_line.as_deref().unwrap_or("")
         };
-        let fields: [(&str, u32); 4] = [
+        let identity = p.identity.as_ref().map(|i| i.label()).unwrap_or_default();
+        let fields: [(&str, u32); 5] = [
             (&p.name, 100),
             (p.description.as_deref().unwrap_or(""), 90),
+            (&identity, 80),
             (cmd, 60),
             (p.path.as_deref().unwrap_or(""), 40),
         ];
@@ -285,12 +289,15 @@ fn osa_distance(a: &[char], b: &[char]) -> usize {
 
 pub fn build(snap: &Snapshot, q: &Query) -> Table {
     let procs = &snap.processes;
-    let mut searcher = Searcher::new(q.filter);
+    let mut searcher = Searcher::new(if q.pids.is_some() { "" } else { q.filter });
     let searching = !searcher.is_empty();
     let mut scores = vec![0u32; procs.len()];
     let mut visible: Vec<usize> = (0..procs.len())
         .filter(|&i| {
             let p = &procs[i];
+            if let Some(pids) = q.pids {
+                return pids.contains(&p.pid);
+            }
             if q.listening_only
                 && !p
                     .ports
@@ -461,6 +468,8 @@ mod tests {
             path: Some(Arc::from(format!(r"C:\Apps\{name}"))),
             description: desc.map(Arc::from),
             command_line: cmd.map(Arc::from),
+            cwd: None,
+            identity: None,
             ports: ports
                 .iter()
                 .map(|&port| Port {
@@ -503,6 +512,7 @@ mod tests {
             descending: false,
             expanded: &expanded,
             listening_only: false,
+            pids: None,
         };
         build(&snap, &q)
             .rows
@@ -583,6 +593,7 @@ mod tests {
             descending: false,
             expanded: &expanded,
             listening_only: false,
+            pids: None,
         };
         let rows = build(&snap, &q).rows;
         assert!(matches!(rows[0], Row::Section(Section::Apps, 1)));

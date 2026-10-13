@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Frame, Key, Layout, Margin, RichText, Sense, Ui, pos2, vec2};
 use pulse_probe::control::Priority;
+use pulse_probe::locks;
 use pulse_probe::{Collector, NetStatus, Snapshot, t, tf};
 
 use dialogs::{AffinityDialog, Decision, KillRequest, RunDialog, Toast};
@@ -304,6 +305,16 @@ enum Action {
     OpenMenu(Selection, egui::Pos2),
 }
 
+/// 搜索框里是文件或文件夹路径时，查找正在占用它的进程。
+struct LockSearch {
+    path: std::path::PathBuf,
+    /// 最近一次的结果；None 表示还在第一次查找。
+    report: Option<locks::Report>,
+    rx: Option<Receiver<locks::Report>>,
+    /// 上次结果到达的时刻，用来定时刷新。
+    at: Instant,
+}
+
 struct App {
     shared: Arc<Mutex<Shared>>,
     snapshot: Arc<Snapshot>,
@@ -319,6 +330,12 @@ struct App {
     descending: bool,
     filter: String,
     listening_only: bool,
+    /// 查找文件占用的状态；搜索框里不是路径时为 None。
+    locks: Option<LockSearch>,
+    /// 上次检查过是否为路径的搜索词，搜索词不变就不再访问文件系统。
+    lock_filter: String,
+    /// "文件占用"按钮选中的文件。
+    picked: (Sender<String>, Receiver<String>),
     expanded: HashSet<String>,
     selected: Option<Selection>,
     icons: Icons,
@@ -409,6 +426,9 @@ impl App {
             // 命令行参数作为初始搜索词，例如 `pulse :5173` 直接定位占用端口的进程。
             filter: initial_filter(),
             listening_only: false,
+            locks: None,
+            lock_filter: String::new(),
+            picked: channel(),
             expanded: HashSet::new(),
             selected: None,
             icons: Icons::new(ctx),
@@ -1346,6 +1366,34 @@ impl App {
                 {
                     self.modal = Some(Modal::Run(RunDialog::default()));
                 }
+                if widgets::tool_button(
+                    ui,
+                    Icon::FileLock,
+                    t!("文件占用", "File locks", "ファイルの使用元"),
+                    true,
+                    false,
+                )
+                .on_hover_text(t!(
+                    "选择一个文件，查看哪些进程正在使用它。也可以把文件或文件夹的路径粘贴到搜索框",
+                    "Choose a file to see which processes are using it. You can also paste a file or folder path into the search box",
+                    "ファイルを選んで、それを使用しているプロセスを表示します。ファイルやフォルダーのパスを検索ボックスに貼り付けることもできます"
+                ))
+                .clicked()
+                {
+                    let tx = self.picked.0.clone();
+                    let ctx = ui.ctx().clone();
+                    let title = t!(
+                        "选择要检查的文件",
+                        "Choose a file to check",
+                        "確認するファイルを選択"
+                    );
+                    std::thread::spawn(move || {
+                        if let Some(p) = pulse_probe::os::pick_file(titlebar::hwnd(), title) {
+                            let _ = tx.send(p);
+                            ctx.request_repaint();
+                        }
+                    });
+                }
                 if !elevated
                     && widgets::tool_button(
                         ui,
@@ -1375,8 +1423,8 @@ impl App {
                         &mut self.filter,
                         width,
                         t!(
-                            "模糊搜索名称、描述、命令行，或 :端口",
-                            "Search name, description, command, :port", "名前、説明、コマンド、:ポートで検索"
+                            "搜索名称、命令行、:端口，或粘贴路径查占用",
+                            "Search name, command, :port, or paste a path", "名前、コマンド、:ポート、またはパスで検索"
                         ),
                     );
                     if resp.changed() {
@@ -1405,6 +1453,102 @@ impl App {
                     }
                 });
             });
+        });
+    }
+
+    /// 搜索词是文件或文件夹路径时，在后台查找占用它的进程，之后每隔几秒刷新一次
+    /// （结束进程、关掉文件后列表随之更新）。
+    fn poll_locks(&mut self, ctx: &egui::Context) {
+        while let Ok(p) = self.picked.1.try_recv() {
+            self.filter = p;
+            self.dirty = true;
+        }
+        if self.filter != self.lock_filter {
+            self.lock_filter = self.filter.clone();
+            let path = lock_path(&self.filter);
+            if path.as_ref() != self.locks.as_ref().map(|l| &l.path) {
+                self.locks = path.map(|path| LockSearch {
+                    path,
+                    report: None,
+                    rx: None,
+                    at: Instant::now(),
+                });
+                self.selected = None;
+                self.dirty = true;
+            }
+        }
+        let Some(l) = &mut self.locks else {
+            return;
+        };
+        if let Some(r) = l.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            l.report = Some(r);
+            l.rx = None;
+            l.at = Instant::now();
+            self.dirty = true;
+        }
+        const REFRESH: Duration = Duration::from_secs(5);
+        if l.rx.is_none() {
+            if l.report.is_none() || l.at.elapsed() >= REFRESH {
+                let (tx, rx) = channel();
+                let (path, ctx) = (l.path.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    let _ = tx.send(locks::find(&[path]));
+                    ctx.request_repaint();
+                });
+                l.rx = Some(rx);
+            } else {
+                ctx.request_repaint_after(REFRESH - l.at.elapsed());
+            }
+        }
+    }
+
+    /// 查文件占用时，工具栏下方的一行说明。
+    fn lock_banner(&self, ui: &mut Ui) {
+        let Some(l) = &self.locks else {
+            return;
+        };
+        let p = Palette::of(ui.ctx());
+        let name = l
+            .path
+            .file_name()
+            .map_or_else(|| l.path.to_string_lossy(), |n| n.to_string_lossy())
+            .into_owned();
+        let text = match &l.report {
+            None => tf!(
+                "正在查找使用 {name} 的进程…",
+                "Looking for processes using {name}…",
+                "{name} を使用しているプロセスを探しています…"
+            ),
+            Some(r) if r.lockers.is_empty() => tf!(
+                "没有进程在使用 {name}",
+                "No process is using {name}",
+                "{name} を使用しているプロセスはありません"
+            ),
+            Some(r) => {
+                let n = r.lockers.len();
+                tf!(
+                    "{n} 个进程正在使用 {name}",
+                    "{n} processes are using {name}",
+                    "{n} 個のプロセスが {name} を使用しています"
+                )
+            }
+        };
+        let note = l.report.as_ref().filter(|r| r.truncated).map(|_| {
+            t!(
+                "文件夹里的文件太多，只检查了其中一部分",
+                "The folder has too many files; only some were checked",
+                "フォルダー内のファイルが多すぎるため、一部だけを確認しました"
+            )
+        });
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+            widgets::icon(ui, Icon::FileLock, rect.center(), 16.0, p.muted);
+            ui.label(RichText::new(text).size(12.5).color(p.text))
+                .on_hover_text(l.path.to_string_lossy());
+            if let Some(note) = note {
+                widgets::status_text(ui, note, p.muted);
+            }
         });
     }
 
@@ -1563,6 +1707,12 @@ impl App {
                 icons: &mut self.icons,
                 scroll_to: self.scroll_to.take(),
                 services: &self.services_by_pid,
+                locks: &self
+                    .locks
+                    .iter()
+                    .flat_map(|l| l.report.iter())
+                    .flat_map(|r| r.lockers.iter().map(|x| (x.pid, x.reason.clone())))
+                    .collect(),
             },
         );
         let ctx = ui.ctx().clone();
@@ -1653,13 +1803,21 @@ impl eframe::App for App {
         self.pull();
         self.icons.poll(ui.ctx());
         self.poll_update(ui.ctx());
+        self.poll_locks(ui.ctx());
         if self.dirty {
+            let lock_pids: Option<HashSet<u32>> = self.locks.as_ref().map(|l| {
+                l.report
+                    .iter()
+                    .flat_map(|r| r.lockers.iter().map(|x| x.pid))
+                    .collect()
+            });
             self.table = model::build(
                 &self.snapshot,
                 &Query {
                     filter: &self.filter,
                     grouped: self.settings.grouped,
                     listening_only: self.listening_only,
+                    pids: lock_pids.as_ref(),
                     sort: self.sort,
                     descending: self.descending,
                     expanded: &self.expanded,
@@ -1691,6 +1849,7 @@ impl eframe::App for App {
                             self.cards(ui);
                             ui.add_space(16.0);
                             self.toolbar(ui);
+                            self.lock_banner(ui);
                         });
                 }
             });
@@ -2111,26 +2270,11 @@ fn same_name(description: &str, exe: &str) -> bool {
 /// 命令行摘要：去掉 exe 本身，路径只保留文件名。
 /// `"C:\...\node.exe" "C:\app\js\main.js" --port 3000` → `main.js --port 3000`
 fn cmd_summary(cmd: &str) -> Option<String> {
-    let mut args = Vec::new();
-    let mut cur = String::new();
-    let mut quoted = false;
-    for c in cmd.chars() {
-        match c {
-            '"' => quoted = !quoted,
-            c if c.is_whitespace() && !quoted => {
-                if !cur.is_empty() {
-                    args.push(std::mem::take(&mut cur));
-                }
-            }
-            c => cur.push(c),
-        }
-    }
-    if !cur.is_empty() {
-        args.push(cur);
-    }
+    let args = pulse_probe::runtime::split_args(cmd);
     let summary: Vec<&str> = args
         .iter()
         .skip(1)
+        .filter(|a| !a.is_empty())
         .map(|a| match a.rsplit(['\\', '/']).next() {
             // 以 - 开头的参数（如 --config=C:\x）保持原样，只缩短纯路径。
             Some(file) if !a.starts_with('-') && !file.is_empty() => file,
@@ -2138,6 +2282,19 @@ fn cmd_summary(cmd: &str) -> Option<String> {
         })
         .collect();
     (!summary.is_empty()).then(|| summary.join(" "))
+}
+
+/// 搜索词是已存在的绝对路径（`C:\…`、`\\server\…`，可带引号）时返回它。
+fn lock_path(filter: &str) -> Option<std::path::PathBuf> {
+    let t = filter.trim().trim_matches('"');
+    let b = t.as_bytes();
+    let drive =
+        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+    if !(drive || t.starts_with(r"\\")) {
+        return None;
+    }
+    let p = std::path::PathBuf::from(t);
+    std::fs::symlink_metadata(&p).is_ok().then_some(p)
 }
 
 /// 命令行参数作为初始搜索词，例如 `pulse :5173`。
@@ -2261,6 +2418,17 @@ mod tests {
         // 普通启动：参数就是搜索词。
         assert_eq!(filter_from_args(args(&[":5173"])), ":5173");
         assert_eq!(filter_from_args(args(&["node", ":3000"])), "node :3000");
+    }
+
+    #[test]
+    fn detects_paths_in_search() {
+        use super::lock_path;
+        let windir = std::env::var("WINDIR").unwrap();
+        assert!(lock_path(&windir).is_some());
+        assert!(lock_path(&format!("  \"{windir}\"  ")).is_some());
+        assert!(lock_path(r"C:\definitely-not-here-pulse").is_none());
+        assert!(lock_path("node").is_none());
+        assert!(lock_path(":5173").is_none());
     }
 
     #[test]
