@@ -284,8 +284,8 @@ pub struct Data {
     pub buckets: Vec<Date>,
     /// 有记录的天数（算日均用）。
     pub days_with_data: i64,
-    /// 热力图：最近 53 周每天的活跃秒数。
-    pub heat: HashMap<i64, i64>,
+    /// 热力图：最近 53 周每天各程序的活跃秒数 (日期键, 程序, 秒)。
+    pub heat: Vec<(i64, i64, i64)>,
     pub first: Option<Date>,
 }
 
@@ -296,6 +296,26 @@ impl Data {
 
     pub fn typing(&self) -> i64 {
         self.totals.iter().map(|t| t.typing).sum()
+    }
+
+    /// 只留 `keep` 为真的程序。
+    pub fn filtered(&self, keep: impl Fn(i64) -> bool) -> Data {
+        let mut d = self.clone();
+        d.totals.retain(|t| keep(t.app));
+        for c in &mut d.columns {
+            c.parts.retain(|p| keep(p.0));
+        }
+        d.heat.retain(|h| keep(h.1));
+        d
+    }
+
+    /// 热力图用：每天的合计秒数。
+    pub fn heat_by_day(&self) -> HashMap<i64, i64> {
+        let mut m = HashMap::new();
+        for &(day, _, secs) in &self.heat {
+            *m.entry(day).or_default() += secs;
+        }
+        m
     }
 }
 
@@ -496,17 +516,16 @@ impl Store {
         // 热力图：截至 anchor 所在周的最近 53 周。
         let heat_end = Date::today().add_days(1);
         let heat_start = heat_end.add_days(-(53 * 7 + 7));
-        let mut heat = HashMap::new();
+        let mut heat = Vec::new();
         {
             let mut stmt = conn.prepare_cached(
-                "SELECT day, SUM(active) FROM usage_day WHERE day >= ?1 AND day < ?2 GROUP BY day",
+                "SELECT day, app, active FROM usage_day WHERE day >= ?1 AND day < ?2",
             )?;
             let rows = stmt.query_map([heat_start.key(), heat_end.key()], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })?;
             for row in rows {
-                let (day, secs) = row?;
-                heat.insert(day, secs);
+                heat.push(row?);
             }
         }
 

@@ -236,7 +236,7 @@ pub fn set_enabled(item: &StartupItem, enabled: bool) -> Result<(), String> {
     }
 }
 
-fn open_key(root: HKEY, path: &str) -> Option<HKEY> {
+pub(crate) fn open_key(root: HKEY, path: &str) -> Option<HKEY> {
     let w = wide(path);
     let mut key = HKEY::default();
     (unsafe { RegOpenKeyExW(root, PCWSTR(w.as_ptr()), None, KEY_READ, &mut key) } == ERROR_SUCCESS)

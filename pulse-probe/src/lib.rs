@@ -6,6 +6,7 @@ pub mod control;
 pub mod disk;
 pub mod fonts;
 pub mod foreground;
+pub mod games;
 pub mod gpu;
 pub mod i18n;
 pub mod icon;

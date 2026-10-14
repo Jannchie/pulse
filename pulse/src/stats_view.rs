@@ -3,6 +3,8 @@
 //! 图表沿用全应用的点阵语言：日视图每个点是 5 分钟，按那段时间在前台最久的程序着色；
 //! 周、月、全部视图每列是一天或一个月，按程序分段堆叠。
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
@@ -11,6 +13,7 @@ use eframe::egui::{
 };
 use pulse_probe::{t, tf};
 
+use crate::category::{Category, Classifier, Reason};
 use crate::icons::Icons;
 use crate::icons_gen::Icon;
 use crate::perf::{Kpi, hero, section};
@@ -35,6 +38,15 @@ pub struct StatsState {
     anchor: Date,
     store: Option<Store>,
     data: Option<Data>,
+    /// 按分类筛选后的数据（没有筛选时与 `data` 相同）。
+    view: Option<Arc<Data>>,
+    classifier: Option<Classifier>,
+    /// 各程序的分类与依据。
+    cats: HashMap<i64, (Category, Reason)>,
+    /// 只看某一类。
+    filter: Option<Category>,
+    /// 右键菜单：程序与位置。
+    menu: Option<(i64, Pos2)>,
     loaded: Option<(Range, Date, Instant)>,
     /// 上次按正在运行的进程补全程序路径的时刻。
     filled: Option<Instant>,
@@ -51,6 +63,11 @@ impl Default for StatsState {
             anchor: Date::today(),
             store: None,
             data: None,
+            view: None,
+            classifier: None,
+            cats: HashMap::new(),
+            filter: None,
+            menu: None,
             loaded: None,
             filled: None,
             error: None,
@@ -63,6 +80,13 @@ impl Default for StatsState {
 impl StatsState {
     /// 区间或日期变了就重新查询；看的是包含今天的区间时每 30 秒刷新一次。
     fn refresh(&mut self, procs: &[pulse_probe::Process]) {
+        let mut changed = match &mut self.classifier {
+            Some(c) => c.rescan_if_stale(),
+            None => {
+                self.classifier = Some(Classifier::load());
+                true
+            }
+        };
         // 进程列表刚启动时还是空的，所以隔几秒再补一次路径。
         if let Some(store) = &mut self.store
             && !procs.is_empty()
@@ -72,6 +96,10 @@ impl StatsState {
         {
             store.fill_paths(procs);
             self.filled = Some(Instant::now());
+            changed = true;
+        }
+        if changed {
+            self.recategorize();
         }
         let stale = match self.loaded {
             Some((r, a, at)) => {
@@ -95,6 +123,28 @@ impl StatsState {
             Err(e) => self.error = Some(e.to_string()),
         }
         self.loaded = Some((self.range, self.anchor, Instant::now()));
+        self.recategorize();
+    }
+
+    /// 重新给各程序分类，并按当前筛选生成要显示的数据。
+    fn recategorize(&mut self) {
+        if let (Some(store), Some(c)) = (&self.store, &self.classifier) {
+            self.cats = store
+                .apps
+                .iter()
+                .map(|(&id, a)| (id, c.classify(&a.key, a.path.as_deref())))
+                .collect();
+        }
+        self.view = self.data.as_ref().map(|d| {
+            Arc::new(match self.filter {
+                Some(f) => d.filtered(|app| self.category(app) == f),
+                None => d.clone(),
+            })
+        });
+    }
+
+    fn category(&self, app: i64) -> Category {
+        self.cats.get(&app).map_or(Category::Other, |c| c.0)
     }
 
     /// 让下一帧重新查询。
@@ -232,7 +282,7 @@ pub fn show(
                 ui.label(RichText::new(e).color(p.muted));
                 return;
             }
-            let Some(data) = state.data.clone() else {
+            let (Some(all), Some(data)) = (state.data.clone(), state.view.clone()) else {
                 empty(ui);
                 return;
             };
@@ -254,7 +304,7 @@ pub fn show(
                     .map_or(p.faint.gamma_multiply(0.55), |i| COLORS[i])
             };
             ui.add_space(12.0);
-            kpis(ui, &data, state);
+            kpis(ui, &data, &all, state);
             if data.grain == Grain::FiveMin {
                 section(ui, t!("时间线", "Timeline", "タイムライン"));
                 day_chart(ui, &data, state, &color_of);
@@ -272,8 +322,19 @@ pub fn show(
                     state.anchor = anchor;
                 }
             }
-            section(ui, t!("应用", "Apps", "アプリ"));
+            section(ui, t!("分类", "Categories", "カテゴリ"));
+            if let Some(f) = categories(ui, &all, state) {
+                state.filter = (state.filter != Some(f)).then_some(f);
+                state.recategorize();
+            }
+            section(
+                ui,
+                state
+                    .filter
+                    .map_or(t!("应用", "Apps", "アプリ"), Category::label),
+            );
             ranking(ui, &data, state, icons, &color_of);
+            app_menu(ui, state);
             section(ui, t!("最近一年", "Past year", "過去 1 年"));
             if let Some(day) = heatmap(ui, &data) {
                 state.range = Range::Day;
@@ -553,7 +614,7 @@ fn empty(ui: &mut Ui) {
     });
 }
 
-fn kpis(ui: &mut Ui, data: &Data, state: &StatsState) {
+fn kpis(ui: &mut Ui, data: &Data, all: &Data, state: &StatsState) {
     let active = data.active();
     let typing = data.typing();
     let mut items = vec![
@@ -586,6 +647,24 @@ fn kpis(ui: &mut Ui, data: &Data, state: &StatsState) {
                 COLORS[0],
             )
             .caption(name),
+        );
+    }
+    if state.filter.is_none() {
+        let productive: i64 = all
+            .totals
+            .iter()
+            .filter(|t| state.category(t.app).productive())
+            .map(|t| t.active)
+            .sum();
+        items.push(
+            Kpi::new(
+                t!("生产力", "Productive", "生産性"),
+                format!("{:.0}", productive as f64 / active.max(1) as f64 * 100.0),
+                "%",
+                Category::Dev.color(),
+            )
+            .caption(fmt_duration(productive))
+            .bar(productive as f32 / active.max(1) as f32),
         );
     }
     if data.grain != Grain::FiveMin {
@@ -870,7 +949,7 @@ fn axis_label(grain: Grain, n: usize, i: usize, date: Date) -> Option<String> {
 fn ranking(
     ui: &mut Ui,
     data: &Data,
-    state: &StatsState,
+    state: &mut StatsState,
     icons: &mut Icons,
     color_of: &dyn Fn(i64) -> Color32,
 ) {
@@ -896,6 +975,7 @@ fn ranking(
     }
     let (rect, _) = card(ui, n as f32 * row_h + 12.0);
     let apps = state.store.as_ref().map(|s| &s.apps);
+    let mut menu = None;
     for (i, t) in data.totals.iter().take(SHOWN).enumerate() {
         let row = Rect::from_min_size(
             pos2(rect.left() + 16.0, rect.top() + 6.0 + i as f32 * row_h),
@@ -923,6 +1003,26 @@ fn ranking(
             None => widgets::avatar(&painter, icon_rect, name),
         }
         let name_w = (row.width() * 0.34).max(120.0);
+        // 没有筛选时在名称列右端注明分类。
+        let (cat, reason) = state
+            .cats
+            .get(&t.app)
+            .copied()
+            .unwrap_or((Category::Other, Reason::Unknown));
+        let tag_w = if state.filter.is_none() {
+            let r = widgets::text_truncated(
+                &painter,
+                pos2(row.left() + name_w - 16.0, cy),
+                Align2::RIGHT_CENTER,
+                cat.label(),
+                FontId::proportional(11.5),
+                p.faint,
+                90.0,
+            );
+            r.width() + 12.0
+        } else {
+            0.0
+        };
         widgets::text_truncated(
             &painter,
             pos2(row.left() + 44.0, cy),
@@ -930,8 +1030,25 @@ fn ranking(
             name,
             FontId::proportional(13.0),
             p.text,
-            name_w - 52.0,
+            name_w - 60.0 - tag_w,
         );
+        // 悬停看分类依据，右键改分类。
+        let resp = ui.interact(row, ui.id().with(("stats-app", t.app)), Sense::click());
+        if resp.secondary_clicked() {
+            menu = resp.interact_pointer_pos().map(|pos| (t.app, pos));
+        }
+        resp.on_hover_ui(|ui| {
+            ui.label(RichText::new(name).strong());
+            ui.label(format!("{} · {}", cat.label(), reason.label()));
+            ui.label(
+                RichText::new(t!(
+                    "右键可更改分类",
+                    "Right-click to change the category",
+                    "右クリックでカテゴリを変更"
+                ))
+                .color(p.muted),
+            );
+        });
         // 右侧：时长、输入占比；中间是相对排名第一的长度条。
         let typing = tf!(
             "输入 {:.0}%",
@@ -968,6 +1085,190 @@ fn ranking(
             );
         }
     }
+    if menu.is_some() {
+        state.menu = menu;
+    }
+}
+
+/// 程序的右键菜单：手动指定分类，或恢复自动识别。
+fn app_menu(ui: &mut Ui, state: &mut StatsState) {
+    let Some((app, pos)) = state.menu else {
+        return;
+    };
+    let Some(info) = state.store.as_ref().and_then(|s| s.apps.get(&app)).cloned() else {
+        state.menu = None;
+        return;
+    };
+    let current = state.cats.get(&app).copied();
+    let manual = current.is_some_and(|c| c.1 == Reason::User);
+    let mut pick: Option<Option<Category>> = None;
+    let open = widgets::floating_menu(ui.ctx(), "stats-app-menu", pos, 220.0, |ui| {
+        widgets::menu_heading(ui, &info.name, 0.0);
+        for c in Category::ALL {
+            let checked = manual && current.map(|x| x.0) == Some(c);
+            if widgets::menu_check(ui, None, c.label(), checked).clicked() {
+                pick = Some(Some(c));
+            }
+        }
+        ui.separator();
+        let auto = match current {
+            Some((c, r)) if r != Reason::User => {
+                tf!("自动识别（{}）", "Automatic ({})", "自動 ({})", c.label())
+            }
+            _ => t!("自动识别", "Automatic", "自動").to_string(),
+        };
+        if widgets::menu_check(ui, None, &auto, !manual).clicked() {
+            pick = Some(None);
+        }
+        pick.is_some()
+    });
+    if let Some(c) = pick
+        && let Some(cl) = &mut state.classifier
+    {
+        cl.set(&info.key, c);
+        state.recategorize();
+    }
+    if !open {
+        state.menu = None;
+    }
+}
+
+/// 各分类的时长：上面一排点按比例着色，下面每类一格；点某一格只看这一类，再点一次取消。
+fn categories(ui: &mut Ui, data: &Data, state: &StatsState) -> Option<Category> {
+    let p = Palette::of(ui.ctx());
+    let mut sums: HashMap<Category, i64> = HashMap::new();
+    for t in &data.totals {
+        *sums.entry(state.category(t.app)).or_default() += t.active;
+    }
+    let total: i64 = sums.values().sum::<i64>().max(1);
+    let mut list: Vec<(Category, i64)> = Category::ALL
+        .into_iter()
+        .filter_map(|c| sums.get(&c).filter(|&&s| s > 0).map(|&s| (c, s)))
+        .collect();
+    // 未分类总在最后。
+    list.sort_by_key(|&(c, s)| (c == Category::Other, std::cmp::Reverse(s)));
+    if list.is_empty() {
+        return None;
+    }
+    let pad = 16.0;
+    let gap = 8.0;
+    let width = ui.available_width() - pad * 2.0;
+    let cols = ((width + gap) / (170.0 + gap))
+        .floor()
+        .clamp(1.0, list.len() as f32) as usize;
+    let cell_w = (width - gap * (cols - 1) as f32) / cols as f32;
+    let cell_h = 48.0;
+    let rows = list.len().div_ceil(cols);
+    let pitch = 9.0;
+    let height = pad + pitch + 14.0 + rows as f32 * (cell_h + gap) - gap + pad;
+    let (rect, _) = card(ui, height);
+    let painter = ui.painter_at(rect);
+    // 比例条：一排方点按各类时长分配（最大余数法，点数之和不变）。
+    let n = (width / pitch).floor().max(1.0) as usize;
+    let mut counts: Vec<(usize, f64)> = list
+        .iter()
+        .map(|&(_, s)| {
+            let exact = s as f64 / total as f64 * n as f64;
+            (exact.floor() as usize, exact.fract())
+        })
+        .collect();
+    let mut left = n.saturating_sub(counts.iter().map(|c| c.0).sum::<usize>());
+    let mut order: Vec<usize> = (0..counts.len()).collect();
+    order.sort_by(|&a, &b| counts[b].1.total_cmp(&counts[a].1));
+    for i in order {
+        if left == 0 {
+            break;
+        }
+        counts[i].0 += 1;
+        left -= 1;
+    }
+    let x0 = rect.left() + pad + (width - n as f32 * pitch) / 2.0;
+    let mut k = 0;
+    for (i, &(c, _)) in list.iter().enumerate() {
+        let dim = state.filter.is_some_and(|f| f != c);
+        let color = if dim {
+            c.color().gamma_multiply(0.3)
+        } else {
+            c.color()
+        };
+        for _ in 0..counts[i].0 {
+            dot(
+                &painter,
+                pos2(
+                    x0 + (k as f32 + 0.5) * pitch,
+                    rect.top() + pad + pitch / 2.0,
+                ),
+                pitch * 0.72,
+                color,
+            );
+            k += 1;
+        }
+    }
+    let mut picked = None;
+    let top = rect.top() + pad + pitch + 14.0;
+    for (i, &(c, secs)) in list.iter().enumerate() {
+        let (r, col) = (i / cols, i % cols);
+        let cell = Rect::from_min_size(
+            pos2(
+                rect.left() + pad + col as f32 * (cell_w + gap),
+                top + r as f32 * (cell_h + gap),
+            ),
+            vec2(cell_w, cell_h),
+        );
+        let resp = ui.interact(cell, ui.id().with(("stats-cat", c)), Sense::click());
+        let selected = state.filter == Some(c);
+        let bg = if selected {
+            c.color().gamma_multiply(0.16)
+        } else if resp.hovered() {
+            p.hover
+        } else {
+            p.bg
+        };
+        painter.rect_filled(cell, CornerRadius::same(8), bg);
+        if selected {
+            painter.rect_stroke(
+                cell,
+                CornerRadius::same(8),
+                egui::Stroke::new(1.0, c.color()),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let cy = cell.center().y;
+        dot(&painter, pos2(cell.left() + 16.0, cy), 9.0, c.color());
+        let share_rect = painter.text(
+            pos2(cell.right() - 12.0, cy),
+            Align2::RIGHT_CENTER,
+            pct_label(secs as f64 / total as f64 * 100.0),
+            FontId::proportional(11.5),
+            p.faint,
+        );
+        let label_w = share_rect.left() - cell.left() - 38.0;
+        widgets::text_truncated(
+            &painter,
+            pos2(cell.left() + 30.0, cy - 8.0),
+            Align2::LEFT_CENTER,
+            c.label(),
+            FontId::proportional(12.0),
+            p.muted,
+            label_w,
+        );
+        widgets::text_truncated(
+            &painter,
+            pos2(cell.left() + 30.0, cy + 9.0),
+            Align2::LEFT_CENTER,
+            &fmt_duration(secs),
+            FontId::proportional(13.5),
+            p.text,
+            label_w,
+        );
+        if resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
+            picked = Some(c);
+        }
+    }
+    picked
 }
 
 /// 最近 53 周的热力图：每列一周（周一在上），颜色深浅表示当天的活跃时长。点击某天返回它。
@@ -990,7 +1291,8 @@ fn heatmap(ui: &mut Ui, data: &Data) -> Option<Date> {
     let left = rect.left() + pad + label_w;
     let top = rect.top() + pad + 18.0;
     // 颜色深浅按这一年里有记录的日子分四档（四分位），每天都差不多长时也看得出起伏。
-    let mut values: Vec<i64> = data.heat.values().copied().filter(|&v| v > 0).collect();
+    let heat = data.heat_by_day();
+    let mut values: Vec<i64> = heat.values().copied().filter(|&v| v > 0).collect();
     values.sort_unstable();
     let quartile = |q: usize| {
         values
@@ -1020,7 +1322,7 @@ fn heatmap(ui: &mut Ui, data: &Data) -> Option<Date> {
                 left + (w as f32 + 0.5) * pitch,
                 top + (d as f32 + 0.5) * pitch,
             );
-            let secs = data.heat.get(&day.key()).copied().unwrap_or(0);
+            let secs = heat.get(&day.key()).copied().unwrap_or(0);
             let color = if secs <= 0 {
                 p.track
             } else {
@@ -1064,6 +1366,15 @@ fn heatmap(ui: &mut Ui, data: &Data) -> Option<Date> {
             ui.label(fmt_duration(secs));
         });
     clicked.then_some(day)
+}
+
+/// 占比：不到 1% 时写 "<1%"，不写成 0%。
+fn pct_label(pct: f64) -> String {
+    if pct > 0.0 && pct < 1.0 {
+        "<1%".into()
+    } else {
+        format!("{pct:.0}%")
+    }
 }
 
 fn month_name(m: u32) -> String {

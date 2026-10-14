@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod brand_art;
+mod category;
 mod dialogs;
 mod fonts;
 mod gpu_panel;
