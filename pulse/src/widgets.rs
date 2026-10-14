@@ -1101,10 +1101,26 @@ pub fn table_header(
     ui: &mut Ui,
     label: RichText,
     right_aligned: bool,
+    sortable: bool,
     trailing: impl FnOnce(&mut Ui),
 ) -> Response {
     let p = Palette::of(ui.ctx());
     let r = ui.max_rect();
+    // 整格（连同两侧列间距）都可点，不只是文字。
+    let cell = r.expand2(vec2(ui.spacing().item_spacing.x / 2.0, 0.0));
+    let sense = if sortable {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let resp = ui.interact(cell, ui.auto_id_with("table-header"), sense);
+    if sortable && resp.hovered() {
+        ui.painter().rect_filled(
+            cell.shrink2(vec2(0.0, 4.0)),
+            CornerRadius::same(6),
+            p.hover,
+        );
+    }
     ui.painter().hline(
         r.x_range().expand(6.0),
         r.bottom() - 0.5,
@@ -1125,13 +1141,12 @@ pub fn table_header(
         if right_aligned && let Some(f) = trailing.take() {
             f(ui);
         }
-        let resp = ui.add(egui::Label::new(label).sense(Sense::click()));
+        ui.add(egui::Label::new(label).selectable(false));
         if let Some(f) = trailing.take() {
             f(ui);
         }
-        resp
-    })
-    .inner
+    });
+    resp
 }
 
 /// 普通表头：12px 次要色标签。
@@ -1141,6 +1156,7 @@ pub fn header_label(ui: &mut Ui, label: &str, right_aligned: bool) {
         ui,
         RichText::new(label).size(12.0).color(p.muted),
         right_aligned,
+        false,
         |_| {},
     );
 }

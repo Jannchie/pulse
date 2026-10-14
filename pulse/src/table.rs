@@ -247,7 +247,7 @@ fn header_cell(
             widgets::icon(ui, glyph, r.center(), 13.0, p.text);
         }
     };
-    let mut resp = widgets::table_header(ui, text, right_aligned, arrow);
+    let mut resp = widgets::table_header(ui, text, right_aligned, true, arrow);
     if key == SortKey::Network && !net_ok {
         resp = resp.on_hover_text(t!(
             "逐进程网络统计需要管理员权限",
@@ -695,7 +695,7 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         if services.contains_key(pid)
             && widgets::menu_item(
                 ui,
-                Icon::Settings,
+                Icon::ServerCog,
                 t!("转到服务", "Go to services", "サービスに移動"),
                 false,
             )
