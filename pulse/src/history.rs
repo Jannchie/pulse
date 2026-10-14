@@ -341,8 +341,10 @@ mod tests {
     fn opens_concurrently() {
         // 记录线程和统计页同时建库，两边都要打开成功。
         for i in 0..10 {
-            let (dir, _db) = temp_db(&format!("race{i}"));
-            let p = dir.with_file_name("race.db");
+            let (dir, db) = temp_db(&format!("race{i}"));
+            drop(db);
+            // 每轮都是一个新文件，两个连接才会同时建库。
+            let p = dir.join("race.db");
             let opens: Vec<_> = (0..2)
                 .map(|_| {
                     let p = p.clone();
@@ -352,6 +354,7 @@ mod tests {
             for h in opens {
                 h.join().unwrap().unwrap();
             }
+            std::fs::remove_dir_all(dir).unwrap();
         }
     }
 }
