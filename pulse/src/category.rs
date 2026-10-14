@@ -67,11 +67,6 @@ impl Category {
         }
     }
 
-    /// 开发、办公、创作合称"生产力"。
-    pub fn productive(self) -> bool {
-        matches!(self, Category::Dev | Category::Work | Category::Creative)
-    }
-
     fn key(self) -> &'static str {
         match self {
             Category::Game => "game",

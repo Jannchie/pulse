@@ -16,7 +16,7 @@ use pulse_probe::{t, tf};
 use crate::category::{Category, Classifier, Reason};
 use crate::icons::Icons;
 use crate::icons_gen::Icon;
-use crate::perf::{Kpi, hero, section};
+use crate::perf::section;
 use crate::stats::{Column, Data, Date, Grain, Range, Span, Store};
 use crate::theme::{Palette, metric};
 use crate::widgets;
@@ -304,7 +304,11 @@ pub fn show(
                     .map_or(p.faint.gamma_multiply(0.55), |i| COLORS[i])
             };
             ui.add_space(12.0);
-            kpis(ui, &data, &all, state);
+            // 概览：第一格是全部（区间内的累计活跃时长），其后是各分类；点一格只看那一类。
+            if let Some(f) = categories(ui, &all, state) {
+                state.filter = f;
+                state.recategorize();
+            }
             if data.grain == Grain::FiveMin {
                 section(ui, t!("时间线", "Timeline", "タイムライン"));
                 day_chart(ui, &data, state, &color_of);
@@ -321,11 +325,6 @@ pub fn show(
                     state.range = range;
                     state.anchor = anchor;
                 }
-            }
-            section(ui, t!("分类", "Categories", "カテゴリ"));
-            if let Some(f) = categories(ui, &all, state) {
-                state.filter = (state.filter != Some(f)).then_some(f);
-                state.recategorize();
             }
             section(
                 ui,
@@ -612,78 +611,6 @@ fn empty(ui: &mut Ui) {
             .color(p.muted),
         );
     });
-}
-
-fn kpis(ui: &mut Ui, data: &Data, all: &Data, state: &StatsState) {
-    let active = data.active();
-    let typing = data.typing();
-    let mut items = vec![
-        Kpi::new(
-            t!("活跃时长", "Active time", "アクティブ時間"),
-            fmt_duration(active),
-            "",
-            metric::CPU,
-        ),
-        Kpi::new(
-            t!("输入", "Typing", "入力"),
-            format!("{:.0}", typing as f64 / active.max(1) as f64 * 100.0),
-            "%",
-            metric::MEMORY,
-        )
-        .caption(fmt_duration(typing))
-        .bar(typing as f32 / active.max(1) as f32),
-    ];
-    if let Some(top) = data.totals.first() {
-        let name = state
-            .store
-            .as_ref()
-            .and_then(|s| s.apps.get(&top.app))
-            .map_or_else(String::new, |a| a.name.clone());
-        items.push(
-            Kpi::new(
-                t!("最常用", "Most used", "最もよく使用"),
-                fmt_duration(top.active),
-                "",
-                COLORS[0],
-            )
-            .caption(name),
-        );
-    }
-    if state.filter.is_none() {
-        let productive: i64 = all
-            .totals
-            .iter()
-            .filter(|t| state.category(t.app).productive())
-            .map(|t| t.active)
-            .sum();
-        items.push(
-            Kpi::new(
-                t!("生产力", "Productive", "生産性"),
-                format!("{:.0}", productive as f64 / active.max(1) as f64 * 100.0),
-                "%",
-                Category::Dev.color(),
-            )
-            .caption(fmt_duration(productive))
-            .bar(productive as f32 / active.max(1) as f32),
-        );
-    }
-    if data.grain != Grain::FiveMin {
-        items.push(
-            Kpi::new(
-                t!("日均", "Daily average", "1 日平均"),
-                fmt_duration(active / data.days_with_data.max(1)),
-                "",
-                metric::GPU,
-            )
-            .caption(tf!(
-                "{} 天有记录",
-                "{} days recorded",
-                "{} 日分の記録",
-                data.days_with_data
-            )),
-        );
-    }
-    hero(ui, &items);
 }
 
 /// 点阵里的一个圆角方点。
@@ -1003,26 +930,24 @@ fn ranking(
             None => widgets::avatar(&painter, icon_rect, name),
         }
         let name_w = (row.width() * 0.34).max(120.0);
-        // 没有筛选时在名称列右端注明分类。
+        // 名称列右端是分类按钮：点它（或右键整行）改分类。
         let (cat, reason) = state
             .cats
             .get(&t.app)
             .copied()
             .unwrap_or((Category::Other, Reason::Unknown));
-        let tag_w = if state.filter.is_none() {
-            let r = widgets::text_truncated(
-                &painter,
-                pos2(row.left() + name_w - 16.0, cy),
-                Align2::RIGHT_CENTER,
-                cat.label(),
-                FontId::proportional(11.5),
-                p.faint,
-                90.0,
-            );
-            r.width() + 12.0
-        } else {
-            0.0
-        };
+        let tag_font = FontId::proportional(11.5);
+        let tag_text =
+            ui.painter()
+                .layout_no_wrap(cat.label().to_string(), tag_font.clone(), p.muted);
+        let tag = Rect::from_min_max(
+            pos2(
+                row.left() + name_w - 16.0 - tag_text.size().x.min(90.0) - 24.0,
+                cy - 11.0,
+            ),
+            pos2(row.left() + name_w - 8.0, cy + 11.0),
+        );
+        let tag_w = tag.width() + 8.0;
         widgets::text_truncated(
             &painter,
             pos2(row.left() + 44.0, cy),
@@ -1037,14 +962,41 @@ fn ranking(
         if resp.secondary_clicked() {
             menu = resp.interact_pointer_pos().map(|pos| (t.app, pos));
         }
+        // 后注册的分类按钮在整行之上，点击归它。
+        let tag_resp = ui
+            .interact(tag, ui.id().with(("stats-tag", t.app)), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let open = state.menu.is_some_and(|m| m.0 == t.app);
+        if tag_resp.hovered() || open {
+            painter.rect_filled(tag, CornerRadius::same(6), p.hover);
+        }
+        painter.rect_stroke(
+            tag,
+            CornerRadius::same(6),
+            egui::Stroke::new(1.0, p.border),
+            egui::StrokeKind::Inside,
+        );
+        dot(&painter, pos2(tag.left() + 10.0, cy), 6.0, cat.color());
+        widgets::text_truncated(
+            &painter,
+            pos2(tag.left() + 18.0, cy),
+            Align2::LEFT_CENTER,
+            cat.label(),
+            tag_font,
+            p.muted,
+            90.0,
+        );
+        if tag_resp.clicked() {
+            menu = Some((t.app, tag.left_bottom() + vec2(0.0, 4.0)));
+        }
         resp.on_hover_ui(|ui| {
             ui.label(RichText::new(name).strong());
             ui.label(format!("{} · {}", cat.label(), reason.label()));
             ui.label(
                 RichText::new(t!(
-                    "右键可更改分类",
-                    "Right-click to change the category",
-                    "右クリックでカテゴリを変更"
+                    "点分类或右键可更改",
+                    "Click the category or right-click to change it",
+                    "カテゴリをクリックまたは右クリックで変更"
                 ))
                 .color(p.muted),
             );
@@ -1133,8 +1085,9 @@ fn app_menu(ui: &mut Ui, state: &mut StatsState) {
     }
 }
 
-/// 各分类的时长：上面一排点按比例着色，下面每类一格；点某一格只看这一类，再点一次取消。
-fn categories(ui: &mut Ui, data: &Data, state: &StatsState) -> Option<Category> {
+/// 概览：上面一排点按各分类的时长比例着色；下面第一格是全部（累计活跃时长，附日均或输入占比），
+/// 其后每类一格。点某一格返回要筛选的分类（全部是 `None`）。
+fn categories(ui: &mut Ui, data: &Data, state: &StatsState) -> Option<Option<Category>> {
     let p = Palette::of(ui.ctx());
     let mut sums: HashMap<Category, i64> = HashMap::new();
     for t in &data.totals {
@@ -1150,15 +1103,35 @@ fn categories(ui: &mut Ui, data: &Data, state: &StatsState) -> Option<Category> 
     if list.is_empty() {
         return None;
     }
+    let active = data.active();
+    // 全部这一格的附注：按天以上的区间写日均，一天以内写输入占比。
+    let note = if data.grain == Grain::FiveMin {
+        tf!(
+            "输入 {}",
+            "Typing {}",
+            "入力 {}",
+            pct_label(data.typing() as f64 / active.max(1) as f64 * 100.0)
+        )
+    } else {
+        tf!(
+            "日均 {}",
+            "{} / day",
+            "1 日平均 {}",
+            fmt_duration(active / data.days_with_data.max(1))
+        )
+    };
+    let tiles: Vec<(Option<Category>, i64)> = std::iter::once((None, active))
+        .chain(list.iter().map(|&(c, s)| (Some(c), s)))
+        .collect();
     let pad = 16.0;
     let gap = 8.0;
     let width = ui.available_width() - pad * 2.0;
     let cols = ((width + gap) / (170.0 + gap))
         .floor()
-        .clamp(1.0, list.len() as f32) as usize;
+        .clamp(1.0, tiles.len() as f32) as usize;
     let cell_w = (width - gap * (cols - 1) as f32) / cols as f32;
     let cell_h = 48.0;
-    let rows = list.len().div_ceil(cols);
+    let rows = tiles.len().div_ceil(cols);
     let pitch = 9.0;
     let height = pad + pitch + 14.0 + rows as f32 * (cell_h + gap) - gap + pad;
     let (rect, _) = card(ui, height);
@@ -1206,7 +1179,7 @@ fn categories(ui: &mut Ui, data: &Data, state: &StatsState) -> Option<Category> 
     }
     let mut picked = None;
     let top = rect.top() + pad + pitch + 14.0;
-    for (i, &(c, secs)) in list.iter().enumerate() {
+    for (i, &(c, secs)) in tiles.iter().enumerate() {
         let (r, col) = (i / cols, i % cols);
         let cell = Rect::from_min_size(
             pos2(
@@ -1216,9 +1189,10 @@ fn categories(ui: &mut Ui, data: &Data, state: &StatsState) -> Option<Category> 
             vec2(cell_w, cell_h),
         );
         let resp = ui.interact(cell, ui.id().with(("stats-cat", c)), Sense::click());
-        let selected = state.filter == Some(c);
+        let selected = state.filter == c;
+        let color = c.map_or(p.muted, Category::color);
         let bg = if selected {
-            c.color().gamma_multiply(0.16)
+            c.map_or(p.hover, |c| c.color().gamma_multiply(0.16))
         } else if resp.hovered() {
             p.hover
         } else {
@@ -1229,28 +1203,43 @@ fn categories(ui: &mut Ui, data: &Data, state: &StatsState) -> Option<Category> 
             painter.rect_stroke(
                 cell,
                 CornerRadius::same(8),
-                egui::Stroke::new(1.0, c.color()),
+                egui::Stroke::new(1.0, color),
                 egui::StrokeKind::Inside,
             );
         }
         let cy = cell.center().y;
-        dot(&painter, pos2(cell.left() + 16.0, cy), 9.0, c.color());
-        let share_rect = painter.text(
-            pos2(cell.right() - 12.0, cy),
-            Align2::RIGHT_CENTER,
-            pct_label(secs as f64 / total as f64 * 100.0),
-            FontId::proportional(11.5),
-            p.faint,
-        );
-        let label_w = share_rect.left() - cell.left() - 38.0;
+        let label = match c {
+            Some(c) => {
+                // 分类：右侧写占比。
+                let share = painter.text(
+                    pos2(cell.right() - 12.0, cy),
+                    Align2::RIGHT_CENTER,
+                    pct_label(secs as f64 / total as f64 * 100.0),
+                    FontId::proportional(11.5),
+                    p.faint,
+                );
+                dot(&painter, pos2(cell.left() + 16.0, cy), 9.0, color);
+                (c.label().to_string(), share.left() - cell.left() - 38.0)
+            }
+            None => {
+                // 全部：四个小点拼成的方块，附注写在标题后面。
+                for (dx, dy) in [(-2.5, -2.5), (2.5, -2.5), (-2.5, 2.5), (2.5, 2.5)] {
+                    dot(&painter, pos2(cell.left() + 16.0 + dx, cy + dy), 4.0, color);
+                }
+                (
+                    format!("{} · {note}", t!("全部", "All", "すべて")),
+                    cell.width() - 42.0,
+                )
+            }
+        };
         widgets::text_truncated(
             &painter,
             pos2(cell.left() + 30.0, cy - 8.0),
             Align2::LEFT_CENTER,
-            c.label(),
+            &label.0,
             FontId::proportional(12.0),
             p.muted,
-            label_w,
+            label.1,
         );
         widgets::text_truncated(
             &painter,
@@ -1259,7 +1248,7 @@ fn categories(ui: &mut Ui, data: &Data, state: &StatsState) -> Option<Category> 
             &fmt_duration(secs),
             FontId::proportional(13.5),
             p.text,
-            label_w,
+            label.1,
         );
         if resp
             .on_hover_cursor(egui::CursorIcon::PointingHand)
