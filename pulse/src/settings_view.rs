@@ -345,7 +345,7 @@ fn group(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
 }
 
 /// 一行设置：左边名称 + 一行说明，右边控件，两者都在行内垂直居中。
-fn row(ui: &mut Ui, title: &str, desc: &str, control: impl FnOnce(&mut Ui)) {
+pub fn row(ui: &mut Ui, title: &str, desc: &str, control: impl FnOnce(&mut Ui)) {
     const H: f32 = 60.0;
     let p = Palette::of(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), H), Sense::hover());
@@ -379,7 +379,7 @@ fn row(ui: &mut Ui, title: &str, desc: &str, control: impl FnOnce(&mut Ui)) {
         .galley(pos2(rect.left(), desc_top), galley, p.muted);
 }
 
-fn divider(ui: &mut Ui) {
+pub fn divider(ui: &mut Ui) {
     let p = Palette::of(ui.ctx());
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
     ui.painter()

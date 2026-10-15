@@ -9,13 +9,14 @@ use eframe::egui::{
 use pulse_probe::Snapshot;
 use pulse_probe::disk::DiskStat;
 use pulse_probe::nic::NicStat;
+use pulse_probe::power::{self, BuiltIn, PowerState};
 use pulse_probe::{t, tf};
 
 use crate::gpu_panel::{self, GpuHistory, PanelAction};
 use crate::icons::Icons;
 use crate::icons_gen::Icon;
 use crate::theme::{Palette, metric, semibold};
-use crate::{fmt_bytes, widgets};
+use crate::{fmt_bytes, settings_view, widgets};
 
 /// 近 60 秒的各类曲线，键见 `main.rs` 的采集线程。
 pub type Series = HashMap<String, Vec<f32>>;
@@ -37,6 +38,8 @@ pub enum PerfAction {
     Search(String),
     /// 复制设备摘要到剪贴板。
     Copy(String),
+    /// 修改电源设置失败，附系统给出的原因。
+    PowerFailed(String),
 }
 
 const SIDEBAR_W: f32 = 236.0;
@@ -69,7 +72,11 @@ pub fn show(
             .show(ui, |ui| {
                 ui.set_width(ui.available_width() - 12.0);
                 match *device {
-                    Device::Cpu => cpu_page(ui, snap, series),
+                    Device::Cpu => {
+                        if let Some(a) = cpu_page(ui, snap, series) {
+                            action = Some(a);
+                        }
+                    }
                     Device::Memory => memory_page(ui, snap, series),
                     Device::Disk(i) => match snap.disks.iter().find(|d| d.index == i) {
                         Some(d) => disk_page(ui, d, series),
@@ -698,8 +705,9 @@ fn disk_kind(d: &DiskStat) -> String {
 
 // ---------------------------------------------------------------- CPU
 
-fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
+fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) -> Option<PerfAction> {
     let info = &snap.cpu_info;
+    let power = power_state();
     page_header(ui, "CPU", &info.name);
     let threads: u32 = snap.processes.iter().map(|p| p.threads).sum();
     let handles: u32 = snap.processes.iter().map(|p| p.handles).sum();
@@ -727,7 +735,14 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
                 "GHz",
                 metric::CPU,
             )
-            .caption(if info.base_mhz > 0 {
+            .caption(if let Some(cap) = power.max_mhz.filter(|&m| m > 0) {
+                tf!(
+                    "上限 {:.1} GHz",
+                    "Capped at {:.1} GHz",
+                    "上限 {:.1} GHz",
+                    cap as f64 / 1000.0
+                )
+            } else if info.base_mhz > 0 {
                 tf!(
                     "基准 {:.2} GHz",
                     "Base {:.2} GHz",
@@ -809,6 +824,8 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         core_grid(ui, snap, series, &(0..n).collect::<Vec<_>>(), metric::CPU);
     }
 
+    let action = power_section(ui, &power);
+
     section(ui, t!("规格", "Specifications", "仕様"));
     let ghz = |mhz: u32| format!("{:.2} GHz", mhz as f64 / 1000.0);
     kv_list(
@@ -864,6 +881,266 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
             ),
         ],
     );
+    action
+}
+
+// ---------------------------------------------------------------- 电源
+
+/// 电源状态读一次要几毫秒的注册表访问，每 2 秒刷新一次；改动后立即作废。
+static POWER: std::sync::Mutex<Option<(std::time::Instant, PowerState)>> =
+    std::sync::Mutex::new(None);
+/// 关闭睿频前的模式，重新打开时写回。
+static BOOST_BEFORE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(power::BOOST_DEFAULT);
+
+fn power_state() -> PowerState {
+    let mut cache = POWER.lock().unwrap_or_else(|e| e.into_inner());
+    match &*cache {
+        Some((at, st)) if at.elapsed() < std::time::Duration::from_secs(2) => st.clone(),
+        _ => {
+            let st = PowerState::query();
+            *cache = Some((std::time::Instant::now(), st.clone()));
+            st
+        }
+    }
+}
+
+fn invalidate_power() {
+    *POWER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+fn scheme_label(s: &power::Scheme) -> String {
+    match s.kind {
+        Some(BuiltIn::PowerSaver) => t!("节能", "Power saver", "省電力").into(),
+        Some(BuiltIn::Balanced) => t!("平衡", "Balanced", "バランス").into(),
+        Some(BuiltIn::HighPerformance) => {
+            t!("高性能", "High performance", "高パフォーマンス").into()
+        }
+        Some(BuiltIn::Ultimate) => {
+            t!("卓越性能", "Ultimate Performance", "究極のパフォーマンス").into()
+        }
+        None => s.name.clone().unwrap_or_else(|| format!("{:?}", s.guid)),
+    }
+}
+
+/// 电源计划、电源模式、睿频、最大频率。设置写入当前计划；笔记本上只作用于当前电源。
+fn power_section(ui: &mut Ui, st: &PowerState) -> Option<PerfAction> {
+    let p = Palette::of(ui.ctx());
+    let title = match (st.has_battery, st.on_battery) {
+        (false, _) => t!("电源", "Power", "電源").to_string(),
+        (true, false) => t!("电源 · 插电时", "Power · Plugged in", "電源 · 電源接続時").to_string(),
+        (true, true) => t!(
+            "电源 · 使用电池时",
+            "Power · On battery",
+            "電源 · バッテリー駆動時"
+        )
+        .to_string(),
+    };
+    section(ui, &title);
+    let mut result: Option<Result<(), String>> = None;
+    egui::Frame::NONE
+        .fill(p.surface)
+        .corner_radius(CornerRadius::same(12))
+        .inner_margin(egui::Margin::symmetric(18, 0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            settings_view::row(
+                ui,
+                t!("电源计划", "Power plan", "電源プラン"),
+                t!(
+                    "和控制面板里的电源选项相同。",
+                    "Same as Power Options in Control Panel.",
+                    "コントロール パネルの電源オプションと同じです。"
+                ),
+                |ui| {
+                    let labels: Vec<String> = st.schemes.iter().map(scheme_label).collect();
+                    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+                    let cur = st
+                        .schemes
+                        .iter()
+                        .position(|s| s.guid == st.active)
+                        .unwrap_or(usize::MAX);
+                    if let Some(i) = settings_view::choice(ui, &refs, cur) {
+                        result = Some(st.set_scheme(st.schemes[i].guid));
+                    }
+                },
+            );
+            if let Some(mode) = st.mode {
+                settings_view::divider(ui);
+                let balanced = st.active == power::BALANCED;
+                settings_view::row(
+                    ui,
+                    t!("电源模式", "Power mode", "電源モード"),
+                    if balanced {
+                        t!(
+                            "最佳能效会明显压低性能。",
+                            "Best power efficiency lowers performance.",
+                            "最適な電力効率では性能が下がります。"
+                        )
+                    } else {
+                        t!(
+                            "只在「平衡」计划下可用。",
+                            "Only available with the Balanced plan.",
+                            "[バランス] プランでのみ使えます。"
+                        )
+                    },
+                    |ui| {
+                        if !balanced {
+                            return;
+                        }
+                        let modes = [
+                            power::MODE_EFFICIENCY,
+                            power::MODE_BALANCED,
+                            power::MODE_PERFORMANCE,
+                        ];
+                        let labels = [
+                            t!("最佳能效", "Best power efficiency", "最適な電力効率"),
+                            t!("平衡", "Balanced", "バランス"),
+                            t!("最佳性能", "Best performance", "最適なパフォーマンス"),
+                        ];
+                        let cur = modes.iter().position(|&m| m == mode).unwrap_or(usize::MAX);
+                        if let Some(i) = settings_view::choice(ui, &labels, cur) {
+                            result = Some(st.set_mode(modes[i]));
+                        }
+                    },
+                );
+            }
+            if let Some(boost) = st.boost {
+                settings_view::divider(ui);
+                settings_view::row(
+                    ui,
+                    t!("睿频", "Turbo boost", "ターボ ブースト"),
+                    t!(
+                        "关闭后 CPU 不超过基准频率，温度和风扇噪音更低。",
+                        "When off, the CPU stays at or below its base speed and runs cooler and quieter.",
+                        "オフにすると CPU は基本速度を超えず、温度とファンの音が下がります。"
+                    ),
+                    |ui| {
+                        let mut on = boost != 0;
+                        if widgets::switch(ui, &mut on, true).changed() {
+                            if on {
+                                let before = BOOST_BEFORE.load(std::sync::atomic::Ordering::Relaxed);
+                                result = Some(st.set_boost(before));
+                            } else {
+                                BOOST_BEFORE.store(boost, std::sync::atomic::Ordering::Relaxed);
+                                result = Some(st.set_boost(0));
+                            }
+                        }
+                    },
+                );
+            }
+            if let Some(max) = st.max_mhz {
+                settings_view::divider(ui);
+                settings_view::row(
+                    ui,
+                    t!("最大频率", "Maximum speed", "最大速度"),
+                    t!(
+                        "限制 CPU 的最高频率，拖到最右为不限。",
+                        "Caps how fast the CPU can run. Drag all the way right for no limit.",
+                        "CPU の最大速度を制限します。右端までドラッグすると制限なしです。"
+                    ),
+                    |ui| {
+                        if let Some(mhz) = freq_slider(ui, max) {
+                            result = Some(st.set_max_mhz(mhz));
+                        }
+                    },
+                );
+            }
+        });
+    let result = result?;
+    invalidate_power();
+    ui.ctx().request_repaint();
+    result.err().map(PerfAction::PowerFailed)
+}
+
+/// 最大频率的档位：1.0–6.0 GHz，步长 0.1；最右一档为不限（0）。
+const FREQ_LIMITED: u32 = 51;
+
+fn freq_of(step: u32) -> u32 {
+    if step >= FREQ_LIMITED {
+        0
+    } else {
+        1000 + step * 100
+    }
+}
+
+fn step_of(mhz: u32) -> u32 {
+    if mhz == 0 {
+        FREQ_LIMITED
+    } else {
+        (mhz.clamp(1000, 6000) - 1000 + 50) / 100
+    }
+}
+
+fn freq_label(mhz: u32) -> String {
+    if mhz == 0 {
+        t!("不限", "No limit", "制限なし").into()
+    } else {
+        format!("{:.1} GHz", mhz as f64 / 1000.0)
+    }
+}
+
+/// 点阵滑块：每档一个点，拖动时预览，松手才写入。返回新选的频率。
+fn freq_slider(ui: &mut Ui, mhz: u32) -> Option<u32> {
+    let p = Palette::of(ui.ctx());
+    let id = egui::Id::new("power-freq-slider");
+    let (rect, resp) = ui.allocate_exact_size(vec2(264.0, 30.0), Sense::click_and_drag());
+    let track = Rect::from_min_max(
+        pos2(rect.left() + 6.0, rect.top()),
+        pos2(rect.right() - 6.0, rect.bottom()),
+    );
+    let gap = track.width() / FREQ_LIMITED as f32;
+    let pointer_step = || {
+        resp.interact_pointer_pos()
+            .map(|pos| (((pos.x - track.left()) / gap).round().max(0.0) as u32).min(FREQ_LIMITED))
+    };
+    let mut committed = None;
+    if (resp.dragged() || resp.is_pointer_button_down_on())
+        && let Some(s) = pointer_step()
+    {
+        ui.data_mut(|d| d.insert_temp(id, s));
+    }
+    let dragging: Option<u32> = ui.data(|d| d.get_temp(id));
+    if resp.drag_stopped() || resp.clicked() {
+        let s = pointer_step().or(dragging);
+        ui.data_mut(|d| d.remove_temp::<u32>(id));
+        if let Some(s) = s.filter(|&s| s != step_of(mhz)) {
+            committed = Some(freq_of(s));
+        }
+    }
+    let step = ui
+        .data(|d| d.get_temp::<u32>(id))
+        .or(committed.map(step_of))
+        .unwrap_or_else(|| step_of(mhz));
+    let painter = ui.painter_at(rect.expand(2.0));
+    let y = rect.center().y;
+    for i in 0..=FREQ_LIMITED {
+        let x = track.left() + i as f32 * gap;
+        let (r, color) = if i == step {
+            (6.0, metric::CPU)
+        } else if i < step {
+            (2.0, metric::CPU)
+        } else {
+            (2.0, p.border)
+        };
+        painter.circle_filled(pos2(x, y), r, color);
+    }
+    // 拇指中间挖一个底色小点，和普通档位区分开。
+    painter.circle_filled(pos2(track.left() + step as f32 * gap, y), 2.0, p.surface);
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.add_space(8.0);
+    let (label, _) = ui.allocate_exact_size(vec2(72.0, 30.0), Sense::hover());
+    ui.painter().text(
+        label.right_center(),
+        Align2::RIGHT_CENTER,
+        freq_label(freq_of(step)),
+        FontId::proportional(13.0),
+        p.text,
+    );
+    committed
 }
 
 /// 大小核分组的小标题：色点 + 文字。

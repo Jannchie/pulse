@@ -2280,6 +2280,15 @@ impl eframe::App for App {
                     .inner;
                 match action {
                     Some(perf::PerfAction::Search(name)) => self.show_processes(name, None),
+                    Some(perf::PerfAction::PowerFailed(detail)) => self.notify_err(
+                        t!(
+                            "无法更改电源设置",
+                            "Couldn't change the power setting",
+                            "電源設定を変更できませんでした"
+                        )
+                        .into(),
+                        Some(detail),
+                    ),
                     Some(perf::PerfAction::Copy(text)) => {
                         ui.ctx().copy_text(text);
                         self.notify_ok(

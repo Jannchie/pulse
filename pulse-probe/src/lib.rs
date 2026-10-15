@@ -15,6 +15,7 @@ pub mod net;
 pub mod nic;
 pub mod os;
 pub mod ports;
+pub mod power;
 pub mod runtime;
 pub mod services;
 pub mod sessions;

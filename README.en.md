@@ -17,7 +17,7 @@ Compared with the built-in Task Manager:
 - Search covers process names, descriptions, command lines and paths, with fuzzy matching, typo tolerance and `:port` lookup.
 - Per-process GPU usage and VRAM, network traffic, listening ports and CPU time.
 - Tells same-named processes apart: node.exe shows as "vite · project" or "pnpm dev · project", and likewise for Python, Java and .NET; child processes of Chrome, Edge, VS Code and other Chromium apps are labeled as renderer, GPU process or network service; vmmemWSL shows the running WSL distributions.
-- The performance page shows NVMe health (remaining life, power-on hours, data written), memory modules and performance/efficiency cores.
+- The performance page shows NVMe health (remaining life, power-on hours, data written), memory modules and performance/efficiency cores. On the CPU page you can switch the power plan and power mode, turn turbo boost on or off and cap the maximum speed, without administrator rights.
 - Near-zero CPU while idle: the window repaints only when data or input changes.
 
 ## Install
