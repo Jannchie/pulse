@@ -4,6 +4,7 @@
 //! 是否空闲由这里自己查。用户超过 [`IDLE_MS`] 没有任何键盘、鼠标、手柄输入，或屏幕已锁定时不计时。
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,6 +19,10 @@ const TOP_N: usize = 5;
 pub struct ProcSample {
     pub pid: u32,
     pub name: String,
+    pub path: Option<Arc<str>>,
+    /// 自上次采样以来收发的字节数。
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
     pub cpu: f32,
     pub memory: u64,
     pub disk: u64,
@@ -109,6 +114,8 @@ struct PerfAcc {
     net_rx: u64,
     net_tx: u64,
     procs: HashMap<u32, ProcAcc>,
+    /// 这一分钟各程序收发的字节数，按小写 exe 名（不含扩展名）归并。
+    traffic: HashMap<String, (AppRef, u64, u64)>,
 }
 
 impl PerfAcc {
@@ -121,6 +128,15 @@ impl PerfAcc {
         self.net_rx += s.net_rx;
         self.net_tx += s.net_tx;
         for p in s.procs {
+            if p.rx_bytes + p.tx_bytes > 0 {
+                let stem = exe_stem(&p.name);
+                let t = self
+                    .traffic
+                    .entry(stem.to_lowercase())
+                    .or_insert_with(|| (AppRef::new(stem, p.path.as_deref()), 0, 0));
+                t.1 += p.rx_bytes;
+                t.2 += p.tx_bytes;
+            }
             let a = self.procs.entry(p.pid).or_default();
             if a.name.is_empty() {
                 a.name = p.name;
@@ -137,6 +153,7 @@ impl PerfAcc {
     fn finish(&mut self) -> Option<PerfMinute> {
         let n = std::mem::take(&mut self.samples);
         let procs = std::mem::take(&mut self.procs);
+        let traffic = std::mem::take(&mut self.traffic).into_values().collect();
         if n == 0 {
             return None;
         }
@@ -176,6 +193,7 @@ impl PerfAcc {
             net_rx: self.net_rx / n as u64,
             net_tx: self.net_tx / n as u64,
             top,
+            traffic,
         };
         *self = Self::default();
         Some(r)
@@ -296,6 +314,9 @@ mod tests {
         ProcSample {
             pid,
             name: name.into(),
+            path: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
             cpu,
             memory,
             disk: 0,

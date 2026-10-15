@@ -13,6 +13,7 @@ use pulse_probe::{NetStatus, Process, Snapshot, t, tf};
 use crate::icons::Icons;
 use crate::icons_gen::Icon;
 use crate::model::{self, Metrics, Row, SortKey, Table};
+use crate::rules::{self, Rule, Rules};
 use crate::theme::{Palette, metric, semibold};
 use crate::{
     Action, Selection, cmd_summary, fmt_bytes, fmt_cpu_time, fmt_rate, fmt_uptime, same_name,
@@ -263,6 +264,86 @@ fn header_cell(
     }
 }
 
+/// "启动时自动套用"子菜单：勾选一项就按当前值记住它，以后这个程序每次启动都自动设置。
+fn remember_menu(
+    ui: &mut Ui,
+    name: &str,
+    members: &[&Process],
+    rule: Rule,
+    actions: &mut Vec<Action>,
+) {
+    let Some(first) = members.first() else {
+        return;
+    };
+    let p = Palette::of(ui.ctx());
+    let mut set = |rule: Rule| {
+        actions.push(Action::Remember {
+            name: name.to_string(),
+            rule,
+        })
+    };
+    widgets::submenu(
+        ui,
+        Icon::Pin,
+        t!(
+            "启动时自动套用",
+            "Apply at every launch",
+            "起動時に毎回適用"
+        ),
+        230.0,
+        |ui| {
+            let prio = rule.priority.unwrap_or(first.priority);
+            let label = tf!("优先级：{}", "Priority: {}", "優先度：{}", prio.label());
+            if widgets::menu_check(ui, None, &label, rule.priority.is_some()).clicked() {
+                set(Rule {
+                    priority: rule.priority.is_none().then_some(first.priority),
+                    ..rule
+                });
+            }
+            let mask = rule
+                .affinity
+                .or_else(|| pulse_probe::control::affinity(first.pid).ok().map(|m| m.0));
+            if let Some(mask) = mask {
+                let label = tf!(
+                    "相关性：{}",
+                    "Affinity: {}",
+                    "関係：{}",
+                    rules::affinity_label(mask)
+                );
+                if widgets::menu_check(ui, None, &label, rule.affinity.is_some()).clicked() {
+                    set(Rule {
+                        affinity: rule.affinity.is_none().then_some(mask),
+                        ..rule
+                    });
+                }
+            }
+            if widgets::menu_check(
+                ui,
+                None,
+                t!("效率模式", "Efficiency mode", "効率モード"),
+                rule.efficiency,
+            )
+            .clicked()
+            {
+                set(Rule {
+                    efficiency: !rule.efficiency,
+                    ..rule
+                });
+            }
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(tf!(
+                    "按当前值记住，以后每次启动 {name} 都自动设置",
+                    "Saves the current value and applies it every time {name} starts",
+                    "現在の値を保存し、{name} の起動時に毎回適用します"
+                ))
+                .size(11.5)
+                .color(p.muted),
+            );
+        },
+    );
+}
+
 /// 行（或分组内任一成员）的状态。
 #[derive(Clone, Copy, Default)]
 struct Status {
@@ -437,6 +518,7 @@ pub fn menu(
     pos: egui::Pos2,
     snapshot: &Snapshot,
     services: &std::collections::HashMap<u32, Vec<String>>,
+    rules: &Rules,
 ) -> (Vec<Action>, bool) {
     let members: Vec<&Process> = match sel {
         Selection::Process(pid) => snapshot
@@ -466,6 +548,7 @@ pub fn menu(
                 tcp: &tcp,
                 snapshot,
                 services,
+                rule: rules.get(&first.name).copied().unwrap_or_default(),
                 actions: &mut actions,
             },
         );
@@ -482,6 +565,8 @@ struct MenuCtx<'a> {
     tcp: &'a [u16],
     snapshot: &'a Snapshot,
     services: &'a std::collections::HashMap<u32, Vec<String>>,
+    /// 这个程序已记住的设置。
+    rule: Rule,
     actions: &'a mut Vec<Action>,
 }
 
@@ -495,6 +580,7 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
         tcp,
         snapshot,
         services,
+        rule,
         actions,
     } = m;
     let pids: Vec<u32> = members.iter().map(|pr| pr.pid).collect();
@@ -670,6 +756,7 @@ fn context_menu(ui: &mut Ui, m: MenuCtx) {
             });
         }
     }
+    remember_menu(ui, name, members, rule, actions);
     ui.separator();
 
     // 文件与诊断

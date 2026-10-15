@@ -256,6 +256,20 @@ pub struct Total {
     pub typing: i64,
 }
 
+/// 某程序在区间里收、发的字节数。
+#[derive(Clone, Debug)]
+pub struct Traffic {
+    pub app: i64,
+    pub rx: i64,
+    pub tx: i64,
+}
+
+impl Traffic {
+    pub fn total(&self) -> i64 {
+        self.rx + self.tx
+    }
+}
+
 /// 图表的一列：按程序分的秒数（日视图里一列是 5 分钟，其他视图一列是一天或一个月）。
 #[derive(Clone, Debug, Default)]
 pub struct Column {
@@ -286,6 +300,8 @@ pub struct Data {
     pub days_with_data: i64,
     /// 热力图：最近 53 周每天各程序的活跃秒数 (日期键, 程序, 秒)。
     pub heat: Vec<(i64, i64, i64)>,
+    /// 各程序的网络流量，多的在前。
+    pub traffic: Vec<Traffic>,
     pub first: Option<Date>,
 }
 
@@ -306,6 +322,7 @@ impl Data {
             c.parts.retain(|p| keep(p.0));
         }
         d.heat.retain(|h| keep(h.1));
+        d.traffic.retain(|t| keep(t.app));
         d
     }
 
@@ -529,6 +546,9 @@ impl Store {
             }
         }
 
+        // 流量表是新加的：旧版本建的库在新版记录线程打开前还没有这张表，查不到就当没有。
+        let traffic = traffic(conn, &span).unwrap_or_default();
+
         Ok(Data {
             span,
             grain,
@@ -537,9 +557,35 @@ impl Store {
             buckets,
             days_with_data,
             heat,
+            traffic,
             first,
         })
     }
+}
+
+/// 区间内各程序的流量：最近 24 小时按分钟明细，其余按天的汇总。
+fn traffic(conn: &Connection, span: &Span) -> rusqlite::Result<Vec<Traffic>> {
+    let (sql, bounds) = match span.minutes {
+        Some((a, b)) => (
+            "SELECT app, SUM(rx), SUM(tx) FROM net
+             WHERE minute >= ?1 AND minute < ?2 GROUP BY app ORDER BY SUM(rx) + SUM(tx) DESC",
+            [a, b],
+        ),
+        None => (
+            "SELECT app, SUM(rx), SUM(tx) FROM net_day
+             WHERE day >= ?1 AND day < ?2 GROUP BY app ORDER BY SUM(rx) + SUM(tx) DESC",
+            [span.start.key(), span.end.key()],
+        ),
+    };
+    let mut stmt = conn.prepare_cached(sql)?;
+    let rows = stmt.query_map(bounds, |r| {
+        Ok(Traffic {
+            app: r.get(0)?,
+            rx: r.get(1)?,
+            tx: r.get(2)?,
+        })
+    })?;
+    rows.collect()
 }
 
 /// 显示名：用 exe 的文件描述（Code.exe → "Visual Studio Code"）。

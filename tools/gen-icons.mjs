@@ -48,6 +48,7 @@ const USED = [
   ['Plus', 'plus'],
   ['Settings', 'settings'],
   ['ServerCog', 'server-cog'],
+  ['Pin', 'pin'],
   ['User', 'user'],
   ['Users', 'users'],
   ['Rocket', 'rocket'],

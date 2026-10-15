@@ -12,6 +12,7 @@ mod input;
 mod model;
 mod perf;
 mod recorder;
+mod rules;
 mod services_view;
 mod settings;
 mod settings_view;
@@ -121,6 +122,7 @@ fn spawn_collector(
     ctx: egui::Context,
     interval: Arc<AtomicU64>,
     recorder: recorder::Recorder,
+    rules: rules::Shared,
 ) -> Arc<Mutex<Shared>> {
     let shared = Arc::new(Mutex::new(Shared::default()));
     let out = shared.clone();
@@ -128,6 +130,7 @@ fn spawn_collector(
         .name("collector".into())
         .spawn(move || {
             let mut collector = Collector::new();
+            let mut applier = rules::Applier::default();
             // 第一次采样只建立基线，立刻再采一次让速率列尽快有值。
             collector.sample();
             std::thread::sleep(Duration::from_millis(250));
@@ -139,6 +142,8 @@ fn spawn_collector(
                 }
                 let started = Instant::now();
                 let snap = collector.sample();
+                // 新启动的进程套用记住的设置。
+                applier.run(&rules.read().unwrap(), &snap.processes);
                 {
                     let mut s = out.lock().unwrap();
                     let h = &mut s.history;
@@ -219,6 +224,9 @@ fn perf_sample(s: &Snapshot) -> recorder::PerfSample {
             .map(|p| recorder::ProcSample {
                 pid: p.pid,
                 name: p.name.clone(),
+                path: p.path.clone(),
+                rx_bytes: p.net_rx_bytes,
+                tx_bytes: p.net_tx_bytes,
                 cpu: p.cpu,
                 memory: p.private_ws,
                 disk: p.io_rate,
@@ -367,6 +375,11 @@ enum Action {
     Sort(SortKey),
     /// 在指定位置打开进程右键菜单。
     OpenMenu(Selection, egui::Pos2),
+    /// 修改某个程序（exe 名）启动时自动套用的设置。
+    Remember {
+        name: String,
+        rule: rules::Rule,
+    },
 }
 
 /// 搜索框里是文件或文件夹路径时，查找正在占用它的进程。
@@ -416,6 +429,8 @@ struct App {
     services: Arc<Vec<Service>>,
     services_view: ServicesState,
     stats: stats_view::StatsState,
+    /// 按程序记住的优先级、相关性、效率模式。
+    rules: rules::Shared,
     /// None 表示还没读过。
     startup: Option<Vec<StartupItem>>,
     startup_view: StartupState,
@@ -500,8 +515,15 @@ impl App {
                 ctx.request_repaint();
             });
         }
+        let rules: rules::Shared = Arc::new(std::sync::RwLock::new(rules::Rules::load()));
         Self {
-            shared: spawn_collector(ctx.clone(), interval.clone(), recorder.clone()),
+            shared: spawn_collector(
+                ctx.clone(),
+                interval.clone(),
+                recorder.clone(),
+                rules.clone(),
+            ),
+            rules,
             snapshot: Arc::default(),
             history: Default::default(),
             gpu_history: Vec::new(),
@@ -828,6 +850,7 @@ impl App {
             Action::Copy(text) => ctx.copy_text(text),
             Action::Sort(key) => self.set_sort(key),
             Action::OpenMenu(sel, pos) => self.menu = Some((sel, pos)),
+            Action::Remember { name, rule } => self.remember(&name, rule),
         }
     }
 
@@ -1052,6 +1075,55 @@ impl App {
                 Err(e) => Toast::err(failed, Some(e)),
             }
         });
+    }
+
+    /// 保存某个程序的规则，并立即套用到正在运行的同名进程。
+    fn remember(&mut self, name: &str, rule: rules::Rule) {
+        let saved = self.rules.write().unwrap().set(name, rule);
+        if let Err(e) = saved {
+            self.notify_err(
+                t!(
+                    "无法保存设置",
+                    "Couldn't save the setting",
+                    "設定を保存できませんでした"
+                )
+                .into(),
+                Some(e.to_string()),
+            );
+            return;
+        }
+        if rule.is_empty() {
+            self.notify_ok(
+                tf!(
+                    "{name} 启动时不再自动套用设置",
+                    "{name} will no longer get settings applied at launch",
+                    "{name} の起動時に設定を自動適用しなくなりました"
+                ),
+                None,
+            );
+            return;
+        }
+        let results = self
+            .snapshot
+            .processes
+            .iter()
+            .filter(|p| p.name.eq_ignore_ascii_case(name))
+            .map(|p| rule.apply(p.pid))
+            .collect();
+        let summary = rule.summary();
+        self.report(
+            results,
+            tf!(
+                "{name} 每次启动都会套用：{summary}",
+                "{name} will get this at every launch: {summary}",
+                "{name} の起動時に毎回適用します：{summary}"
+            ),
+            tf!(
+                "已记住，但无法套用到正在运行的 {name}",
+                "Saved, but couldn't apply it to the running {name}",
+                "保存しましたが、実行中の {name} には適用できませんでした"
+            ),
+        );
     }
 
     fn notify_ok(&mut self, title: String, detail: Option<String>) {
@@ -1873,8 +1945,14 @@ impl App {
             self.apply(&ctx, a);
         }
         if let Some((sel, pos)) = self.menu.clone() {
-            let (actions, open) =
-                table::menu(&ctx, &sel, pos, &self.snapshot, &self.services_by_pid);
+            let (actions, open) = table::menu(
+                &ctx,
+                &sel,
+                pos,
+                &self.snapshot,
+                &self.services_by_pid,
+                &self.rules.read().unwrap(),
+            );
             if !open {
                 self.menu = None;
             }
@@ -2029,6 +2107,13 @@ impl eframe::App for App {
                 let elevated = self.snapshot.elevated;
                 let replaced = self.taskmgr_replaced;
                 let autostart = *self.autostart.lock().unwrap();
+                let rules: Vec<(String, rules::Rule)> = self
+                    .rules
+                    .read()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, r)| (k.clone(), *r))
+                    .collect();
                 let action = central
                     .show(ui, |ui| {
                         settings_view::show(
@@ -2038,6 +2123,7 @@ impl eframe::App for App {
                             autostart,
                             elevated,
                             &self.update.check,
+                            &rules,
                         )
                     })
                     .inner;
@@ -2059,6 +2145,9 @@ impl eframe::App for App {
                                 Some(e),
                             ),
                         }
+                    }
+                    Some(settings_view::SettingsAction::RemoveRule(ref name)) => {
+                        self.remember(name, rules::Rule::default());
                     }
                     Some(settings_view::SettingsAction::ShowUpdate) => {
                         if let update::Check::Available(r) = &self.update.check {

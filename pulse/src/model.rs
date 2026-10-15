@@ -500,6 +500,8 @@ mod tests {
             kernel_time: 0,
             net_rx: 0,
             net_tx: 0,
+            net_rx_bytes: 0,
+            net_tx_bytes: 0,
             threads: 1,
             handles: 1,
             session_id: 1,

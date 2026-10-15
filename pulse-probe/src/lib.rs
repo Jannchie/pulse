@@ -144,6 +144,9 @@ pub struct Process {
     pub kernel_time: u64,
     pub net_rx: u64,
     pub net_tx: u64,
+    /// 自上次采样以来收发的字节数（统计每天的流量用）。
+    pub net_rx_bytes: u64,
+    pub net_tx_bytes: u64,
     pub threads: u32,
     pub handles: u32,
     pub session_id: u32,
@@ -459,6 +462,8 @@ impl Collector {
                     kernel_time: raw.kernel_time as u64,
                     net_rx: 0,
                     net_tx: 0,
+                    net_rx_bytes: 0,
+                    net_tx_bytes: 0,
                     threads: raw.number_of_threads,
                     handles: raw.handle_count,
                     session_id: raw.session_id,
@@ -488,6 +493,8 @@ impl Collector {
                 if self.prev_at.is_some() {
                     p.net_rx = rate(now[0], entry.net[0]);
                     p.net_tx = rate(now[1], entry.net[1]);
+                    p.net_rx_bytes = now[0].saturating_sub(entry.net[0]);
+                    p.net_tx_bytes = now[1].saturating_sub(entry.net[1]);
                 }
                 entry.net = now;
             }

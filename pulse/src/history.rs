@@ -2,7 +2,8 @@
 //!
 //! - `usage`：每分钟、每个程序、每个窗口标题在前台的活跃秒数，其中有键盘输入的秒数；
 //! - `usage_day`：按本地日期汇总的同样数据，统计页按天、周、月查询时不必扫描明细；
-//! - `perf` / `perf_top`：每分钟的整体占用，以及 CPU、内存、磁盘、网络、GPU 各自占用最高的进程。
+//! - `perf` / `perf_top`：每分钟的整体占用，以及 CPU、内存、磁盘、网络、GPU 各自占用最高的进程；
+//! - `net` / `net_day`：各程序每分钟、每天收发的字节数（逐进程网络统计需要管理员权限）。
 //!
 //! 数据只保存在本机。写入由记录线程独占一个连接；界面查询另开只读连接（WAL 模式下互不阻塞）。
 
@@ -14,6 +15,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 /// 性能明细保留的天数；使用记录不清理（每天只有几百行）。
 const PERF_DAYS: i64 = 30;
 const PERF_TOP_DAYS: i64 = 7;
+/// 每分钟的流量明细只给"最近 24 小时"用，按天的汇总一直保留。
+const NET_MINUTE_DAYS: i64 = 2;
 
 pub fn path() -> Option<PathBuf> {
     Some(
@@ -62,6 +65,8 @@ pub struct PerfMinute {
     pub net_tx: u64,
     /// (类别, 名次, 程序名, PID, 数值)。
     pub top: Vec<(TopKind, u8, String, u32, f64)>,
+    /// 各程序这一分钟收、发的字节数。
+    pub traffic: Vec<(AppRef, u64, u64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,7 +121,15 @@ impl Db {
              CREATE TABLE IF NOT EXISTS perf_top(
                  minute INTEGER NOT NULL, kind INTEGER NOT NULL, rank INTEGER NOT NULL,
                  app INTEGER NOT NULL, pid INTEGER NOT NULL, value REAL NOT NULL,
-                 PRIMARY KEY(minute, kind, rank)) WITHOUT ROWID;",
+                 PRIMARY KEY(minute, kind, rank)) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS net(
+                 minute INTEGER NOT NULL, app INTEGER NOT NULL,
+                 rx INTEGER NOT NULL, tx INTEGER NOT NULL,
+                 PRIMARY KEY(minute, app)) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS net_day(
+                 day INTEGER NOT NULL, app INTEGER NOT NULL,
+                 rx INTEGER NOT NULL, tx INTEGER NOT NULL,
+                 PRIMARY KEY(day, app)) WITHOUT ROWID;",
         ) {
             tries += 1;
             if tries >= 50 || e.sqlite_error_code() != Some(rusqlite::ErrorCode::DatabaseBusy) {
@@ -231,10 +244,14 @@ impl Db {
             rows.push((self.app_id(app)?, self.title_id(title)?, *s));
         }
         let mut tops = Vec::new();
+        let mut traffic = Vec::new();
         if let Some(p) = perf {
             for (kind, rank, name, pid, value) in &p.top {
                 let id = self.app_id(&AppRef::new(name, None))?;
                 tops.push((*kind as i64, *rank, id, *pid, *value));
+            }
+            for (app, rx, tx) in &p.traffic {
+                traffic.push((self.app_id(app)?, *rx as i64, *tx as i64));
             }
         }
         // 这一分钟的所有写入放在同一个事务里。
@@ -275,6 +292,20 @@ impl Db {
                 for (kind, rank, app, pid, value) in &tops {
                     top.execute(params![minute, kind, rank, app, pid, value])?;
                 }
+                let mut net = tx.prepare_cached(
+                    "INSERT INTO net(minute, app, rx, tx) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(minute, app) DO UPDATE SET
+                         rx = rx + excluded.rx, tx = tx + excluded.tx",
+                )?;
+                let mut net_day = tx.prepare_cached(
+                    "INSERT INTO net_day(day, app, rx, tx) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(day, app) DO UPDATE SET
+                         rx = rx + excluded.rx, tx = tx + excluded.tx",
+                )?;
+                for (app, rx, tx) in &traffic {
+                    net.execute(params![minute, app, rx, tx])?;
+                    net_day.execute(params![day, app, rx, tx])?;
+                }
             }
         }
         tx.commit()
@@ -289,6 +320,10 @@ impl Db {
         self.conn.execute(
             "DELETE FROM perf_top WHERE minute < ?1",
             [now_minute - PERF_TOP_DAYS * 1440],
+        )?;
+        self.conn.execute(
+            "DELETE FROM net WHERE minute < ?1",
+            [now_minute - NET_MINUTE_DAYS * 1440],
         )?;
         Ok(())
     }
@@ -333,6 +368,33 @@ mod tests {
             .query_row("SELECT SUM(active) FROM usage_day", [], |r| r.get(0))
             .unwrap();
         assert_eq!(day, 60);
+        drop(db);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn accumulates_traffic() {
+        let (dir, mut db) = temp_db("net");
+        let perf = PerfMinute {
+            traffic: vec![(AppRef::new("steam", None), 1000, 10)],
+            ..Default::default()
+        };
+        db.write_minute(29_000_000, &HashMap::new(), Some(&perf))
+            .unwrap();
+        db.write_minute(29_000_001, &HashMap::new(), Some(&perf))
+            .unwrap();
+        let (rx, tx): (i64, i64) = db
+            .conn
+            .query_row("SELECT SUM(rx), SUM(tx) FROM net_day", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((rx, tx), (2000, 20));
+        let minutes: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM net", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(minutes, 2);
         drop(db);
         std::fs::remove_dir_all(dir).unwrap();
     }

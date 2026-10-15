@@ -7,6 +7,7 @@ use eframe::egui::{
 
 use pulse_probe::{t, tf};
 
+use crate::rules::Rule;
 use crate::settings::{Language, SearchEngine, Settings, Speed, ThemeChoice};
 use crate::theme::{Palette, semibold};
 use crate::update::Check;
@@ -21,6 +22,8 @@ pub enum SettingsAction {
     CheckUpdate,
     /// 打开更新对话框。
     ShowUpdate,
+    /// 删除某个程序的自动套用设置。
+    RemoveRule(String),
 }
 
 pub fn show(
@@ -30,6 +33,7 @@ pub fn show(
     autostart: Option<bool>,
     elevated: bool,
     update: &Check,
+    rules: &[(String, Rule)],
 ) -> Option<SettingsAction> {
     let mut action = None;
     egui::ScrollArea::vertical()
@@ -157,6 +161,42 @@ pub fn show(
                             },
                         );
                     });
+
+                    group(
+                        ui,
+                        t!("启动时自动套用", "Apply at every launch", "起動時に毎回適用"),
+                        |ui| {
+                            if rules.is_empty() {
+                                row(
+                                    ui,
+                                    t!("还没有记住任何程序", "No programs yet", "まだプログラムはありません"),
+                                    t!(
+                                        "在进程的右键菜单里选“启动时自动套用”，记住优先级、相关性或效率模式。",
+                                        "Right-click a process and choose “Apply at every launch” to keep its priority, affinity or efficiency mode.",
+                                        "プロセスを右クリックして [起動時に毎回適用] を選ぶと、優先度・関係・効率モードを記憶します。"
+                                    ),
+                                    |_| {},
+                                );
+                            }
+                            for (i, (name, rule)) in rules.iter().enumerate() {
+                                if i > 0 {
+                                    divider(ui);
+                                }
+                                row(ui, name, &rule.summary(), |ui| {
+                                    if dialogs::button(
+                                        ui,
+                                        t!("移除", "Remove", "削除"),
+                                        dialogs::Kind::Secondary,
+                                        true,
+                                    )
+                                    .clicked()
+                                    {
+                                        action = Some(SettingsAction::RemoveRule(name.clone()));
+                                    }
+                                });
+                            }
+                        },
+                    );
 
                     group(ui, t!("系统", "System", "システム"), |ui| {
                         let desc = if elevated {

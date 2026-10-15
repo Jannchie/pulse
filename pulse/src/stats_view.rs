@@ -333,6 +333,8 @@ pub fn show(
                     .map_or(t!("应用", "Apps", "アプリ"), Category::label),
             );
             ranking(ui, &data, state, icons, &color_of);
+            section(ui, t!("网络流量", "Network traffic", "ネットワーク通信量"));
+            traffic(ui, &data, state, icons);
             app_menu(ui, state);
             section(ui, t!("最近一年", "Past year", "過去 1 年"));
             if let Some(day) = heatmap(ui, &data) {
@@ -1036,6 +1038,119 @@ fn ranking(
                 p.track,
             );
         }
+    }
+    if menu.is_some() {
+        state.menu = menu;
+    }
+}
+
+/// 各程序在区间里收发的数据量（下载、上传），按合计排序。
+fn traffic(ui: &mut Ui, data: &Data, state: &mut StatsState, icons: &mut Icons) {
+    let p = Palette::of(ui.ctx());
+    const SHOWN: usize = 12;
+    let row_h = 34.0;
+    let n = data.traffic.len().min(SHOWN);
+    if n == 0 {
+        let (rect, _) = card(ui, 56.0);
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            t!(
+                "这段时间没有记录到流量。逐进程的网络统计需要以管理员身份运行 Pulse。",
+                "No traffic recorded in this period. Per-process network stats require running Pulse as administrator.",
+                "この期間の通信量は記録されていません。プロセスごとのネットワーク統計には、Pulse を管理者として実行する必要があります。"
+            ),
+            FontId::proportional(12.5),
+            p.muted,
+        );
+        return;
+    }
+    let max = data.traffic.first().map_or(1, |t| t.total()).max(1);
+    let (rect, _) = card(ui, n as f32 * row_h + 12.0);
+    let apps = state.store.as_ref().map(|s| &s.apps);
+    let mut menu = None;
+    for (i, t) in data.traffic.iter().take(SHOWN).enumerate() {
+        let row = Rect::from_min_size(
+            pos2(rect.left() + 16.0, rect.top() + 6.0 + i as f32 * row_h),
+            vec2(rect.width() - 32.0, row_h),
+        );
+        let cy = row.center().y;
+        let painter = ui.painter_at(rect);
+        let app = apps.and_then(|a| a.get(&t.app));
+        let name = app.map_or("?", |a| a.name.as_str());
+        let icon_rect = Rect::from_center_size(pos2(row.left() + 13.0, cy), vec2(18.0, 18.0));
+        match app
+            .and_then(|a| a.path.as_ref())
+            .and_then(|path| icons.get(path))
+        {
+            Some(tex) => {
+                painter.image(
+                    tex.id(),
+                    icon_rect,
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+            None => widgets::avatar(&painter, icon_rect, name),
+        }
+        let name_w = (row.width() * 0.34).max(120.0);
+        widgets::text_truncated(
+            &painter,
+            pos2(row.left() + 32.0, cy),
+            Align2::LEFT_CENTER,
+            name,
+            FontId::proportional(13.0),
+            p.text,
+            name_w - 44.0,
+        );
+        // 右侧两列：下载、上传；中间是相对第一名的长度条。
+        let col = 92.0;
+        for (j, (glyph, bytes, color)) in [
+            (Icon::ArrowUp, t.tx, metric::NETWORK_UP),
+            (Icon::ArrowDown, t.rx, metric::NETWORK),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let right = row.right() - j as f32 * col;
+            let r = painter.text(
+                pos2(right, cy),
+                Align2::RIGHT_CENTER,
+                crate::fmt_bytes(bytes.max(0) as u64),
+                FontId::proportional(12.5),
+                if j == 1 { p.text } else { p.muted },
+            );
+            widgets::icon(ui, glyph, pos2(r.left() - 9.0, cy), 12.0, color);
+        }
+        let bar = Rect::from_min_max(
+            pos2(row.left() + name_w, cy - 3.0),
+            pos2(row.right() - 2.0 * col - 24.0, cy + 3.0),
+        );
+        if bar.width() > 40.0 {
+            widgets::meter(
+                &painter,
+                bar,
+                t.total() as f32 / max as f32,
+                metric::NETWORK,
+                p.track,
+            );
+        }
+        let resp = ui.interact(row, ui.id().with(("stats-net", t.app)), Sense::click());
+        if resp.secondary_clicked() {
+            menu = resp.interact_pointer_pos().map(|pos| (t.app, pos));
+        }
+        let cat = state.category(t.app);
+        resp.on_hover_ui(|ui| {
+            ui.label(RichText::new(name).strong());
+            ui.label(tf!(
+                "下载 {} · 上传 {}",
+                "Downloaded {} · Uploaded {}",
+                "ダウンロード {} · アップロード {}",
+                crate::fmt_bytes(t.rx.max(0) as u64),
+                crate::fmt_bytes(t.tx.max(0) as u64)
+            ));
+            ui.label(RichText::new(cat.label()).color(p.muted));
+        });
     }
     if menu.is_some() {
         state.menu = menu;
