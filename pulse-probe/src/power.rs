@@ -8,7 +8,9 @@ use windows::Win32::System::Power::{
     PowerReadACValueIndex, PowerReadDCValueIndex, PowerReadFriendlyName, PowerSetActiveScheme,
     PowerWriteACValueIndex, PowerWriteDCValueIndex, SYSTEM_POWER_STATUS,
 };
-use windows::core::{GUID, s, w};
+use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW};
+pub use windows::core::GUID;
+use windows::core::{s, w};
 
 /// 「平衡」计划。电源模式只在它生效时可用。
 pub const BALANCED: GUID = GUID::from_u128(0x381b4222_f694_41f0_9685_ff5bb260df2e);
@@ -50,8 +52,12 @@ pub enum BuiltIn {
 pub struct PowerState {
     pub schemes: Vec<Scheme>,
     pub active: GUID,
-    /// 当前电源模式；系统不支持时为 None。
+    /// 用户选的电源模式；系统不支持时为 None。
     pub mode: Option<GUID>,
+    /// 实际生效的电源模式。节能模式、厂商软件（如 MSI Center）可能让它和 `mode` 不同。
+    pub effective_mode: Option<GUID>,
+    /// 快速设置里的「节能」开着。它会强制最佳能效，用户选的电源模式不生效。
+    pub energy_saver: bool,
     /// 机器有电池（笔记本）。此时设置只作用于当前电源。
     pub has_battery: bool,
     pub on_battery: bool,
@@ -73,7 +79,9 @@ impl PowerState {
         Self {
             schemes: schemes(),
             active,
-            mode: effective_mode(),
+            mode: user_mode(dc).or_else(effective_mode),
+            effective_mode: effective_mode(),
+            energy_saver: energy_saver_on(),
             has_battery,
             on_battery,
             boost: read(&active, &PERFBOOSTMODE, dc),
@@ -89,11 +97,20 @@ impl PowerState {
         check(unsafe { PowerSetActiveScheme(None, Some(&guid)) })
     }
 
+    /// 新系统用「用户配置的电源模式」接口（设置应用用的就是它），旧系统退回覆盖方案接口。
     pub fn set_mode(&self, mode: GUID) -> Result<(), String> {
-        let Some(set) = overlay_fns().map(|f| f.1) else {
-            return Err(crate::win32_message(1)); // ERROR_INVALID_FUNCTION
+        let f = mode_fns();
+        let set_user = if self.dc() {
+            f.set_user_dc
+        } else {
+            f.set_user_ac
         };
-        check(WIN32_ERROR(unsafe { set(mode) }))
+        let err = match (set_user, f.set_overlay) {
+            (Some(set), _) => unsafe { set(&mode) },
+            (None, Some(set)) => unsafe { set(mode) },
+            (None, None) => 1, // ERROR_INVALID_FUNCTION
+        };
+        check(WIN32_ERROR(err))
     }
 
     pub fn set_boost(&self, mode: u32) -> Result<(), String> {
@@ -132,6 +149,25 @@ impl PowerState {
         }
         check(unsafe { PowerSetActiveScheme(None, Some(&scheme)) })
     }
+}
+
+/// 节能模式的状态没有公开接口，台式机上 GetSystemPowerStatus 也不反映它。
+/// 注册表里 EnergySaverState 为 1 时开启、2 时关闭（实测）。
+fn energy_saver_on() -> bool {
+    let mut v = 0u32;
+    let mut size = 4u32;
+    let ok = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            w!(r"SYSTEM\CurrentControlSet\Control\Power"),
+            w!("EnergySaverState"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&mut v as *mut u32).cast()),
+            Some(&mut size),
+        )
+    };
+    ok == ERROR_SUCCESS && v == 1
 }
 
 fn check(err: WIN32_ERROR) -> Result<(), String> {
@@ -238,30 +274,54 @@ fn read(scheme: &GUID, setting: &GUID, dc: bool) -> Option<u32> {
     (err == ERROR_SUCCESS).then_some(v)
 }
 
-type GetOverlay = unsafe extern "system" fn(*mut GUID) -> u32;
+type GetMode = unsafe extern "system" fn(*mut GUID) -> u32;
+type SetMode = unsafe extern "system" fn(*const GUID) -> u32;
 type SetOverlay = unsafe extern "system" fn(GUID) -> u32;
 
-/// 电源模式的两个函数没有写进文档（设置应用用的就是它们），Win10 1709 起才有，按名字动态取。
-fn overlay_fns() -> Option<(GetOverlay, SetOverlay)> {
-    static FNS: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
-    let (get, set) = (*FNS.get_or_init(|| unsafe {
-        let lib = LoadLibraryW(w!("powrprof.dll")).ok()?;
-        let get = GetProcAddress(lib, s!("PowerGetEffectiveOverlayScheme"))?;
-        let set = GetProcAddress(lib, s!("PowerSetActiveOverlayScheme"))?;
-        Some((get as usize, set as usize))
-    }))?;
-    unsafe {
-        Some((
-            std::mem::transmute::<usize, GetOverlay>(get),
-            std::mem::transmute::<usize, SetOverlay>(set),
-        ))
-    }
+/// 电源模式相关函数：覆盖方案接口 Win10 1709 起才有且没有文档，
+/// 「用户配置的电源模式」接口是 Win11 新加的，都按名字动态取。
+#[derive(Clone, Copy, Default)]
+struct ModeFns {
+    effective: Option<GetMode>,
+    user_ac: Option<GetMode>,
+    user_dc: Option<GetMode>,
+    set_user_ac: Option<SetMode>,
+    set_user_dc: Option<SetMode>,
+    set_overlay: Option<SetOverlay>,
+}
+
+fn mode_fns() -> ModeFns {
+    static FNS: std::sync::OnceLock<ModeFns> = std::sync::OnceLock::new();
+    *FNS.get_or_init(|| unsafe {
+        let Ok(lib) = LoadLibraryW(w!("powrprof.dll")) else {
+            return ModeFns::default();
+        };
+        let get = |name| GetProcAddress(lib, name).map(|f| std::mem::transmute::<_, GetMode>(f));
+        let set = |name| GetProcAddress(lib, name).map(|f| std::mem::transmute::<_, SetMode>(f));
+        ModeFns {
+            effective: get(s!("PowerGetEffectiveOverlayScheme")),
+            user_ac: get(s!("PowerGetUserConfiguredACPowerMode")),
+            user_dc: get(s!("PowerGetUserConfiguredDCPowerMode")),
+            set_user_ac: set(s!("PowerSetUserConfiguredACPowerMode")),
+            set_user_dc: set(s!("PowerSetUserConfiguredDCPowerMode")),
+            set_overlay: GetProcAddress(lib, s!("PowerSetActiveOverlayScheme"))
+                .map(|f| std::mem::transmute::<_, SetOverlay>(f)),
+        }
+    })
+}
+
+fn call_get(f: Option<GetMode>) -> Option<GUID> {
+    let mut guid = GUID::zeroed();
+    (unsafe { f?(&mut guid) } == 0).then_some(guid)
 }
 
 fn effective_mode() -> Option<GUID> {
-    let (get, _) = overlay_fns()?;
-    let mut guid = GUID::zeroed();
-    (unsafe { get(&mut guid) } == 0).then_some(guid)
+    call_get(mode_fns().effective)
+}
+
+fn user_mode(dc: bool) -> Option<GUID> {
+    let f = mode_fns();
+    call_get(if dc { f.user_dc } else { f.user_ac })
 }
 
 #[cfg(test)]

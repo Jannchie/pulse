@@ -9,7 +9,7 @@ use eframe::egui::{
 use pulse_probe::Snapshot;
 use pulse_probe::disk::DiskStat;
 use pulse_probe::nic::NicStat;
-use pulse_probe::power::{self, BuiltIn, PowerState};
+use pulse_probe::power::{self, BuiltIn, GUID, PowerState};
 use pulse_probe::{t, tf};
 
 use crate::gpu_panel::{self, GpuHistory, PanelAction};
@@ -707,7 +707,7 @@ fn disk_kind(d: &DiskStat) -> String {
 
 fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) -> Option<PerfAction> {
     let info = &snap.cpu_info;
-    let power = power_state();
+    let power = power_state(ui.ctx());
     page_header(ui, "CPU", &info.name);
     let threads: u32 = snap.processes.iter().map(|p| p.threads).sum();
     let handles: u32 = snap.processes.iter().map(|p| p.handles).sum();
@@ -735,28 +735,30 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) -> Option<PerfAction>
                 "GHz",
                 metric::CPU,
             )
-            .caption(if let Some(cap) = power.max_mhz.filter(|&m| m > 0) {
-                tf!(
-                    "上限 {:.1} GHz",
-                    "Capped at {:.1} GHz",
-                    "上限 {:.1} GHz",
-                    cap as f64 / 1000.0
-                )
-            } else if info.base_mhz > 0 {
-                tf!(
-                    "基准 {:.2} GHz",
-                    "Base {:.2} GHz",
-                    "基本 {:.2} GHz",
-                    info.base_mhz as f64 / 1000.0
-                )
-            } else {
-                t!(
-                    "驱动报告的当前频率",
-                    "Reported by the driver",
-                    "ドライバーが報告した現在の速度"
-                )
-                .into()
-            }),
+            .caption(
+                if let Some(cap) = power.as_ref().and_then(|p| p.max_mhz).filter(|&m| m > 0) {
+                    tf!(
+                        "上限 {:.1} GHz",
+                        "Capped at {:.1} GHz",
+                        "上限 {:.1} GHz",
+                        cap as f64 / 1000.0
+                    )
+                } else if info.base_mhz > 0 {
+                    tf!(
+                        "基准 {:.2} GHz",
+                        "Base {:.2} GHz",
+                        "基本 {:.2} GHz",
+                        info.base_mhz as f64 / 1000.0
+                    )
+                } else {
+                    t!(
+                        "驱动报告的当前频率",
+                        "Reported by the driver",
+                        "ドライバーが報告した現在の速度"
+                    )
+                    .into()
+                },
+            ),
             Kpi::new(
                 t!("进程", "Processes", "プロセス"),
                 snap.processes.len().to_string(),
@@ -824,7 +826,10 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) -> Option<PerfAction>
         core_grid(ui, snap, series, &(0..n).collect::<Vec<_>>(), metric::CPU);
     }
 
-    let action = power_section(ui, &power);
+    if let Some(power) = &power {
+        power_section(ui, power);
+    }
+    let action = take_power_error().map(PerfAction::PowerFailed);
 
     section(ui, t!("规格", "Specifications", "仕様"));
     let ghz = |mhz: u32| format!("{:.2} GHz", mhz as f64 / 1000.0);
@@ -886,27 +891,108 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) -> Option<PerfAction>
 
 // ---------------------------------------------------------------- 电源
 
-/// 电源状态读一次要几毫秒的注册表访问，每 2 秒刷新一次；改动后立即作废。
-static POWER: std::sync::Mutex<Option<(std::time::Instant, PowerState)>> =
-    std::sync::Mutex::new(None);
+/// 电源状态读一次要一两百毫秒，切换计划也要两百毫秒左右，都放到后台线程做。
+/// 界面只读这里的缓存：每 2 秒请求刷新一次，改动时先改缓存（立即反映在界面上），写完再读回。
+struct PowerCache {
+    state: Option<PowerState>,
+    at: Option<std::time::Instant>,
+    /// 后台已有任务在排队或执行，不再重复请求刷新。
+    busy: bool,
+    error: Option<String>,
+}
+
+static POWER: std::sync::Mutex<PowerCache> = std::sync::Mutex::new(PowerCache {
+    state: None,
+    at: None,
+    busy: false,
+    error: None,
+});
 /// 关闭睿频前的模式，重新打开时写回。
 static BOOST_BEFORE: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(power::BOOST_DEFAULT);
 
-fn power_state() -> PowerState {
-    let mut cache = POWER.lock().unwrap_or_else(|e| e.into_inner());
-    match &*cache {
-        Some((at, st)) if at.elapsed() < std::time::Duration::from_secs(2) => st.clone(),
-        _ => {
-            let st = PowerState::query();
-            *cache = Some((std::time::Instant::now(), st.clone()));
-            st
-        }
-    }
+#[derive(Clone, Copy)]
+enum PowerChange {
+    Scheme(GUID),
+    Mode(GUID),
+    Boost(u32),
+    MaxMhz(u32),
 }
 
-fn invalidate_power() {
-    *POWER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+fn power_cache() -> std::sync::MutexGuard<'static, PowerCache> {
+    POWER.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 后台线程：依次执行改动（None 表示只刷新），每次之后重新读取状态。
+fn power_worker() -> &'static std::sync::mpsc::Sender<(Option<PowerChange>, egui::Context)> {
+    static TX: std::sync::OnceLock<std::sync::mpsc::Sender<(Option<PowerChange>, egui::Context)>> =
+        std::sync::OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<(Option<PowerChange>, egui::Context)>();
+        std::thread::Builder::new()
+            .name("power".into())
+            .spawn(move || {
+                for (change, ctx) in rx {
+                    if let Some(change) = change {
+                        let st = power_cache()
+                            .state
+                            .clone()
+                            .unwrap_or_else(PowerState::query);
+                        let r = match change {
+                            PowerChange::Scheme(g) => st.set_scheme(g),
+                            PowerChange::Mode(g) => st.set_mode(g),
+                            PowerChange::Boost(v) => st.set_boost(v),
+                            PowerChange::MaxMhz(v) => st.set_max_mhz(v),
+                        };
+                        if let Err(e) = r {
+                            power_cache().error = Some(e);
+                        }
+                    }
+                    let st = PowerState::query();
+                    let mut cache = power_cache();
+                    cache.state = Some(st);
+                    cache.at = Some(std::time::Instant::now());
+                    cache.busy = false;
+                    drop(cache);
+                    ctx.request_repaint();
+                }
+            })
+            .expect("spawn power thread");
+        tx
+    })
+}
+
+fn power_state(ctx: &egui::Context) -> Option<PowerState> {
+    let mut cache = power_cache();
+    let stale = cache
+        .at
+        .is_none_or(|at| at.elapsed() > std::time::Duration::from_secs(2));
+    if stale && !cache.busy {
+        cache.busy = true;
+        let _ = power_worker().send((None, ctx.clone()));
+    }
+    if stale {
+        ctx.request_repaint_after(std::time::Duration::from_secs(2));
+    }
+    cache.state.clone()
+}
+
+fn apply_power(ctx: &egui::Context, change: PowerChange) {
+    let mut cache = power_cache();
+    if let Some(st) = cache.state.as_mut() {
+        match change {
+            PowerChange::Scheme(g) => st.active = g,
+            PowerChange::Mode(g) => st.mode = Some(g),
+            PowerChange::Boost(v) => st.boost = Some(v),
+            PowerChange::MaxMhz(v) => st.max_mhz = Some(v),
+        }
+    }
+    cache.busy = true;
+    let _ = power_worker().send((Some(change), ctx.clone()));
+}
+
+fn take_power_error() -> Option<String> {
+    power_cache().error.take()
 }
 
 fn scheme_label(s: &power::Scheme) -> String {
@@ -924,7 +1010,7 @@ fn scheme_label(s: &power::Scheme) -> String {
 }
 
 /// 电源计划、电源模式、睿频、最大频率。设置写入当前计划；笔记本上只作用于当前电源。
-fn power_section(ui: &mut Ui, st: &PowerState) -> Option<PerfAction> {
+fn power_section(ui: &mut Ui, st: &PowerState) {
     let p = Palette::of(ui.ctx());
     let title = match (st.has_battery, st.on_battery) {
         (false, _) => t!("电源", "Power", "電源").to_string(),
@@ -937,7 +1023,7 @@ fn power_section(ui: &mut Ui, st: &PowerState) -> Option<PerfAction> {
         .to_string(),
     };
     section(ui, &title);
-    let mut result: Option<Result<(), String>> = None;
+    let mut change = None;
     egui::Frame::NONE
         .fill(p.surface)
         .corner_radius(CornerRadius::same(12))
@@ -962,7 +1048,7 @@ fn power_section(ui: &mut Ui, st: &PowerState) -> Option<PerfAction> {
                         .position(|s| s.guid == st.active)
                         .unwrap_or(usize::MAX);
                     if let Some(i) = settings_view::choice(ui, &refs, cur) {
-                        result = Some(st.set_scheme(st.schemes[i].guid));
+                        change = Some(PowerChange::Scheme(st.schemes[i].guid));
                     }
                 },
             );
@@ -972,7 +1058,13 @@ fn power_section(ui: &mut Ui, st: &PowerState) -> Option<PerfAction> {
                 settings_view::row(
                     ui,
                     t!("电源模式", "Power mode", "電源モード"),
-                    if balanced {
+                    if st.energy_saver {
+                        t!(
+                            "节能模式开启中，会强制按最佳能效运行。可在右下角快速设置里关闭。",
+                            "Energy saver is on and forces best power efficiency. Turn it off in Quick Settings.",
+                            "省エネ機能がオンのため最適な電力効率になります。クイック設定でオフにできます。"
+                        )
+                    } else if balanced {
                         t!(
                             "最佳能效会明显压低性能。",
                             "Best power efficiency lowers performance.",
@@ -1001,7 +1093,7 @@ fn power_section(ui: &mut Ui, st: &PowerState) -> Option<PerfAction> {
                         ];
                         let cur = modes.iter().position(|&m| m == mode).unwrap_or(usize::MAX);
                         if let Some(i) = settings_view::choice(ui, &labels, cur) {
-                            result = Some(st.set_mode(modes[i]));
+                            change = Some(PowerChange::Mode(modes[i]));
                         }
                     },
                 );
@@ -1021,10 +1113,10 @@ fn power_section(ui: &mut Ui, st: &PowerState) -> Option<PerfAction> {
                         if widgets::switch(ui, &mut on, true).changed() {
                             if on {
                                 let before = BOOST_BEFORE.load(std::sync::atomic::Ordering::Relaxed);
-                                result = Some(st.set_boost(before));
+                                change = Some(PowerChange::Boost(before));
                             } else {
                                 BOOST_BEFORE.store(boost, std::sync::atomic::Ordering::Relaxed);
-                                result = Some(st.set_boost(0));
+                                change = Some(PowerChange::Boost(0));
                             }
                         }
                     },
@@ -1042,16 +1134,15 @@ fn power_section(ui: &mut Ui, st: &PowerState) -> Option<PerfAction> {
                     ),
                     |ui| {
                         if let Some(mhz) = freq_slider(ui, max) {
-                            result = Some(st.set_max_mhz(mhz));
+                            change = Some(PowerChange::MaxMhz(mhz));
                         }
                     },
                 );
             }
         });
-    let result = result?;
-    invalidate_power();
-    ui.ctx().request_repaint();
-    result.err().map(PerfAction::PowerFailed)
+    if let Some(change) = change {
+        apply_power(ui.ctx(), change);
+    }
 }
 
 /// 最大频率的档位：1.0–6.0 GHz，步长 0.1；最右一档为不限（0）。
