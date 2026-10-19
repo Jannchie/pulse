@@ -492,6 +492,7 @@ mod tests {
             cpu: 0.0,
             private_ws: 0,
             working_set: 0,
+            commit: 0,
             io_rate: 0,
             gpu: 0.0,
             gpu_dedicated: 0,

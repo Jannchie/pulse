@@ -133,6 +133,8 @@ pub struct Process {
     /// 私有工作集（任务管理器"内存"列）。
     pub private_ws: u64,
     pub working_set: u64,
+    /// 提交大小（任务管理器"提交大小"列）：进程独占、计入系统提交量的内存。
+    pub commit: u64,
     /// 所有 I/O（读+写+其他）的字节/秒。
     pub io_rate: u64,
     /// 最忙 GPU 引擎的占用率（0–100）。
@@ -455,6 +457,7 @@ impl Collector {
                     cpu,
                     private_ws: raw.working_set_private_size as u64,
                     working_set: raw.working_set_size as u64,
+                    commit: raw.private_page_count as u64,
                     io_rate,
                     gpu,
                     gpu_dedicated: gpu_mem.0,

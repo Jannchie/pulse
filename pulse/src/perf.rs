@@ -77,7 +77,11 @@ pub fn show(
                             action = Some(a);
                         }
                     }
-                    Device::Memory => memory_page(ui, snap, series),
+                    Device::Memory => {
+                        if let Some(a) = memory_page(ui, snap, series, icons) {
+                            action = Some(a);
+                        }
+                    }
                     Device::Disk(i) => match snap.disks.iter().find(|d| d.index == i) {
                         Some(d) => disk_page(ui, d, series),
                         None => missing(
@@ -1286,7 +1290,12 @@ fn core_grid(ui: &mut Ui, snap: &Snapshot, series: &Series, indices: &[usize], c
 
 // ---------------------------------------------------------------- 内存
 
-fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
+fn memory_page(
+    ui: &mut Ui,
+    snap: &Snapshot,
+    series: &Series,
+    icons: &mut Icons,
+) -> Option<PerfAction> {
     let p = Palette::of(ui.ctx());
     let m = &snap.memory;
     let modules = &snap.memory_modules;
@@ -1450,6 +1459,9 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
         );
     }
 
+    section(ui, t!("程序", "Programs", "プログラム"));
+    let action = memory_programs(ui, snap, icons);
+
     section(ui, t!("详细信息", "Details", "詳細"));
     kv_list(
         ui,
@@ -1541,6 +1553,230 @@ fn memory_page(ui: &mut Ui, snap: &Snapshot, series: &Series) {
             ui.add_space(4.0);
         }
     }
+    action
+}
+
+/// 按程序名合并的内存占用。
+struct MemProgram {
+    name: String,
+    count: usize,
+    path: Option<std::sync::Arc<str>>,
+    in_use: u64,
+    commit: u64,
+}
+
+/// 内存占用最多的程序：使用中（私有工作集）与已提交两列，点列头切换排序，点行在进程页搜索。
+fn memory_programs(ui: &mut Ui, snap: &Snapshot, icons: &mut Icons) -> Option<PerfAction> {
+    const ROWS: usize = 10;
+    const ROW_H: f32 = 32.0;
+    let p = Palette::of(ui.ctx());
+    let sort_id = egui::Id::new("mem-programs-by-commit");
+    let mut by_commit = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(sort_id).unwrap_or(false));
+
+    let mut map: HashMap<&str, MemProgram> = HashMap::new();
+    for pr in &snap.processes {
+        let e = map.entry(pr.name.as_str()).or_insert_with(|| MemProgram {
+            name: pr.name.clone(),
+            count: 0,
+            path: None,
+            in_use: 0,
+            commit: 0,
+        });
+        e.count += 1;
+        e.in_use += pr.private_ws;
+        e.commit += pr.commit;
+        if e.path.is_none() {
+            e.path = pr.path.clone();
+        }
+    }
+    let total_in_use: u64 = map.values().map(|e| e.in_use).sum();
+    let total_commit: u64 = map.values().map(|e| e.commit).sum();
+    let mut list: Vec<MemProgram> = map.into_values().collect();
+
+    let w = ui.available_width();
+    let rows = list.len().min(ROWS);
+    let (card, _) =
+        ui.allocate_exact_size(vec2(w, 30.0 + rows as f32 * ROW_H + 6.0), Sense::hover());
+    let painter = ui.painter_at(card);
+    painter.rect_filled(card, CornerRadius::same(10), p.surface);
+    let col_commit = card.right() - 14.0;
+    let col_use = col_commit - 100.0;
+    painter.text(
+        pos2(card.left() + 14.0, card.top() + 15.0),
+        Align2::LEFT_CENTER,
+        t!("程序", "Program", "プログラム"),
+        FontId::proportional(11.5),
+        p.muted,
+    );
+    // 可点击的列头：当前排序列加深并带箭头。
+    for (x, label, commit_col) in [
+        (col_use, t!("使用中", "In use", "使用中"), false),
+        (col_commit, t!("已提交", "Committed", "コミット済み"), true),
+    ] {
+        let active = by_commit == commit_col;
+        let text = if active {
+            format!("{label} ↓")
+        } else {
+            label.to_string()
+        };
+        let galley = painter.layout_no_wrap(text, FontId::proportional(11.5), p.muted);
+        let r = Align2::RIGHT_CENTER
+            .anchor_size(pos2(x, card.top() + 15.0), galley.size())
+            .expand(4.0);
+        let resp = ui
+            .interact(
+                r,
+                ui.id().with(("mem-prog-head", commit_col)),
+                Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let color = if active || resp.hovered() {
+            p.text
+        } else {
+            p.muted
+        };
+        painter.galley(r.shrink(4.0).min, galley, color);
+        if resp.clicked() {
+            by_commit = commit_col;
+            ui.ctx().data_mut(|d| d.insert_temp(sort_id, by_commit));
+        }
+    }
+
+    let key = |e: &MemProgram| if by_commit { e.commit } else { e.in_use };
+    list.sort_by(|a, b| key(b).cmp(&key(a)).then_with(|| a.name.cmp(&b.name)));
+    let shown = &list[..rows];
+    let max = shown.first().map_or(1, |e| key(e).max(1));
+    let bar_x = if by_commit { col_commit } else { col_use };
+    let mut action = None;
+    for (k, prog) in shown.iter().enumerate() {
+        let row = Rect::from_min_size(
+            pos2(card.left() + 4.0, card.top() + 30.0 + k as f32 * ROW_H),
+            vec2(card.width() - 8.0, ROW_H),
+        );
+        let resp = ui.interact(row, ui.id().with(("mem-prog", k)), Sense::click());
+        if resp.hovered() {
+            painter.rect_filled(row, CornerRadius::same(6), p.hover);
+        }
+        // 占比条画在排序列下方，便于横向比较。
+        let bar_w = 80.0 * key(prog) as f32 / max as f32;
+        let bar = Rect::from_min_max(
+            pos2(bar_x - bar_w, row.bottom() - 6.0),
+            pos2(bar_x, row.bottom() - 4.0),
+        );
+        painter.rect_filled(
+            bar,
+            CornerRadius::same(1),
+            metric::MEMORY.gamma_multiply(0.7),
+        );
+
+        let icon_rect =
+            Rect::from_center_size(pos2(row.left() + 18.0, row.center().y), vec2(16.0, 16.0));
+        match prog.path.as_ref().and_then(|path| icons.get(path)) {
+            Some(tex) => {
+                painter.image(
+                    tex.id(),
+                    icon_rect,
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+            None => widgets::avatar(&painter, icon_rect, &prog.name),
+        }
+        let name_clip = Rect::from_min_max(
+            pos2(row.left() + 32.0, row.top()),
+            pos2(col_use - 80.0, row.bottom()),
+        );
+        // 程序名截断时给 "×N" 留出位置。
+        let count = (prog.count > 1).then(|| format!("×{}", prog.count));
+        let count_w = count.as_ref().map_or(0.0, |c| {
+            painter
+                .layout_no_wrap(c.clone(), FontId::proportional(11.5), p.faint)
+                .size()
+                .x
+                + 6.0
+        });
+        let name = widgets::text_truncated(
+            &painter,
+            pos2(name_clip.left(), row.center().y),
+            Align2::LEFT_CENTER,
+            &prog.name,
+            FontId::proportional(12.5),
+            p.text,
+            name_clip.width() - count_w,
+        );
+        if let Some(count) = count {
+            painter.text(
+                pos2(name.right() + 6.0, row.center().y),
+                Align2::LEFT_CENTER,
+                count,
+                FontId::proportional(11.5),
+                p.faint,
+            );
+        }
+        for (x, bytes, active) in [
+            (col_use, prog.in_use, !by_commit),
+            (col_commit, prog.commit, by_commit),
+        ] {
+            painter.text(
+                pos2(x, row.center().y - 1.0),
+                Align2::RIGHT_CENTER,
+                fmt_bytes(bytes),
+                if active {
+                    FontId::new(12.5, semibold())
+                } else {
+                    FontId::proportional(12.5)
+                },
+                if active { p.text } else { p.muted },
+            );
+        }
+        let tip = tf!(
+            "{}{}\n使用中 {} · 已提交 {}\n点击在进程列表中搜索",
+            "{}{}\nIn use {} · committed {}\nClick to search in the process list",
+            "{}{}\n使用中 {} · コミット済み {}\nクリックしてプロセス一覧で検索",
+            prog.name,
+            if prog.count > 1 {
+                tf!(
+                    "（{} 个进程）",
+                    " ({} processes)",
+                    " ({} 個のプロセス)",
+                    prog.count
+                )
+            } else {
+                String::new()
+            },
+            fmt_bytes(prog.in_use),
+            fmt_bytes(prog.commit),
+        );
+        if resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(tip)
+            .clicked()
+        {
+            action = Some(PerfAction::Search(prog.name.clone()));
+        }
+    }
+    ui.add_space(4.0);
+    // 进程合计与系统总量对不上的部分来自内核、驱动和共享页，注明一下。
+    let mut note = tf!(
+        "所有进程合计：使用中 {} · 已提交 {}，其余由内核、驱动与共享内存占用",
+        "All processes: {} in use · {} committed; the rest is kernel, drivers and shared memory",
+        "全プロセスの合計: 使用中 {} · コミット済み {}。残りはカーネル、ドライバー、共有メモリ",
+        fmt_bytes(total_in_use),
+        fmt_bytes(total_commit),
+    );
+    if list.len() > ROWS {
+        note = tf!(
+            "另有 {} 个程序 · {}",
+            "{} more · {}",
+            "ほか {} 個のプログラム · {}",
+            list.len() - ROWS,
+            note
+        );
+    }
+    ui.label(RichText::new(note).size(11.5).color(p.faint));
+    action
 }
 
 // ---------------------------------------------------------------- 磁盘
