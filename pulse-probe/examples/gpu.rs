@@ -15,6 +15,10 @@ fn main() {
             gb(g.shared_used),
             gb(g.shared_total)
         );
+        println!(
+            "  温度 {:?}°C（警告 {:?} / 最高 {:?}）  风扇 {:?} RPM  功耗 {:?}",
+            g.temperature, g.warning_temperature, g.max_temperature, g.fan_rpm, g.power
+        );
         for (name, u) in &g.engines {
             println!("  {name:<8} {u:5.1}%");
         }

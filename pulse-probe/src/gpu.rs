@@ -2,16 +2,19 @@
 //! 口径与任务管理器一致：
 //! - 进程/适配器的利用率 = 其最忙那个引擎的占用率；同类引擎（如多个 Copy）合并取最忙者。
 //! - 专用显存 = 非 aperture 段的驻留字节；共享 GPU 内存 = aperture 段（系统内存）的驻留字节。
+//! - 温度、风扇、功耗来自 KMTQAITYPE_ADAPTERPERFDATA（WDDM 2.4+），驱动不报告时为 None。
 
 use windows::Wdk::Graphics::Direct3D::{
-    D3DKMT_ADAPTERADDRESS, D3DKMT_CLOSEADAPTER, D3DKMT_NODEMETADATA, D3DKMT_OPENADAPTERFROMLUID,
-    D3DKMT_QUERYADAPTERINFO, D3DKMT_QUERYSTATISTICS, D3DKMT_QUERYSTATISTICS_ADAPTER,
-    D3DKMT_QUERYSTATISTICS_NODE, D3DKMT_QUERYSTATISTICS_PROCESS_NODE,
-    D3DKMT_QUERYSTATISTICS_PROCESS_SEGMENT, D3DKMT_QUERYSTATISTICS_SEGMENT, D3DKMTCloseAdapter,
-    D3DKMTOpenAdapterFromLuid, D3DKMTQueryAdapterInfo, D3DKMTQueryStatistics, DXGK_ENGINE_TYPE,
-    DXGK_ENGINE_TYPE_3D, DXGK_ENGINE_TYPE_COPY, DXGK_ENGINE_TYPE_CRYPTO, DXGK_ENGINE_TYPE_OVERLAY,
+    D3DKMT_ADAPTER_PERFDATA, D3DKMT_ADAPTER_PERFDATACAPS, D3DKMT_ADAPTERADDRESS,
+    D3DKMT_CLOSEADAPTER, D3DKMT_NODEMETADATA, D3DKMT_OPENADAPTERFROMLUID, D3DKMT_QUERYADAPTERINFO,
+    D3DKMT_QUERYSTATISTICS, D3DKMT_QUERYSTATISTICS_ADAPTER, D3DKMT_QUERYSTATISTICS_NODE,
+    D3DKMT_QUERYSTATISTICS_PROCESS_NODE, D3DKMT_QUERYSTATISTICS_PROCESS_SEGMENT,
+    D3DKMT_QUERYSTATISTICS_SEGMENT, D3DKMTCloseAdapter, D3DKMTOpenAdapterFromLuid,
+    D3DKMTQueryAdapterInfo, D3DKMTQueryStatistics, DXGK_ENGINE_TYPE, DXGK_ENGINE_TYPE_3D,
+    DXGK_ENGINE_TYPE_COPY, DXGK_ENGINE_TYPE_CRYPTO, DXGK_ENGINE_TYPE_OVERLAY,
     DXGK_ENGINE_TYPE_SCENE_ASSEMBLY, DXGK_ENGINE_TYPE_VIDEO_DECODE, DXGK_ENGINE_TYPE_VIDEO_ENCODE,
-    DXGK_ENGINE_TYPE_VIDEO_PROCESSING, KMTQAITYPE_ADAPTERADDRESS, KMTQAITYPE_NODEMETADATA,
+    DXGK_ENGINE_TYPE_VIDEO_PROCESSING, KMTQAITYPE_ADAPTERADDRESS, KMTQAITYPE_ADAPTERPERFDATA,
+    KMTQAITYPE_ADAPTERPERFDATA_CAPS, KMTQAITYPE_NODEMETADATA, KMTQUERYADAPTERINFOTYPE,
 };
 use windows::Win32::Foundation::{HANDLE, LUID};
 use windows::Win32::Graphics::Dxgi::{
@@ -64,6 +67,12 @@ pub struct Adapter {
     pub engines: Vec<Engine>,
     pub dedicated_total: u64,
     pub shared_total: u64,
+    /// 驱动给出的温度警告阈值（°C）。
+    pub warning_temperature: Option<f32>,
+    /// 驱动给出的最高温度（°C）。
+    pub max_temperature: Option<f32>,
+    /// 驱动报告了风扇（最高转速非 0）；有风扇时 0 RPM 表示停转。
+    has_fan: bool,
     luid: LUID,
     pci: bool,
     /// 在扁平化节点数组中的起始下标。
@@ -80,6 +89,11 @@ pub struct AdapterSample {
     pub engines: Vec<f32>,
     pub dedicated_used: u64,
     pub shared_used: u64,
+    /// 温度（°C）。
+    pub temperature: Option<f32>,
+    pub fan_rpm: Option<u32>,
+    /// 功耗占 TDP 的比例（0–1，超频时可能大于 1）。
+    pub power: Option<f32>,
 }
 
 pub struct GpuMonitor {
@@ -127,6 +141,8 @@ impl GpuMonitor {
             let segments = (0..info.NbSegments)
                 .filter_map(|id| query_segment(luid, id).map(|s| (id, s.Aperture != 0)))
                 .collect();
+            let caps =
+                query_info::<D3DKMT_ADAPTER_PERFDATACAPS>(luid, KMTQAITYPE_ADAPTERPERFDATA_CAPS);
             let len = desc
                 .Description
                 .iter()
@@ -139,6 +155,9 @@ impl GpuMonitor {
                 engines: engines(luid, node_count),
                 dedicated_total: desc.DedicatedVideoMemory as u64,
                 shared_total: desc.SharedSystemMemory as u64,
+                warning_temperature: caps.and_then(|c| deci_celsius(c.TemperatureWarning)),
+                max_temperature: caps.and_then(|c| deci_celsius(c.TemperatureMax)),
+                has_fan: caps.is_some_and(|c| c.MaxFanRPM > 0),
                 luid,
                 pci: pci.is_some(),
                 node_base: 0,
@@ -216,11 +235,16 @@ impl GpuMonitor {
                         } += s.BytesResident;
                     }
                 }
+                let perf =
+                    query_info::<D3DKMT_ADAPTER_PERFDATA>(a.luid, KMTQAITYPE_ADAPTERPERFDATA);
                 AdapterSample {
                     usage,
                     engines,
                     dedicated_used,
                     shared_used,
+                    temperature: perf.and_then(|d| deci_celsius(d.Temperature)),
+                    fan_rpm: perf.filter(|_| a.has_fan).map(|d| d.FanRPM),
+                    power: perf.and_then(|d| (d.Power > 0).then(|| d.Power as f32 / 1000.0)),
                 }
             })
             .collect();
@@ -388,20 +412,28 @@ fn close_adapter(handle: u32) {
     }
 }
 
-fn pci_address(luid: LUID) -> Option<[u32; 3]> {
+/// 按适配器查询一项固定大小的信息（物理适配器 0）。
+fn query_info<T: Default>(luid: LUID, kind: KMTQUERYADAPTERINFOTYPE) -> Option<T> {
     let handle = open_adapter(luid)?;
-    let mut addr = D3DKMT_ADAPTERADDRESS::default();
+    let mut data = T::default();
     let mut q = D3DKMT_QUERYADAPTERINFO {
         hAdapter: handle,
-        Type: KMTQAITYPE_ADAPTERADDRESS,
-        pPrivateDriverData: (&mut addr as *mut D3DKMT_ADAPTERADDRESS).cast(),
-        PrivateDriverDataSize: size_of::<D3DKMT_ADAPTERADDRESS>() as u32,
+        Type: kind,
+        pPrivateDriverData: (&mut data as *mut T).cast(),
+        PrivateDriverDataSize: size_of::<T>() as u32,
     };
     let ok = unsafe { D3DKMTQueryAdapterInfo(&mut q) }.is_ok();
     close_adapter(handle);
-    (ok && addr.BusNumber != u32::MAX).then_some([
-        addr.BusNumber,
-        addr.DeviceNumber,
-        addr.FunctionNumber,
-    ])
+    ok.then_some(data)
+}
+
+/// 驱动以 0.1°C 为单位报告温度；0 表示没有传感器。
+fn deci_celsius(v: u32) -> Option<f32> {
+    (v > 0).then(|| v as f32 / 10.0)
+}
+
+fn pci_address(luid: LUID) -> Option<[u32; 3]> {
+    query_info::<D3DKMT_ADAPTERADDRESS>(luid, KMTQAITYPE_ADAPTERADDRESS)
+        .filter(|a| a.BusNumber != u32::MAX)
+        .map(|a| [a.BusNumber, a.DeviceNumber, a.FunctionNumber])
 }

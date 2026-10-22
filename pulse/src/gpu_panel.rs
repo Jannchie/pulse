@@ -40,53 +40,52 @@ pub fn page(
         .iter()
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .filter(|e| e.1 >= 0.5);
-    hero(
-        ui,
-        &[
-            Kpi::new(
-                t!("利用率", "Utilization", "使用率"),
-                format!("{:.0}", gpu.usage),
-                "%",
-                metric::GPU,
-            )
-            .caption(busiest.map_or(t!("空闲", "Idle", "アイドル").into(), |e| {
-                tf!("最忙：{}", "Busiest: {}", "最大負荷：{}", e.0)
-            }))
-            .bar(gpu.usage / 100.0),
-            Kpi::new(
-                t!("专用显存", "Dedicated GPU memory", "専用 GPU メモリ"),
-                format!("{:.1}", gb(gpu.dedicated_used)),
-                format!("/ {:.0} GB", gb(gpu.dedicated_total)),
-                metric::GPU,
-            )
-            .caption(format!(
-                "{:.0}%",
-                frac(gpu.dedicated_used, gpu.dedicated_total) * 100.0
-            ))
-            .bar(frac(gpu.dedicated_used, gpu.dedicated_total)),
-            Kpi::new(
-                t!("共享 GPU 内存", "Shared GPU memory", "共有 GPU メモリ"),
-                format!("{:.1}", gb(gpu.shared_used)),
-                format!("/ {:.0} GB", gb(gpu.shared_total)),
-                metric::MEMORY,
-            )
-            .caption(t!(
-                "显存不够时借用的系统内存",
-                "System RAM used as overflow",
-                "専用メモリの不足時に使用"
-            ))
-            .bar(frac(gpu.shared_used, gpu.shared_total)),
-            Kpi::new(
-                t!("使用中的程序", "Programs using GPU", "使用中のプログラム"),
-                users.len().to_string(),
-                t!("个", "", "個"),
-                metric::GPU,
-            )
-            .caption(users.first().map_or("—".into(), |u| {
-                tf!("显存最多：{}", "Most VRAM: {}", "VRAM 最大：{}", u.name)
-            })),
-        ],
-    );
+    let mut kpis = vec![
+        Kpi::new(
+            t!("利用率", "Utilization", "使用率"),
+            format!("{:.0}", gpu.usage),
+            "%",
+            metric::GPU,
+        )
+        .caption(busiest.map_or(t!("空闲", "Idle", "アイドル").into(), |e| {
+            tf!("最忙：{}", "Busiest: {}", "最大負荷：{}", e.0)
+        }))
+        .bar(gpu.usage / 100.0),
+        Kpi::new(
+            t!("专用显存", "Dedicated GPU memory", "専用 GPU メモリ"),
+            format!("{:.1}", gb(gpu.dedicated_used)),
+            format!("/ {:.0} GB", gb(gpu.dedicated_total)),
+            metric::GPU,
+        )
+        .caption(format!(
+            "{:.0}%",
+            frac(gpu.dedicated_used, gpu.dedicated_total) * 100.0
+        ))
+        .bar(frac(gpu.dedicated_used, gpu.dedicated_total)),
+        Kpi::new(
+            t!("共享 GPU 内存", "Shared GPU memory", "共有 GPU メモリ"),
+            format!("{:.1}", gb(gpu.shared_used)),
+            format!("/ {:.0} GB", gb(gpu.shared_total)),
+            metric::MEMORY,
+        )
+        .caption(t!(
+            "显存不够时借用的系统内存",
+            "System RAM used as overflow",
+            "専用メモリの不足時に使用"
+        ))
+        .bar(frac(gpu.shared_used, gpu.shared_total)),
+        Kpi::new(
+            t!("使用中的程序", "Programs using GPU", "使用中のプログラム"),
+            users.len().to_string(),
+            t!("个", "", "個"),
+            metric::GPU,
+        )
+        .caption(users.first().map_or("—".into(), |u| {
+            tf!("显存最多：{}", "Most VRAM: {}", "VRAM 最大：{}", u.name)
+        })),
+    ];
+    kpis.extend(temperature(gpu, &Palette::of(ui.ctx())));
+    hero(ui, &kpis);
 
     ui.add_space(10.0);
     two_columns(
@@ -135,6 +134,36 @@ pub fn page(
         },
     );
     action
+}
+
+/// 温度卡片：条按驱动给的最高温度归一，超过警告阈值时和磁盘页一样用警示色；说明行放风扇与功耗。
+fn temperature(gpu: &GpuStat, p: &Palette) -> Option<Kpi> {
+    let t = gpu.temperature?;
+    let hot = gpu.warning_temperature.is_some_and(|w| t >= w);
+    let mut parts = Vec::new();
+    match gpu.fan_rpm {
+        Some(0) => parts.push(t!("风扇停转", "Fan stopped", "ファン停止").to_string()),
+        Some(rpm) => parts.push(tf!("风扇 {rpm} RPM", "Fan {rpm} RPM", "ファン {rpm} RPM")),
+        None => {}
+    }
+    if let Some(power) = gpu.power {
+        let power = pct(power);
+        parts.push(tf!(
+            "功耗 {power} TDP",
+            "Power {power} TDP",
+            "電力 {power} TDP"
+        ));
+    }
+    Some(
+        Kpi::new(
+            t!("温度", "Temperature", "温度"),
+            format!("{t:.0}"),
+            "°C",
+            if hot { p.danger } else { metric::GPU },
+        )
+        .caption(parts.join(" · "))
+        .bar(t / gpu.max_temperature.unwrap_or(100.0)),
+    )
 }
 
 /// 引擎网格：名称、当前利用率、近 60 秒曲线。长期空闲的引擎用弱化色。

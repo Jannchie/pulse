@@ -173,6 +173,13 @@ pub struct GpuStat {
     pub dedicated_total: u64,
     pub shared_used: u64,
     pub shared_total: u64,
+    /// 温度（°C）；核显、虚拟适配器或旧驱动不报告。
+    pub temperature: Option<f32>,
+    pub warning_temperature: Option<f32>,
+    pub max_temperature: Option<f32>,
+    pub fan_rpm: Option<u32>,
+    /// 功耗占 TDP 的比例（0–1）。
+    pub power: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -337,6 +344,11 @@ impl Collector {
                         dedicated_total: a.dedicated_total,
                         shared_used: s.shared_used,
                         shared_total: a.shared_total,
+                        temperature: s.temperature,
+                        warning_temperature: a.warning_temperature,
+                        max_temperature: a.max_temperature,
+                        fan_rpm: s.fan_rpm,
+                        power: s.power,
                     })
                     .collect()
             }

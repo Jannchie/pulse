@@ -240,7 +240,13 @@ fn sidebar(ui: &mut Ui, snap: &Snapshot, series: &Series, device: &mut Device) {
             icon: Icon::Gpu,
             color: metric::GPU,
             title: format!("GPU {i}"),
-            sub: format!("{} · {:.0}%", widgets::short_gpu_name(&g.name), g.usage),
+            sub: format!(
+                "{} · {:.0}%{}",
+                widgets::short_gpu_name(&g.name),
+                g.usage,
+                g.temperature
+                    .map_or(String::new(), |t| format!(" · {t:.0}°C"))
+            ),
             spark: get(&format!("gpu.{i}")),
             max: Some(1.0),
         });
@@ -2492,6 +2498,28 @@ fn summary(device: Device, snap: &Snapshot) -> String {
                     gb(g.shared_used),
                     gb(g.shared_total)
                 ));
+                if let Some(t) = g.temperature {
+                    out.push(tf!(
+                        "温度\t{t:.0}°C",
+                        "Temperature\t{t:.0}°C",
+                        "温度\t{t:.0}°C"
+                    ));
+                }
+                if let Some(rpm) = g.fan_rpm {
+                    out.push(tf!(
+                        "风扇\t{rpm} RPM",
+                        "Fan\t{rpm} RPM",
+                        "ファン\t{rpm} RPM"
+                    ));
+                }
+                if let Some(power) = g.power {
+                    let power = pct(power);
+                    out.push(tf!(
+                        "功耗\t{power} TDP",
+                        "Power\t{power} TDP",
+                        "電力\t{power} TDP"
+                    ));
+                }
             }
         }
     }
