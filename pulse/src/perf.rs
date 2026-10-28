@@ -888,9 +888,9 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) -> Option<PerfAction>
             ),
             (
                 t!(
-                    "当前频率（驱动报告）",
-                    "Current speed (driver)",
-                    "現在の速度 (ドライバー)"
+                    "平均有效频率",
+                    "Average effective speed",
+                    "平均実効速度"
                 ),
                 snap.cpu_mhz.map_or("—".into(), ghz),
             ),

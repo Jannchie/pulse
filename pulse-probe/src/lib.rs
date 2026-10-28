@@ -213,7 +213,7 @@ pub struct Snapshot {
     /// 本次采集耗时。
     pub collect_time: Duration,
     pub cpu_info: Arc<system::CpuInfo>,
-    /// 驱动报告的当前频率（MHz），不少平台上固定为基准频率。
+    /// 有效频率（MHz，含睿频），自上次采样以来所有逻辑处理器的平均。
     pub cpu_mhz: Option<u32>,
     pub uptime: Duration,
     pub memory: system::MemoryDetail,
@@ -257,6 +257,7 @@ pub struct Collector {
     net_status: NetStatus,
     elevated: bool,
     cpu_info: Arc<system::CpuInfo>,
+    cpu_freq: Option<system::CpuFrequency>,
     memory_modules: Arc<Vec<system::MemoryModule>>,
     memory_slots: u32,
     memory_installed: Option<u64>,
@@ -298,6 +299,7 @@ impl Collector {
             net_status,
             elevated,
             cpu_info: Arc::new(system::CpuInfo::query()),
+            cpu_freq: system::CpuFrequency::new(),
             memory_modules: Arc::new(modules),
             memory_slots: slots,
             memory_installed: system::installed_memory(),
@@ -551,7 +553,10 @@ impl Collector {
             net_tx,
             net_status: self.net_status.clone(),
             elevated: self.elevated,
-            cpu_mhz: system::current_mhz(self.cpu_info.logical),
+            cpu_mhz: match &self.cpu_freq {
+                Some(f) => f.sample(self.cpu_info.base_mhz),
+                None => system::current_mhz(self.cpu_info.logical),
+            },
             cpu_info: self.cpu_info.clone(),
             uptime: system::uptime(),
             memory: system::MemoryDetail::query(),

@@ -1,7 +1,12 @@
 //! CPU 与内存的详细信息：型号、拓扑、缓存、频率；内存构成、内核池；内存条（SMBIOS）。
 
 use windows::Wdk::System::SystemInformation::{NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS};
+use windows::Win32::System::Performance::{
+    PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY, PdhAddEnglishCounterW,
+    PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterValue, PdhOpenQueryW,
+};
 use windows::Win32::System::Power::{CallNtPowerInformation, ProcessorInformation};
+use windows::core::w;
 use windows::Win32::System::ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
 use windows::Win32::System::Registry::{
     HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW,
@@ -124,8 +129,54 @@ impl CpuInfo {
     }
 }
 
+/// 实际运行频率：`% Processor Performance` 是实际性能相对额定性能的百分比（APERF/MPERF），
+/// 乘以基准频率即得含睿频的有效频率。任务管理器的"速度"与 [`current_mhz`] 只是各核额定频率，
+/// 混合架构上还会被能效核拉低（12900K：16×3.19 + 8×2.39 → 2.92 GHz）。
+pub struct CpuFrequency {
+    query: PDH_HQUERY,
+    counter: PDH_HCOUNTER,
+}
+
+impl CpuFrequency {
+    /// 计数器不可用（性能计数器被禁用等）时返回 None。
+    pub fn new() -> Option<Self> {
+        let mut query = PDH_HQUERY::default();
+        if unsafe { PdhOpenQueryW(None, 0, &mut query) } != 0 {
+            return None;
+        }
+        let mut counter = PDH_HCOUNTER::default();
+        // 英文路径，不受系统语言影响。
+        let path = w!(r"\Processor Information(_Total)\% Processor Performance");
+        if unsafe { PdhAddEnglishCounterW(query, path, 0, &mut counter) } != 0 {
+            unsafe { PdhCloseQuery(query) };
+            return None;
+        }
+        // 百分比计数器需要两次采样，先建立基线。
+        unsafe { PdhCollectQueryData(query) };
+        Some(Self { query, counter })
+    }
+
+    /// 自上次调用以来的平均有效频率（MHz）。
+    pub fn sample(&self, base_mhz: u32) -> Option<u32> {
+        let mut v = PDH_FMT_COUNTERVALUE::default();
+        let ok = unsafe {
+            PdhCollectQueryData(self.query) == 0
+                && PdhGetFormattedCounterValue(self.counter, PDH_FMT_DOUBLE, None, &mut v) == 0
+                && v.CStatus == 0
+        };
+        let pct = unsafe { v.Anonymous.doubleValue };
+        (ok && base_mhz > 0 && pct > 0.0).then(|| (base_mhz as f64 * pct / 100.0).round() as u32)
+    }
+}
+
+impl Drop for CpuFrequency {
+    fn drop(&mut self) {
+        unsafe { PdhCloseQuery(self.query) };
+    }
+}
+
 /// 各逻辑处理器驱动报告的当前频率的平均值（MHz）。
-/// 不少平台上这个值固定为基准频率，不反映睿频，界面上应当注明来源。
+/// 多数平台上这个值固定为额定频率，不反映睿频；只在 [`CpuFrequency`] 不可用时兜底。
 pub fn current_mhz(logical: u32) -> Option<u32> {
     /// PROCESSOR_POWER_INFORMATION
     #[repr(C)]
