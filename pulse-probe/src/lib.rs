@@ -215,6 +215,9 @@ pub struct Snapshot {
     pub cpu_info: Arc<system::CpuInfo>,
     /// 有效频率（MHz，含睿频），自上次采样以来所有逻辑处理器的平均。
     pub cpu_mhz: Option<u32>,
+    /// 混合架构上性能核与能效核各自的有效频率。
+    pub cpu_mhz_performance: Option<u32>,
+    pub cpu_mhz_efficient: Option<u32>,
     pub uptime: Duration,
     pub memory: system::MemoryDetail,
     pub memory_modules: Arc<Vec<system::MemoryModule>>,
@@ -536,6 +539,10 @@ impl Collector {
         let cpu_total = self.system_cpu();
         let cpu_cores = self.core_usage();
         let mem = memory();
+        let speed = self
+            .cpu_freq
+            .as_mut()
+            .and_then(|f| f.sample(&self.cpu_info));
         self.prev_at = Some(started);
 
         Snapshot {
@@ -553,10 +560,11 @@ impl Collector {
             net_tx,
             net_status: self.net_status.clone(),
             elevated: self.elevated,
-            cpu_mhz: match &self.cpu_freq {
-                Some(f) => f.sample(self.cpu_info.base_mhz),
-                None => system::current_mhz(self.cpu_info.logical),
-            },
+            cpu_mhz: speed
+                .map(|s| s.all)
+                .or_else(|| system::current_mhz(self.cpu_info.logical)),
+            cpu_mhz_performance: speed.and_then(|s| s.performance),
+            cpu_mhz_efficient: speed.and_then(|s| s.efficient),
             cpu_info: self.cpu_info.clone(),
             uptime: system::uptime(),
             memory: system::MemoryDetail::query(),

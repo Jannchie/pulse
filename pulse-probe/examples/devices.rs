@@ -7,10 +7,12 @@ fn main() {
     let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
     let i = &s.cpu_info;
     println!(
-        "CPU {} | 基准 {} MHz 当前 {:?} MHz | {} 插槽 {} 内核 {} 逻辑 | L1 {} KB L2 {} MB L3 {} MB | 开机 {:?}",
+        "CPU {} | 基准 {} MHz 当前 {:?} MHz 性能核 {:?} 能效核 {:?} | {} 插槽 {} 内核 {} 逻辑 | L1 {} KB L2 {} MB L3 {} MB | 开机 {:?}",
         i.name,
         i.base_mhz,
         s.cpu_mhz,
+        s.cpu_mhz_performance,
+        s.cpu_mhz_efficient,
         i.sockets,
         i.cores,
         i.logical,

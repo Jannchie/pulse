@@ -753,6 +753,16 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) -> Option<PerfAction>
                         "上限 {:.1} GHz",
                         cap as f64 / 1000.0
                     )
+                } else if let (Some(p), Some(e)) =
+                    (snap.cpu_mhz_performance, snap.cpu_mhz_efficient)
+                {
+                    tf!(
+                        "性能核 {:.2} · 能效核 {:.2} GHz",
+                        "P {:.2} · E {:.2} GHz",
+                        "P {:.2} · E {:.2} GHz",
+                        p as f64 / 1000.0,
+                        e as f64 / 1000.0
+                    )
                 } else if info.base_mhz > 0 {
                     tf!(
                         "基准 {:.2} GHz",
@@ -810,26 +820,26 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) -> Option<PerfAction>
         core_label(
             ui,
             metric::CPU,
-            &tf!(
+            &(tf!(
                 "性能核 · {} 核 {} 线程",
                 "Performance cores · {} cores, {} threads",
                 "パフォーマンス コア · {} コア、{} スレッド",
                 info.p_cores,
                 p_idx.len()
-            ),
+            ) + &speed_suffix(snap.cpu_mhz_performance)),
         );
         core_grid(ui, snap, series, &p_idx, metric::CPU);
         ui.add_space(8.0);
         core_label(
             ui,
             metric::CPU_EFFICIENT,
-            &tf!(
+            &(tf!(
                 "能效核 · {} 核 {} 线程",
                 "Efficient cores · {} cores, {} threads",
                 "高効率コア · {} コア、{} スレッド",
                 info.e_cores,
                 e.len()
-            ),
+            ) + &speed_suffix(snap.cpu_mhz_efficient)),
         );
         core_grid(ui, snap, series, &e, metric::CPU_EFFICIENT);
     } else {
@@ -887,11 +897,7 @@ fn cpu_page(ui: &mut Ui, snap: &Snapshot, series: &Series) -> Option<PerfAction>
                 fmt_bytes(info.l3),
             ),
             (
-                t!(
-                    "平均有效频率",
-                    "Average effective speed",
-                    "平均実効速度"
-                ),
+                t!("平均有效频率", "Average effective speed", "平均実効速度"),
                 snap.cpu_mhz.map_or("—".into(), ghz),
             ),
         ],
@@ -1153,6 +1159,13 @@ fn power_section(ui: &mut Ui, st: &PowerState) {
     if let Some(change) = change {
         apply_power(ui.ctx(), change);
     }
+}
+
+/// 分组标题后的频率，如" · 4.55 GHz"。
+fn speed_suffix(mhz: Option<u32>) -> String {
+    mhz.map_or(String::new(), |m| {
+        format!(" · {:.2} GHz", m as f64 / 1000.0)
+    })
 }
 
 /// 最大频率的档位：1.0–6.0 GHz，步长 0.1；最右一档为不限（0）。
@@ -2277,6 +2290,20 @@ fn summary(device: Device, snap: &Snapshot) -> String {
                     "Speed\t{:.2} GHz",
                     "速度\t{:.2} GHz",
                     mhz as f64 / 1000.0
+                ));
+            }
+            if let (Some(p), Some(e)) = (snap.cpu_mhz_performance, snap.cpu_mhz_efficient) {
+                out.push(tf!(
+                    "性能核速度\t{:.2} GHz",
+                    "Performance core speed\t{:.2} GHz",
+                    "パフォーマンス コア速度\t{:.2} GHz",
+                    p as f64 / 1000.0
+                ));
+                out.push(tf!(
+                    "能效核速度\t{:.2} GHz",
+                    "Efficient core speed\t{:.2} GHz",
+                    "高効率コア速度\t{:.2} GHz",
+                    e as f64 / 1000.0
                 ));
             }
             out.push(tf!(

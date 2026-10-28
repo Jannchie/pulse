@@ -2,11 +2,10 @@
 
 use windows::Wdk::System::SystemInformation::{NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS};
 use windows::Win32::System::Performance::{
-    PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY, PdhAddEnglishCounterW,
-    PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterValue, PdhOpenQueryW,
+    PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY, PdhAddEnglishCounterW,
+    PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW,
 };
 use windows::Win32::System::Power::{CallNtPowerInformation, ProcessorInformation};
-use windows::core::w;
 use windows::Win32::System::ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
 use windows::Win32::System::Registry::{
     HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW,
@@ -14,6 +13,7 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::SystemInformation::{
     GetLogicalProcessorInformationEx, GetSystemFirmwareTable, RSMB, RelationAll,
 };
+use windows::core::w;
 
 #[derive(Clone, Debug, Default)]
 pub struct CpuInfo {
@@ -129,12 +129,22 @@ impl CpuInfo {
     }
 }
 
+/// 有效频率（MHz，含睿频），按核心类型分别平均。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CpuSpeed {
+    pub all: u32,
+    /// 仅混合架构：性能核与能效核各自的平均。
+    pub performance: Option<u32>,
+    pub efficient: Option<u32>,
+}
+
 /// 实际运行频率：`% Processor Performance` 是实际性能相对额定性能的百分比（APERF/MPERF），
 /// 乘以基准频率即得含睿频的有效频率。任务管理器的"速度"与 [`current_mhz`] 只是各核额定频率，
 /// 混合架构上还会被能效核拉低（12900K：16×3.19 + 8×2.39 → 2.92 GHz）。
 pub struct CpuFrequency {
     query: PDH_HQUERY,
     counter: PDH_HCOUNTER,
+    buf: Vec<u64>,
 }
 
 impl CpuFrequency {
@@ -145,27 +155,80 @@ impl CpuFrequency {
             return None;
         }
         let mut counter = PDH_HCOUNTER::default();
-        // 英文路径，不受系统语言影响。
-        let path = w!(r"\Processor Information(_Total)\% Processor Performance");
+        // 英文路径，不受系统语言影响；通配取每个逻辑处理器。
+        let path = w!(r"\Processor Information(*)\% Processor Performance");
         if unsafe { PdhAddEnglishCounterW(query, path, 0, &mut counter) } != 0 {
             unsafe { PdhCloseQuery(query) };
             return None;
         }
         // 百分比计数器需要两次采样，先建立基线。
         unsafe { PdhCollectQueryData(query) };
-        Some(Self { query, counter })
+        Some(Self {
+            query,
+            counter,
+            buf: Vec::new(),
+        })
     }
 
-    /// 自上次调用以来的平均有效频率（MHz）。
-    pub fn sample(&self, base_mhz: u32) -> Option<u32> {
-        let mut v = PDH_FMT_COUNTERVALUE::default();
-        let ok = unsafe {
-            PdhCollectQueryData(self.query) == 0
-                && PdhGetFormattedCounterValue(self.counter, PDH_FMT_DOUBLE, None, &mut v) == 0
-                && v.CStatus == 0
+    /// 自上次调用以来的平均有效频率。
+    pub fn sample(&mut self, info: &CpuInfo) -> Option<CpuSpeed> {
+        if info.base_mhz == 0 || unsafe { PdhCollectQueryData(self.query) } != 0 {
+            return None;
+        }
+        let (mut size, mut count) = (0u32, 0u32);
+        unsafe {
+            PdhGetFormattedCounterArrayW(self.counter, PDH_FMT_DOUBLE, &mut size, &mut count, None)
         };
-        let pct = unsafe { v.Anonymous.doubleValue };
-        (ok && base_mhz > 0 && pct > 0.0).then(|| (base_mhz as f64 * pct / 100.0).round() as u32)
+        if size == 0 {
+            return None;
+        }
+        self.buf.resize((size as usize).div_ceil(8), 0);
+        let items = self.buf.as_mut_ptr().cast::<PDH_FMT_COUNTERVALUE_ITEM_W>();
+        if unsafe {
+            PdhGetFormattedCounterArrayW(
+                self.counter,
+                PDH_FMT_DOUBLE,
+                &mut size,
+                &mut count,
+                Some(items),
+            )
+        } != 0
+        {
+            return None;
+        }
+        let items = unsafe { std::slice::from_raw_parts(items, count as usize) };
+        // [全部, 性能核, 能效核] 的 (百分比之和, 个数)
+        let mut acc = [(0.0f64, 0u32); 3];
+        for item in items {
+            if item.FmtValue.CStatus != 0 {
+                continue;
+            }
+            // 实例名为"组,序号"；跳过 _Total 与"组,_Total"。
+            let name = unsafe { item.szName.to_string() }.unwrap_or_default();
+            let Some((group, index)) = name.split_once(',') else {
+                continue;
+            };
+            let Ok(index) = index.parse::<usize>() else {
+                continue;
+            };
+            let pct = unsafe { item.FmtValue.Anonymous.doubleValue };
+            let mut add = |k: usize| {
+                acc[k].0 += pct;
+                acc[k].1 += 1;
+            };
+            add(0);
+            if info.hybrid() && group == "0" {
+                add(if info.is_efficient(index) { 2 } else { 1 });
+            }
+        }
+        let mhz = |(sum, n): (f64, u32)| {
+            (n > 0).then(|| (info.base_mhz as f64 * sum / n as f64 / 100.0).round() as u32)
+        };
+        Some(CpuSpeed {
+            all: mhz(acc[0])?,
+            performance: mhz(acc[1]),
+            efficient: mhz(acc[2]),
+        })
     }
 }
 
